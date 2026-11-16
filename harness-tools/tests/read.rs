@@ -1,0 +1,398 @@
+mod common;
+
+use std::path::Path;
+use std::time::Duration;
+
+use common::p;
+use harness_tools::{read, ReadOutput, ReadParams, ToolCall, ToolOutput, DEFAULT_READ_LIMIT};
+use serde_json::json;
+
+fn rp(path: &Path, offset: Option<usize>, limit: Option<usize>) -> ReadParams {
+    ReadParams {
+        path: p(path),
+        offset,
+        limit,
+    }
+}
+
+#[test]
+fn call_roundtrip() {
+    let call = ToolCall::Read(ReadParams {
+        path: "a.txt".into(),
+        offset: Some(2),
+        limit: Some(10),
+    });
+    let v = serde_json::to_value(&call).unwrap();
+    assert_eq!(
+        v,
+        json!({"name":"read","input":{"path":"a.txt","offset":2,"limit":10}})
+    );
+    assert_eq!(serde_json::from_value::<ToolCall>(v).unwrap(), call);
+}
+
+#[test]
+fn optional_fields_default_to_none() {
+    let call: ToolCall =
+        serde_json::from_value(json!({"name":"read","input":{"path":"a.txt"}})).unwrap();
+    assert_eq!(
+        call,
+        ToolCall::Read(ReadParams {
+            path: "a.txt".into(),
+            offset: None,
+            limit: None,
+        })
+    );
+}
+
+#[test]
+fn null_optional_fields_are_none() {
+    let call: ToolCall = serde_json::from_value(
+        json!({"name":"read","input":{"path":"a.txt","offset":null,"limit":null}}),
+    )
+    .unwrap();
+    assert_eq!(
+        call,
+        ToolCall::Read(ReadParams {
+            path: "a.txt".into(),
+            offset: None,
+            limit: None,
+        })
+    );
+}
+
+#[test]
+fn name_case_variants() {
+    for name in ["read", "Read", "READ"] {
+        let call: ToolCall =
+            serde_json::from_value(json!({"name":name,"input":{"path":"a"}})).unwrap();
+        assert!(matches!(call, ToolCall::Read(_)), "{name}");
+        assert_eq!(serde_json::to_value(&call).unwrap()["name"], "read");
+    }
+
+    let r = serde_json::from_value::<ToolCall>(json!({"name":"rEaD","input":{"path":"a"}}));
+    assert!(r.is_err());
+}
+
+#[test]
+fn missing_path_fails() {
+    let r = serde_json::from_value::<ToolCall>(json!({"name":"read","input":{}}));
+    assert!(r.is_err());
+}
+
+#[test]
+fn wrong_types_fail() {
+    for input in [
+        json!({"path":"a","offset":"2"}),
+        json!({"path":"a","offset":-1}),
+        json!({"path":"a","limit":1.5}),
+        json!({"path":42}),
+    ] {
+        let r = serde_json::from_value::<ToolCall>(json!({"name":"read","input":input}));
+        assert!(r.is_err(), "accepted {input}");
+    }
+}
+
+#[test]
+fn unknown_fields_ignored() {
+    let call: ToolCall =
+        serde_json::from_value(json!({"name":"read","input":{"path":"a","extra":true}})).unwrap();
+    assert_eq!(
+        call,
+        ToolCall::Read(ReadParams {
+            path: "a".into(),
+            offset: None,
+            limit: None,
+        })
+    );
+}
+
+#[test]
+fn output_tagged_shape() {
+    let out = ToolOutput::Read(ReadOutput {
+        content: "x".into(),
+        total_lines: 1,
+        truncated: false,
+    });
+    let v = serde_json::to_value(&out).unwrap();
+    assert_eq!(
+        v,
+        json!({"name":"read","output":{"content":"x","total_lines":1,"truncated":false}})
+    );
+    assert_eq!(serde_json::from_value::<ToolOutput>(v).unwrap(), out);
+}
+
+#[tokio::test]
+async fn whole_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("a.txt");
+    std::fs::write(&f, "one\ntwo\nthree\n").unwrap();
+
+    let out = read(rp(&f, None, None)).await.unwrap();
+    assert_eq!(out.content, "one\ntwo\nthree\n");
+    assert_eq!(out.total_lines, 3);
+    assert!(!out.truncated);
+}
+
+#[tokio::test]
+async fn window() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("a.txt");
+    std::fs::write(&f, "1\n2\n3\n4\n5\n").unwrap();
+
+    let out = read(rp(&f, Some(2), Some(2))).await.unwrap();
+    assert_eq!(out.content, "2\n3\n");
+    assert_eq!(out.total_lines, 5);
+    assert!(out.truncated);
+
+    let out = read(rp(&f, Some(4), Some(10))).await.unwrap();
+    assert_eq!(out.content, "4\n5\n");
+    assert!(!out.truncated);
+
+    // Window ends exactly at the last line.
+    let out = read(rp(&f, Some(4), Some(2))).await.unwrap();
+    assert_eq!(out.content, "4\n5\n");
+    assert!(!out.truncated);
+
+    let out = read(rp(&f, None, Some(5))).await.unwrap();
+    assert_eq!(out.total_lines, 5);
+    assert!(!out.truncated);
+}
+
+#[tokio::test]
+async fn trailing_blank_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("a.txt");
+    std::fs::write(&f, "a\n\n\n").unwrap();
+
+    let out = read(rp(&f, None, None)).await.unwrap();
+    assert_eq!(out.content, "a\n\n\n");
+    assert_eq!(out.total_lines, 3);
+
+    let out = read(rp(&f, Some(3), None)).await.unwrap();
+    assert_eq!(out.content, "\n");
+    assert!(!out.truncated);
+}
+
+// The only test in this binary that changes $HOME.
+#[tokio::test]
+async fn tilde_expands_to_home() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(home.path().join("t.txt"), "home\n").unwrap();
+    std::env::set_var("HOME", home.path());
+
+    let out = read(rp(Path::new("~/t.txt"), None, None)).await.unwrap();
+    assert_eq!(out.content, "home\n");
+
+    let err = read(rp(Path::new("~"), None, None)).await.unwrap_err();
+    assert!(err.message.contains("directory"));
+
+    // `~user` is not expanded.
+    let err = read(rp(Path::new("~nobody/t.txt"), None, None))
+        .await
+        .unwrap_err();
+    assert!(err.message.contains("~nobody/t.txt"));
+}
+
+#[tokio::test]
+async fn default_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("big.txt");
+    let text: String = (1..=2500).map(|i| format!("{i}\n")).collect();
+    std::fs::write(&f, text).unwrap();
+
+    let out = read(rp(&f, None, None)).await.unwrap();
+    assert_eq!(out.content.lines().count(), DEFAULT_READ_LIMIT);
+    assert_eq!(out.total_lines, 2500);
+    assert!(out.truncated);
+}
+
+#[tokio::test]
+async fn last_line_and_huge_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("a.txt");
+    std::fs::write(&f, "1\n2\n3\n").unwrap();
+
+    let out = read(rp(&f, Some(3), None)).await.unwrap();
+    assert_eq!(out.content, "3\n");
+    assert!(!out.truncated);
+
+    let out = read(rp(&f, Some(2), Some(usize::MAX))).await.unwrap();
+    assert_eq!(out.content, "2\n3\n");
+    assert!(!out.truncated);
+}
+
+#[tokio::test]
+async fn zero_limit_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("a.txt");
+    std::fs::write(&f, "1\n").unwrap();
+
+    let err = read(rp(&f, None, Some(0))).await.unwrap_err();
+    assert!(err.message.contains("limit"));
+}
+
+#[tokio::test]
+async fn exact_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("a.txt");
+
+    for (text, lines) in [
+        ("a\r\nb\r\n", 2),
+        ("a\nb", 2),
+        ("a\r\nb\nc", 3),
+        ("a\rb\n", 1),
+        ("\n", 1),
+        ("\n\n", 2),
+    ] {
+        std::fs::write(&f, text).unwrap();
+        let out = read(rp(&f, None, None)).await.unwrap();
+        assert_eq!(out.content, text, "{text:?}");
+        assert_eq!(out.total_lines, lines, "{text:?}");
+    }
+
+    // A window keeps the endings of its own lines.
+    std::fs::write(&f, "a\r\nb\nc").unwrap();
+    let out = read(rp(&f, Some(2), None)).await.unwrap();
+    assert_eq!(out.content, "b\nc");
+    let out = read(rp(&f, Some(1), Some(1))).await.unwrap();
+    assert_eq!(out.content, "a\r\n");
+}
+
+#[tokio::test]
+async fn bad_offsets() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("a.txt");
+    std::fs::write(&f, "1\n2\n").unwrap();
+
+    assert!(read(rp(&f, Some(0), None)).await.is_err());
+    assert!(read(rp(&f, Some(3), None)).await.is_err());
+}
+
+#[tokio::test]
+async fn missing_and_directory() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let err = read(rp(&dir.path().join("nope"), None, None))
+        .await
+        .unwrap_err();
+    assert!(err.message.contains("nope"));
+
+    let err = read(rp(dir.path(), None, None)).await.unwrap_err();
+    assert!(err.message.contains("directory"));
+
+    assert!(read(rp(Path::new(""), None, None)).await.is_err());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn special_files_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let fifo = dir.path().join("fifo");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    for path in [
+        fifo.as_path(),
+        Path::new("/dev/zero"),
+        Path::new("/dev/null"),
+    ] {
+        let r = tokio::time::timeout(Duration::from_secs(5), read(rp(path, None, None)))
+            .await
+            .unwrap_or_else(|_| panic!("{} hung", path.display()));
+        let err = r.unwrap_err();
+        assert!(err.message.contains("not a regular file"), "{}", err);
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn symlink() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("target.txt");
+    let link = dir.path().join("link.txt");
+    std::fs::write(&target, "via link\n").unwrap();
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+
+    let out = read(rp(&link, None, None)).await.unwrap();
+    assert_eq!(out.content, "via link\n");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn permission_denied() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("secret");
+    std::fs::write(&f, "x").unwrap();
+    std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    // Root bypasses permission checks; nothing to verify then.
+    if std::fs::read(&f).is_ok() {
+        return;
+    }
+    let err = read(rp(&f, None, None)).await.unwrap_err();
+    assert!(err.message.contains("secret"));
+}
+
+#[tokio::test]
+async fn binary_file_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("bin");
+
+    // NUL at the start, and far into the file.
+    let mut late = vec![b'a'; 100_000];
+    late.push(0);
+    for bytes in [vec![0x7f, b'E', b'L', b'F', 0x02, 0x01, 0x01, 0x00], late] {
+        std::fs::write(&f, &bytes).unwrap();
+        let err = read(rp(&f, None, None)).await.unwrap_err();
+        assert!(err.message.contains("binary file"), "{err}");
+        assert!(err.message.contains("bin"));
+    }
+}
+
+#[tokio::test]
+async fn invalid_utf8() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("bin");
+    std::fs::write(&f, [0x66, 0xff, 0xfe, 0x0a, 0x67]).unwrap();
+
+    let out = read(rp(&f, None, None)).await.unwrap();
+    assert_eq!(out.total_lines, 2);
+    assert!(out.content.contains('\u{FFFD}'));
+}
+
+// The only test in this binary that changes the working directory;
+// all other tests use absolute paths.
+#[tokio::test]
+async fn relative_path_uses_cwd() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub/rel.txt"), "relative\n").unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let out = read(rp(Path::new("sub/rel.txt"), None, None))
+        .await
+        .unwrap();
+    assert_eq!(out.content, "relative\n");
+}
+
+#[tokio::test]
+async fn empty_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("empty");
+    std::fs::write(&f, "").unwrap();
+
+    let out = read(rp(&f, None, None)).await.unwrap();
+    assert_eq!(out.content, "");
+    assert_eq!(out.total_lines, 0);
+    assert!(!out.truncated);
+
+    // Offset is not validated against an empty file.
+    let out = read(rp(&f, Some(5), None)).await.unwrap();
+    assert_eq!(out.content, "");
+    assert_eq!(out.total_lines, 0);
+}
