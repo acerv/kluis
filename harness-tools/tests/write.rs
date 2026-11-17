@@ -102,7 +102,6 @@ async fn trailing_slash_fails() {
     assert!(err.message.contains("ends with '/'"));
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn special_files_rejected() {
     let dir = tempfile::tempdir().unwrap();
@@ -123,7 +122,6 @@ async fn special_files_rejected() {
     }
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn broken_symlink_fails() {
     let dir = tempfile::tempdir().unwrap();

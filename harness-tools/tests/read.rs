@@ -188,7 +188,6 @@ async fn missing_and_directory() {
     assert!(call(Path::new(""), None, None).run().await.is_err());
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn special_files_rejected() {
     let dir = tempfile::tempdir().unwrap();

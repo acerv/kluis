@@ -7,6 +7,11 @@
 //! describes the tool to the model (a `genai` tool). The host
 //! deserializes the model's tool-call arguments into the type, calls
 //! `run()`, and sends back the output or [`ToolError`].
+//!
+//! Only Linux is supported.
+
+#[cfg(not(target_os = "linux"))]
+compile_error!("harness-tools only supports Linux");
 
 mod edit;
 mod error;
