@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
+
 //! Minimal tools for LLM harnesses.
 //!
 //! Each tool is a type holding the input of one call. Its `definition()`

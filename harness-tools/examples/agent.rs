@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
+
 //! Minimal agent loop: a model reads and writes files through genai.
 //!
 //! ```sh

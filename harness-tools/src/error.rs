@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
+
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
