@@ -21,6 +21,8 @@ use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 
+use hakoniwa::landlock::{CompatMode, Resource};
+use hakoniwa::{Container, Runctl};
 use landlock::{
     Access, AccessFs, AccessNet, BitFlags, CompatLevel, Compatible, NetPort, PathBeneath, PathFd,
     Ruleset, RulesetAttr, RulesetCreatedAttr, ABI,
@@ -117,6 +119,72 @@ impl Sandbox {
     pub fn allow_any_network(mut self) -> Self {
         self.network = Network::Any;
         self
+    }
+
+    /// A container showing only the allowed paths, at the same place, plus
+    /// `/dev`, `/proc` and a private `/tmp`. Commands run in it as the
+    /// current user, on the host network.
+    ///
+    /// Fails if a path is missing or not UTF-8. Starting a command in it
+    /// fails without user namespaces, or without Landlock TCP support
+    /// (Linux 6.7) unless any network is allowed.
+    pub fn container(&self) -> Result<Container, SandboxError> {
+        let mut container = Container::new();
+        container
+            .runctl(Runctl::MountFallback)
+            .devfsmount("/dev")
+            .tmpfsmount("/tmp");
+        for (path, writable) in self.mounts()? {
+            if writable {
+                container.bindmount_rw(&path, &path);
+            } else {
+                container.bindmount_ro(&path, &path);
+            }
+        }
+        if let Network::Ports { connect, bind } = &self.network {
+            let mut ruleset = hakoniwa::landlock::Ruleset::default();
+            ruleset
+                .restrict(Resource::NET_TCP_CONNECT, CompatMode::Enforce)
+                .restrict(Resource::NET_TCP_BIND, CompatMode::Enforce);
+            for &port in connect {
+                ruleset.allow_tcp_connect(port);
+            }
+            for &port in bind {
+                ruleset.allow_tcp_bind(port);
+            }
+            container.landlock_ruleset(ruleset);
+        }
+        Ok(container)
+    }
+
+    /// Absolute paths to mount and whether they are writable, without the
+    /// ones already shown by a mount of a parent folder.
+    fn mounts(&self) -> Result<Vec<(String, bool)>, SandboxError> {
+        let mut all = Vec::new();
+        for (paths, writable) in [(&self.read, false), (&self.write, true)] {
+            for path in paths {
+                let error = |e: &dyn fmt::Display| SandboxError {
+                    message: format!("{}: {e}", path.display()),
+                };
+                let path = std::path::absolute(path).map_err(|e| error(&e))?;
+                std::fs::metadata(&path).map_err(|e| error(&e))?;
+                if path.to_str().is_none() {
+                    return Err(error(&"not UTF-8"));
+                }
+                all.push((path, writable));
+            }
+        }
+        // A mount inside another one would create its mount point on the
+        // host.
+        let covered = |(path, writable): &(PathBuf, bool)| {
+            all.iter()
+                .any(|(other, w)| other != path && path.starts_with(other) && (*w || !writable))
+        };
+        Ok(all
+            .iter()
+            .filter(|m| !covered(m))
+            .filter_map(|(path, writable)| Some((path.to_str()?.to_owned(), *writable)))
+            .collect())
     }
 
     /// Restrict the calling thread, and every thread and process it starts
