@@ -3,7 +3,7 @@
 
 //! Default sandbox for an agent harness and the commands it runs.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::Sandbox;
 
@@ -55,11 +55,11 @@ impl Sandbox {
     /// [`Sandbox::container`].
     ///
     /// It may run programs from `/usr`, read the few `/etc` files commonly
-    /// needed, its DNS files and the CA certificates rustls uses, and change
-    /// the [`Options::write`] paths. It may connect to port 443 to reach the
-    /// model, and to [`Options::connect`], or anywhere with
-    /// [`Options::network`]. It may run at most 1024 processes and threads,
-    /// and store at most 1 GiB in `/tmp`.
+    /// needed, its DNS files, the CA certificates rustls uses and all of
+    /// `$HOME`, and change the [`Options::write`] paths. It may connect to
+    /// port 443 to reach the model, and to [`Options::connect`], or anywhere
+    /// with [`Options::network`]. It may run at most 1024 processes and
+    /// threads, and store at most 1 GiB in `/tmp`.
     pub fn with_defaults(options: &Options) -> Self {
         let mut sandbox = Sandbox::new()
             .max_processes(MAX_PROCESSES)
@@ -70,6 +70,10 @@ impl Sandbox {
             .filter(|p| p.exists())
         {
             sandbox = sandbox.allow_read(path);
+        }
+        // Toolchains, caches and settings of the user live there.
+        if let Some(home) = std::env::var_os("HOME").filter(|h| Path::new(h).is_dir()) {
+            sandbox = sandbox.allow_read(home);
         }
         // The certificates rustls loads, found the same way it finds them,
         // including SSL_CERT_FILE and SSL_CERT_DIR.

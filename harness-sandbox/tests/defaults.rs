@@ -99,6 +99,24 @@ fn network_option_allows_any_port() {
 }
 
 #[test]
+fn home_is_read_only() {
+    let home = std::env::var("HOME").unwrap();
+    let script = format!("ls -A {home} | wc -l; touch {home}/.harness-test");
+    let out = run(&Options::default(), &script);
+
+    let entries = std::fs::read_dir(&home).unwrap().count();
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        entries.to_string()
+    );
+    assert!(
+        stderr(&out).contains("Read-only file system"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
 fn processes_are_limited() {
     let out = run(&Options::default(), "ulimit -u");
     assert_eq!(out.stdout, b"1024\n");
