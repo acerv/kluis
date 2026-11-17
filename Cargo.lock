@@ -700,7 +700,6 @@ dependencies = [
  "clap",
  "harness-core",
  "harness-sandbox",
- "openssl-probe",
  "tempfile",
  "tokio",
 ]
@@ -723,6 +722,7 @@ version = "0.1.0"
 dependencies = [
  "landlock",
  "libc",
+ "openssl-probe",
  "tempfile",
 ]
 

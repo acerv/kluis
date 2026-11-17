@@ -12,6 +12,10 @@
 #[cfg(not(target_os = "linux"))]
 compile_error!("harness-sandbox only supports Linux");
 
+mod profile;
+
+pub use profile::{Options, Profile};
+
 use std::fmt;
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};

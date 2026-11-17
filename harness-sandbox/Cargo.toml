@@ -9,6 +9,5 @@ authors.workspace = true
 [dependencies]
 landlock.workspace = true
 libc.workspace = true
-
-[dev-dependencies]
+openssl-probe.workspace = true
 tempfile.workspace = true
