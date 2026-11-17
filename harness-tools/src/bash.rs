@@ -25,6 +25,9 @@ pub const MAX_BASH_OUTPUT: usize = 50 * 1024;
 /// Lines kept from the end of the output.
 pub const MAX_BASH_LINES: usize = 2000;
 
+/// Time limit in seconds when the call sets none.
+pub const DEFAULT_BASH_TIMEOUT: u64 = 600;
+
 /// How long to keep reading after the shell exits while background jobs
 /// still write; reset by every chunk of output.
 const EXIT_IDLE: Duration = Duration::from_millis(100);
@@ -66,7 +69,7 @@ impl fmt::Debug for BashContext {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BashTool {
     pub command: String,
-    /// Time limit in seconds; no limit when absent.
+    /// Time limit in seconds; [`DEFAULT_BASH_TIMEOUT`] when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<u64>,
 }
@@ -100,10 +103,10 @@ impl BashTool {
     /// The `bash` tool, as sent to the model.
     pub fn definition() -> Tool {
         Tool::new("bash")
-            .with_description(
+            .with_description(format!(
                 "Run a bash command and return its exit code and output. \
-                 Optionally set timeout in seconds.",
-            )
+                 Optionally set timeout in seconds (default {DEFAULT_BASH_TIMEOUT})."
+            ))
             .with_schema(Self::schema())
     }
 
@@ -124,9 +127,9 @@ impl BashTool {
             return Err(ToolError::new("timeout must be >= 1"));
         }
         // A timeout too large to represent means no limit.
-        let deadline = self
-            .timeout
-            .and_then(|secs| Instant::now().checked_add(Duration::from_secs(secs)));
+        let deadline = Instant::now().checked_add(Duration::from_secs(
+            self.timeout.unwrap_or(DEFAULT_BASH_TIMEOUT),
+        ));
 
         let (mut child, pipe) = spawn(&self.command, ctx).map_err(bash_error)?;
         let mut group = GroupGuard(child.id());

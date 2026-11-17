@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use harness_tools::{BashContext, BashTool, MAX_BASH_LINES, MAX_BASH_OUTPUT};
+use harness_tools::{BashContext, BashTool, DEFAULT_BASH_TIMEOUT, MAX_BASH_LINES, MAX_BASH_OUTPUT};
 
 fn call(command: &str, timeout: Option<u64>) -> BashTool {
     BashTool {
@@ -173,6 +173,16 @@ async fn zero_timeout_fails() {
 async fn huge_timeout_means_no_limit() {
     let out = call("echo hi", Some(u64::MAX)).run().await.unwrap();
     assert_eq!(out.output, "hi\n");
+}
+
+// Paused time jumps to the next timer when the runtime is idle, so this
+// does not wait for the default timeout.
+#[tokio::test(start_paused = true)]
+async fn default_timeout_applies() {
+    let start = tokio::time::Instant::now();
+    let out = call("sleep 30", None).run().await.unwrap();
+    assert!(out.timed_out);
+    assert_eq!(start.elapsed().as_secs(), DEFAULT_BASH_TIMEOUT);
 }
 
 #[tokio::test]
