@@ -59,6 +59,10 @@ pub struct Args {
     #[arg(long)]
     network: bool,
 
+    /// Also pass this environment variable to commands (repeatable).
+    #[arg(long, value_name = "NAME")]
+    pass_env: Vec<String>,
+
     /// Prompt to run once; starts an interactive chat when absent.
     prompt: Vec<String>,
 }
@@ -82,7 +86,15 @@ fn main() -> ExitCode {
     }
 }
 
-fn start(args: Args, tools: ToolContext) -> Result<(), Error> {
+fn start(args: Args, mut tools: ToolContext) -> Result<(), Error> {
+    // Commands run as the same user: keep them away from the API keys in
+    // our memory and environment.
+    harness_sandbox::protect_self()?;
+    tools.bash.env = Some(harness_sandbox::command_env(
+        std::env::vars_os(),
+        &args.pass_env,
+    ));
+
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?

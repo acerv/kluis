@@ -6,6 +6,8 @@
 use std::ffi::CStr;
 use std::io;
 
+use crate::protect::set_dumpable;
+
 /// Takes the network away from a process, e.g. a command before `exec`.
 ///
 /// The process moves to new user and network namespaces, keeping its user
@@ -33,6 +35,10 @@ impl NoNetwork {
     /// Only makes system calls, so it is safe to use in
     /// `Command::pre_exec`.
     pub fn apply(&self) -> io::Result<()> {
+        // Children of a protected harness are not dumpable until `exec`,
+        // which keeps them from writing their own id maps. Their memory is
+        // replaced right after, so it is safe to drop the protection.
+        set_dumpable(true)?;
         // SAFETY: plain system call.
         if unsafe { libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNET) } != 0 {
             return Err(io::Error::last_os_error());

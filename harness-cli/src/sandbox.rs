@@ -37,6 +37,7 @@ pub fn tools(args: &Args) -> ToolContext {
     ToolContext {
         bash: BashContext {
             pre_exec: Some(Arc::new(move || no_network.apply())),
+            ..BashContext::default()
         },
     }
 }

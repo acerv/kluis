@@ -105,6 +105,7 @@ async fn bash_uses_tool_context() {
     let ctx = ToolContext {
         bash: BashContext {
             pre_exec: Some(Arc::new(|| Err(std::io::Error::from_raw_os_error(1)))),
+            ..BashContext::default()
         },
     };
 

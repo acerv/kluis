@@ -14,11 +14,15 @@
 #[cfg(not(target_os = "linux"))]
 compile_error!("harness-sandbox only supports Linux");
 
+mod env;
 mod network;
 mod profile;
+mod protect;
 
+pub use env::command_env;
 pub use network::NoNetwork;
 pub use profile::Options;
+pub use protect::protect_self;
 
 use std::fmt;
 use std::path::PathBuf;

@@ -16,6 +16,7 @@ fn call(command: &str, timeout: Option<u64>) -> BashTool {
 fn with_hook(hook: impl Fn() -> std::io::Result<()> + Send + Sync + 'static) -> BashContext {
     BashContext {
         pre_exec: Some(Arc::new(hook)),
+        ..BashContext::default()
     }
 }
 
@@ -233,4 +234,26 @@ async fn failing_hook_stops_command() {
 
     let err = call("echo never", None).run_with(&ctx).await.unwrap_err();
     assert!(err.message.contains("Operation not permitted"), "{err}");
+}
+
+#[tokio::test]
+async fn env_replaces_inherited_environment() {
+    let ctx = BashContext {
+        env: Some(vec![("HARNESS_TEST".into(), "value".into())]),
+        ..BashContext::default()
+    };
+
+    // Cargo gives tests CARGO_* variables; the command must not see them.
+    let script = "echo \"$HARNESS_TEST ${CARGO_MANIFEST_DIR-unset}\"";
+    let out = call(script, None).run_with(&ctx).await.unwrap();
+    assert_eq!(out.output, "value unset\n");
+}
+
+#[tokio::test]
+async fn environment_inherited_by_default() {
+    let out = call("echo \"${CARGO_MANIFEST_DIR-unset}\"", None)
+        .run()
+        .await
+        .unwrap();
+    assert_eq!(out.output, format!("{}\n", env!("CARGO_MANIFEST_DIR")));
 }

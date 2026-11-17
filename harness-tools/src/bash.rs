@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
+use std::ffi::OsString;
 use std::fmt;
 use std::io;
 use std::os::unix::process::ExitStatusExt;
@@ -42,12 +43,21 @@ pub struct BashContext {
     /// session, e.g. to apply a sandbox. It runs between `fork` and `exec`,
     /// so it must not allocate or take locks. An error stops the command.
     pub pre_exec: Option<PreExec>,
+    /// The only environment variables of the command when set; it inherits
+    /// the host environment otherwise.
+    pub env: Option<Vec<(OsString, OsString)>>,
 }
 
 impl fmt::Debug for BashContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Only the names: values may be secret.
+        let env = self
+            .env
+            .as_ref()
+            .map(|env| env.iter().map(|(k, _)| k).collect::<Vec<_>>());
         f.debug_struct("BashContext")
             .field("pre_exec", &self.pre_exec.is_some())
+            .field("env", &env)
             .finish()
     }
 }
@@ -118,7 +128,7 @@ impl BashTool {
             .timeout
             .and_then(|secs| Instant::now().checked_add(Duration::from_secs(secs)));
 
-        let (mut child, pipe) = spawn(&self.command, ctx.pre_exec.clone()).map_err(bash_error)?;
+        let (mut child, pipe) = spawn(&self.command, ctx).map_err(bash_error)?;
         let mut group = GroupGuard(child.id());
         let mut pipe = Some(pipe);
         let mut filter = Filter::default();
@@ -176,9 +186,8 @@ impl BashTool {
     }
 }
 
-/// Start `command` with stdout and stderr on a single pipe, running
-/// `hook` in its process before `exec`.
-fn spawn(command: &str, hook: Option<PreExec>) -> io::Result<(Child, Receiver)> {
+/// Start `command` with stdout and stderr on a single pipe, as `ctx` asks.
+fn spawn(command: &str, ctx: &BashContext) -> io::Result<(Child, Receiver)> {
     let (reader, writer) = io::pipe()?;
     let mut cmd = Command::new("bash");
     cmd.arg("-c")
@@ -187,6 +196,10 @@ fn spawn(command: &str, hook: Option<PreExec>) -> io::Result<(Child, Receiver)> 
         .stdout(writer.try_clone()?)
         .stderr(writer)
         .kill_on_drop(true);
+    if let Some(env) = &ctx.env {
+        cmd.env_clear().envs(env.iter().cloned());
+    }
+    let hook = ctx.pre_exec.clone();
     // SAFETY: setsid is async-signal-safe, and the hook must be too (see
     // `BashContext`). A new session has no controlling terminal, so
     // commands reading /dev/tty fail instead of stopping, and its process
