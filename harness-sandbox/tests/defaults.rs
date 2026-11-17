@@ -123,12 +123,9 @@ fn processes_are_limited() {
 }
 
 #[test]
-fn tmp_is_shared_with_host() {
-    let file = std::env::temp_dir().join(format!("harness-test-{}", std::process::id()));
-    let out = run(&Options::default(), &format!("echo x > {}", file.display()));
-    assert!(out.status.success(), "{}", stderr(&out));
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), "x\n");
-    std::fs::remove_file(&file).unwrap();
+fn tmp_is_limited() {
+    let out = run(&Options::default(), "df --output=size -B1 /tmp | tail -1");
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "1073741824");
 }
 
 #[test]

@@ -34,6 +34,9 @@ const HTTPS: u16 = 443;
 /// Processes and threads the harness and its commands may run at once.
 const MAX_PROCESSES: u64 = 1024;
 
+/// Size of the private `/tmp`, which lives in memory.
+const MAX_TMP_SIZE: u64 = 1 << 30;
+
 /// What to allow on top of the defaults. Paths must exist.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Options {
@@ -53,12 +56,14 @@ impl Sandbox {
     ///
     /// It may run programs from `/usr`, read the few `/etc` files commonly
     /// needed, its DNS files, the CA certificates rustls uses and all of
-    /// `$HOME`, and change `/tmp`, `$TMPDIR` and the [`Options::write`]
-    /// paths. It may connect to port 443 to reach the model, and to
-    /// [`Options::connect`], or anywhere with [`Options::network`]. It may
-    /// run at most 1024 processes and threads.
+    /// `$HOME`, and change the [`Options::write`] paths. It may connect to
+    /// port 443 to reach the model, and to [`Options::connect`], or anywhere
+    /// with [`Options::network`]. It may run at most 1024 processes and
+    /// threads, and store at most 1 GiB in `/tmp`.
     pub fn with_defaults(options: &Options) -> Self {
-        let mut sandbox = Sandbox::new().max_processes(MAX_PROCESSES);
+        let mut sandbox = Sandbox::new()
+            .max_processes(MAX_PROCESSES)
+            .max_tmp_size(MAX_TMP_SIZE);
         for path in DEFAULT_READ
             .iter()
             .map(PathBuf::from)
@@ -69,13 +74,6 @@ impl Sandbox {
         // Toolchains, caches and settings of the user live there.
         if let Some(home) = std::env::var_os("HOME").filter(|h| Path::new(h).is_dir()) {
             sandbox = sandbox.allow_read(home);
-        }
-        // Temporary files, shared with the host.
-        let tmpdir = std::env::var_os("TMPDIR").map(PathBuf::from);
-        for path in [Some(PathBuf::from("/tmp")), tmpdir].into_iter().flatten() {
-            if path.is_dir() {
-                sandbox = sandbox.allow_write(path);
-            }
         }
         // The certificates rustls loads, found the same way it finds them,
         // including SSL_CERT_FILE and SSL_CERT_DIR.

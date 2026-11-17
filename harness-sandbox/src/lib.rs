@@ -28,7 +28,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use hakoniwa::landlock::{CompatMode, Resource, Ruleset};
-use hakoniwa::{Container, Rlimit, Runctl};
+use hakoniwa::{Container, MountOptions, Rlimit, Runctl};
 
 /// Folders and network the harness may use.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -37,6 +37,7 @@ pub struct Sandbox {
     write: Vec<PathBuf>,
     network: Network,
     max_processes: Option<u64>,
+    max_tmp_size: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,16 +109,31 @@ impl Sandbox {
         self
     }
 
+    /// Let the private `/tmp` hold at most `bytes`; it lives in memory.
+    pub fn max_tmp_size(mut self, bytes: u64) -> Self {
+        self.max_tmp_size = Some(bytes);
+        self
+    }
+
     /// A container showing only the allowed paths, at the same place, plus
-    /// `/dev` and `/proc`. Commands run in it as the current user, on the
-    /// host network.
+    /// `/dev`, `/proc` and a private `/tmp`. Commands run in it as the
+    /// current user, on the host network.
     ///
     /// Fails if a path is missing or not UTF-8. Starting a command in it
     /// fails without user namespaces, or without Landlock TCP support
     /// (Linux 6.7) unless any network is allowed.
     pub fn container(&self) -> Result<Container, SandboxError> {
         let mut container = Container::new();
-        container.runctl(Runctl::MountFallback).devfsmount("/dev");
+        container
+            .runctl(Runctl::MountFallback)
+            .devfsmount("/dev")
+            .mount(
+                "tmpfs",
+                "/tmp",
+                "tmpfs",
+                MountOptions::NOSUID | MountOptions::NODEV,
+                self.max_tmp_size.map(|bytes| format!("size={bytes}")),
+            );
         for (path, writable) in self.mounts()? {
             if writable {
                 container.bindmount_rw(&path, &path);
