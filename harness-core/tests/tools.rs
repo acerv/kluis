@@ -72,6 +72,18 @@ async fn runs_write() {
 }
 
 #[tokio::test]
+async fn runs_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("a.txt");
+    std::fs::write(&f, "hi\n").unwrap();
+
+    let args = json!({ "path": f, "edits": [{"oldText": "hi", "newText": "bye"}] });
+    let resp = run(&call("edit", args)).await;
+    assert_eq!(content(&resp), json!({"replacements": 1}));
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "bye\n");
+}
+
+#[tokio::test]
 async fn every_definition_is_dispatched() {
     for tool in definitions() {
         let name = tool.name.as_ref();

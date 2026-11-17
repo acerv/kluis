@@ -8,11 +8,13 @@
 //! deserializes the model's tool-call arguments into the type, calls
 //! `run()`, and sends back the output or [`ToolError`].
 
+mod edit;
 mod error;
 mod path;
 mod read;
 mod write;
 
+pub use edit::{Edit, EditOutput, EditTool};
 pub use error::ToolError;
 pub use read::{ReadOutput, ReadTool, DEFAULT_READ_LIMIT};
 pub use write::{WriteOutput, WriteTool};
