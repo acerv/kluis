@@ -34,8 +34,8 @@ const HTTPS: u16 = 443;
 /// Processes and threads the harness and its commands may run at once.
 const MAX_PROCESSES: u64 = 1024;
 
-/// Size of the private `/tmp`, which lives in memory.
-const MAX_TMP_SIZE: u64 = 1 << 30;
+/// Share of the memory the private `/tmp`, which lives there, may use.
+const TMP_MEMORY_PERCENT: u64 = 10;
 
 /// What to allow on top of the defaults. Paths must exist.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -59,11 +59,11 @@ impl Sandbox {
     /// `$HOME`, and change the [`Options::write`] paths. It may connect to
     /// port 443 to reach the model, and to [`Options::connect`], or anywhere
     /// with [`Options::network`]. It may run at most 1024 processes and
-    /// threads, and store at most 1 GiB in `/tmp`.
+    /// threads, and store in `/tmp` at most 10% of the memory.
     pub fn with_defaults(options: &Options) -> Self {
         let mut sandbox = Sandbox::new()
             .max_processes(MAX_PROCESSES)
-            .max_tmp_size(MAX_TMP_SIZE);
+            .max_tmp_size(total_memory() * TMP_MEMORY_PERCENT / 100);
         for path in DEFAULT_READ
             .iter()
             .map(PathBuf::from)
@@ -95,5 +95,19 @@ impl Sandbox {
             sandbox = sandbox.allow_connect(port);
         }
         sandbox
+    }
+}
+
+/// Physical memory of the machine in bytes.
+fn total_memory() -> u64 {
+    // SAFETY: sysinfo only fills the struct it is given.
+    unsafe {
+        let mut info: libc::sysinfo = std::mem::zeroed();
+        if libc::sysinfo(&mut info) != 0 {
+            // Cannot happen with a valid pointer; 0 would mean no limit.
+            return 1 << 30;
+        }
+        // `totalram` is a `c_ulong`, 32 bits wide on some machines.
+        info.totalram as u64 * u64::from(info.mem_unit)
     }
 }

@@ -125,7 +125,12 @@ fn processes_are_limited() {
 #[test]
 fn tmp_is_limited() {
     let out = run(&Options::default(), "df --output=size -B1 /tmp | tail -1");
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "1073741824");
+    let size: u64 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap();
+
+    // 10% of MemTotal, which /proc/meminfo gives in KiB, in whole pages.
+    let meminfo = std::fs::read_to_string("/proc/meminfo").unwrap();
+    let total: u64 = meminfo.split_whitespace().nth(1).unwrap().parse().unwrap();
+    assert_eq!(size, (total * 1024 / 10).div_ceil(4096) * 4096);
 }
 
 #[test]
