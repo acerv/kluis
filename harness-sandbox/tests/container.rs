@@ -208,19 +208,18 @@ fn any_network_allows_connect() {
 }
 
 #[test]
-fn bind_only_allowed_port() {
+fn bind_needs_any_network() {
     if !Path::new(PYTHON).exists() {
         return;
     }
-    let (port, other) = (free_port(), free_port());
-    let sandbox = system().allow_bind(port);
+    let port = free_port();
 
-    let out = run(&sandbox, &bind(port));
-    assert!(out.status.success(), "{}", stderr(&out));
-    let out = run(&sandbox, &bind(other));
+    let out = run(&system().allow_connect(port), &bind(port));
     assert!(
         stderr(&out).contains("Permission denied"),
         "{}",
         stderr(&out)
     );
+    let out = run(&system().allow_any_network(), &bind(port));
+    assert!(out.status.success(), "{}", stderr(&out));
 }

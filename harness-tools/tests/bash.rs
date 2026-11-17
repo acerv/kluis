@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
-use std::net::{Ipv4Addr, TcpListener, TcpStream};
-use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use harness_sandbox::Sandbox;
 use harness_tools::{BashContext, BashTool, MAX_BASH_LINES, MAX_BASH_OUTPUT};
 
 fn call(command: &str, timeout: Option<u64>) -> BashTool {
@@ -236,29 +233,4 @@ async fn failing_hook_stops_command() {
 
     let err = call("echo never", None).run_with(&ctx).await.unwrap_err();
     assert!(err.message.contains("Operation not permitted"), "{err}");
-}
-
-#[tokio::test]
-async fn sandbox_hook_blocks_network_of_commands_only() {
-    let server = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-    let port = server.local_addr().unwrap().port();
-
-    // System folders so bash can run; no network.
-    let mut sandbox = Sandbox::new();
-    for path in ["/usr", "/bin", "/lib", "/lib64", "/etc"] {
-        if Path::new(path).exists() {
-            sandbox = sandbox.allow_read(path);
-        }
-    }
-    let prepared = sandbox.prepare().unwrap();
-    let ctx = with_hook(move || prepared.restrict_self());
-
-    let command = format!("echo ok; exec 3<>/dev/tcp/127.0.0.1/{port}");
-    let out = call(&command, Some(10)).run_with(&ctx).await.unwrap();
-    assert!(out.output.starts_with("ok\n"), "{}", out.output);
-    assert!(out.output.contains("Permission denied"), "{}", out.output);
-    assert_ne!(out.exit_code, Some(0));
-
-    // The harness itself keeps its network.
-    assert!(TcpStream::connect((Ipv4Addr::LOCALHOST, port)).is_ok());
 }

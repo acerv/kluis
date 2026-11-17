@@ -49,12 +49,12 @@ pub struct Args {
     #[arg(long, value_name = "PATH")]
     allow_write: Vec<PathBuf>,
 
-    /// Also let the harness connect to this TCP port, e.g. for a local
-    /// model (repeatable).
+    /// Also let the harness and its commands connect to this TCP port,
+    /// e.g. for a local model (repeatable).
     #[arg(long, value_name = "PORT")]
     allow_connect: Vec<u16>,
 
-    /// Let commands use the network.
+    /// Allow any network.
     #[arg(long)]
     network: bool,
 
