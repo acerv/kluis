@@ -631,6 +631,7 @@ name = "harness-tools"
 version = "0.1.0"
 dependencies = [
  "genai",
+ "harness-sandbox",
  "libc",
  "serde",
  "serde_json",

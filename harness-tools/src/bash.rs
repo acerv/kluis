@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
+use std::fmt;
 use std::io;
 use std::os::unix::process::ExitStatusExt;
 use std::process::{ExitStatus, Stdio};
+use std::sync::Arc;
 use std::time::Duration;
 
 use genai::chat::Tool;
@@ -29,6 +31,26 @@ const EXIT_IDLE: Duration = Duration::from_millis(100);
 /// Longest time to keep reading after the shell exits, so a background
 /// job that never stops writing cannot hold the tool.
 const EXIT_GRACE: Duration = Duration::from_secs(2);
+
+/// Code run in the command's process just before `exec`.
+pub type PreExec = Arc<dyn Fn() -> io::Result<()> + Send + Sync>;
+
+/// How the host wants commands to run.
+#[derive(Clone, Default)]
+pub struct BashContext {
+    /// Runs in the command's process before `exec`, after it gets its own
+    /// session, e.g. to apply a sandbox. It runs between `fork` and `exec`,
+    /// so it must not allocate or take locks. An error stops the command.
+    pub pre_exec: Option<PreExec>,
+}
+
+impl fmt::Debug for BashContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BashContext")
+            .field("pre_exec", &self.pre_exec.is_some())
+            .finish()
+    }
+}
 
 /// A call of the `bash` tool.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,6 +105,11 @@ impl BashTool {
     /// Background jobs keep running after the shell exits; their output is
     /// read until it stays quiet for a moment.
     pub async fn run(self) -> Result<BashOutput, ToolError> {
+        self.run_with(&BashContext::default()).await
+    }
+
+    /// Like [`run`](Self::run), with the host's [`BashContext`].
+    pub async fn run_with(self, ctx: &BashContext) -> Result<BashOutput, ToolError> {
         if self.timeout == Some(0) {
             return Err(ToolError::new("timeout must be >= 1"));
         }
@@ -91,7 +118,7 @@ impl BashTool {
             .timeout
             .and_then(|secs| Instant::now().checked_add(Duration::from_secs(secs)));
 
-        let (mut child, pipe) = spawn(&self.command).map_err(bash_error)?;
+        let (mut child, pipe) = spawn(&self.command, ctx.pre_exec.clone()).map_err(bash_error)?;
         let mut group = GroupGuard(child.id());
         let mut pipe = Some(pipe);
         let mut filter = Filter::default();
@@ -149,8 +176,9 @@ impl BashTool {
     }
 }
 
-/// Start `command` with stdout and stderr on a single pipe.
-fn spawn(command: &str) -> io::Result<(Child, Receiver)> {
+/// Start `command` with stdout and stderr on a single pipe, running
+/// `hook` in its process before `exec`.
+fn spawn(command: &str, hook: Option<PreExec>) -> io::Result<(Child, Receiver)> {
     let (reader, writer) = io::pipe()?;
     let mut cmd = Command::new("bash");
     cmd.arg("-c")
@@ -159,15 +187,19 @@ fn spawn(command: &str) -> io::Result<(Child, Receiver)> {
         .stdout(writer.try_clone()?)
         .stderr(writer)
         .kill_on_drop(true);
-    // SAFETY: setsid is async-signal-safe. A new session has no controlling
-    // terminal, so commands reading /dev/tty fail instead of stopping, and
-    // its process group can be killed as a whole.
+    // SAFETY: setsid is async-signal-safe, and the hook must be too (see
+    // `BashContext`). A new session has no controlling terminal, so
+    // commands reading /dev/tty fail instead of stopping, and its process
+    // group can be killed as a whole.
     unsafe {
-        cmd.pre_exec(|| {
+        cmd.pre_exec(move || {
             if libc::setsid() == -1 {
                 return Err(io::Error::last_os_error());
             }
-            Ok(())
+            match &hook {
+                Some(hook) => hook(),
+                None => Ok(()),
+            }
         });
     }
     let child = cmd.spawn()?;

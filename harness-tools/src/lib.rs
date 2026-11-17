@@ -20,7 +20,7 @@ mod path;
 mod read;
 mod write;
 
-pub use bash::{BashOutput, BashTool, MAX_BASH_LINES, MAX_BASH_OUTPUT};
+pub use bash::{BashContext, BashOutput, BashTool, PreExec, MAX_BASH_LINES, MAX_BASH_OUTPUT};
 pub use edit::{Edit, EditOutput, EditTool};
 pub use error::ToolError;
 pub use read::{ReadOutput, ReadTool, DEFAULT_READ_LIMIT, MAX_READ_BYTES};
