@@ -10,6 +10,7 @@
 use genai::chat::{ChatMessage, ChatRequest, ToolCall, ToolResponse};
 use genai::Client;
 use harness_tools::{ReadTool, WriteTool};
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 const MAX_TURNS: usize = 10;
@@ -18,24 +19,19 @@ type Error = Box<dyn std::error::Error>;
 
 /// Run one tool call and return its result as JSON text for the model.
 async fn run(call: &ToolCall) -> String {
-    let args = call.fn_arguments.clone();
-
-    let result: Result<Value, Error> = match call.fn_name.as_str() {
-        "read" => match serde_json::from_value::<ReadTool>(args) {
-            Ok(tool) => tool.run().await.map(|out| json!(out)).map_err(Into::into),
-            Err(e) => Err(e.into()),
-        },
-        "write" => match serde_json::from_value::<WriteTool>(args) {
-            Ok(tool) => tool.run().await.map(|out| json!(out)).map_err(Into::into),
-            Err(e) => Err(e.into()),
-        },
-        other => Err(format!("unknown tool {other}").into()),
-    };
-
-    match result {
+    match dispatch(call).await {
         Ok(output) => output.to_string(),
         Err(err) => json!({ "error": err.to_string() }).to_string(),
     }
+}
+
+async fn dispatch(call: &ToolCall) -> Result<Value, Error> {
+    let args = &call.fn_arguments;
+    Ok(match call.fn_name.as_str() {
+        "read" => json!(ReadTool::deserialize(args)?.run().await?),
+        "write" => json!(WriteTool::deserialize(args)?.run().await?),
+        other => return Err(format!("unknown tool {other}").into()),
+    })
 }
 
 #[tokio::main]
