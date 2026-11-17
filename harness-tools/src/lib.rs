@@ -10,8 +10,9 @@
 
 mod error;
 mod path;
-mod tools;
+mod read;
+mod write;
 
 pub use error::ToolError;
-pub use tools::read::{ReadOutput, ReadTool, DEFAULT_READ_LIMIT};
-pub use tools::write::{WriteOutput, WriteTool};
+pub use read::{ReadOutput, ReadTool, DEFAULT_READ_LIMIT};
+pub use write::{WriteOutput, WriteTool};
