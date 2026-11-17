@@ -78,7 +78,9 @@ impl Sandbox {
         self
     }
 
-    /// Allow reading, executing and changing anything below `path`.
+    /// Allow reading, executing and changing anything below `path`, but
+    /// its `.git`, which stays read-only unless allowed itself: git on the
+    /// host would otherwise run the hooks and commands written there.
     pub fn allow_write(mut self, path: impl Into<PathBuf>) -> Self {
         self.write.push(path.into());
         self
@@ -132,7 +134,8 @@ impl Sandbox {
     }
 
     /// Absolute paths to mount and whether they are writable, without the
-    /// ones already shown by a mount of a parent folder.
+    /// ones already shown by a mount of a parent folder, plus the `.git` of
+    /// writable folders as read-only.
     fn mounts(&self) -> Result<Vec<(String, bool)>, SandboxError> {
         let mut all = Vec::new();
         for (paths, writable) in [(&self.read, false), (&self.write, true)] {
@@ -154,10 +157,19 @@ impl Sandbox {
             all.iter()
                 .any(|(other, w)| other != path && path.starts_with(other) && (*w || !writable))
         };
-        Ok(all
-            .iter()
-            .filter(|m| !covered(m))
-            .filter_map(|(path, writable)| Some((path.to_str()?.to_owned(), *writable)))
+        let mut mounts: Vec<_> = all.iter().filter(|m| !covered(m)).cloned().collect();
+        let writable: Vec<_> = all.iter().filter(|(_, w)| *w).map(|(p, _)| p).collect();
+        for root in &writable {
+            let git = root.join(".git");
+            if git.exists() && !writable.iter().any(|w| w.starts_with(&git)) {
+                mounts.push((git, false));
+            }
+        }
+        Ok(mounts
+            .into_iter()
+            .filter_map(|(path, writable)| {
+                Some((path.into_os_string().into_string().ok()?, writable))
+            })
             .collect())
     }
 }

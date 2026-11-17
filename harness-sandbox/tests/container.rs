@@ -159,6 +159,70 @@ fn write_inside_read_only_folder() {
     assert!(sub.join("new.txt").exists());
 }
 
+/// A writable folder holding a `.git` folder with `config`.
+fn repo() -> (tempfile::TempDir, PathBuf) {
+    let (dir, _) = folder();
+    let git = dir.path().join(".git");
+    std::fs::create_dir_all(git.join("hooks")).unwrap();
+    std::fs::write(git.join("config"), "").unwrap();
+    (dir, git)
+}
+
+#[test]
+fn git_folder_read_only() {
+    let (dir, git) = repo();
+    let sandbox = system().allow_write(dir.path());
+
+    let script = format!(
+        "cat {0}/config && echo x > {1}/file.txt && echo y > {0}/hooks/pre-commit",
+        git.display(),
+        dir.path().display()
+    );
+    let out = run(&sandbox, &script);
+    assert!(
+        stderr(&out).contains("Read-only file system"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("file.txt")).unwrap(),
+        "x\n"
+    );
+    assert!(!git.join("hooks/pre-commit").exists());
+}
+
+#[test]
+fn git_file_read_only() {
+    // Worktrees and submodules point to their git folder with a file.
+    let (dir, _) = folder();
+    let git = dir.path().join(".git");
+    std::fs::write(&git, "gitdir: /elsewhere\n").unwrap();
+    let sandbox = system().allow_write(dir.path());
+
+    let out = run(
+        &sandbox,
+        &format!("echo 'gitdir: /evil' > {}", git.display()),
+    );
+    assert!(
+        stderr(&out).contains("Read-only file system"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&git).unwrap(),
+        "gitdir: /elsewhere\n"
+    );
+}
+
+#[test]
+fn git_folder_writable_when_allowed() {
+    let (dir, git) = repo();
+    let sandbox = system().allow_write(dir.path()).allow_write(&git);
+
+    let out = run(&sandbox, &format!("echo x > {}/config", git.display()));
+    assert!(out.status.success(), "{}", stderr(&out));
+}
+
 #[test]
 fn missing_path_fails() {
     let err = Sandbox::new()
