@@ -1,43 +1,32 @@
 mod common;
 
 use common::p;
-use harness_tools::{write, ToolCall, ToolOutput, WriteOutput, WriteParams};
+use harness_tools::{WriteOutput, WriteTool};
 use serde_json::json;
 
-#[test]
-fn call_roundtrip() {
-    let call = ToolCall::Write(WriteParams {
-        path: "a.txt".into(),
-        content: "hi".into(),
-    });
-    let v = serde_json::to_value(&call).unwrap();
-    assert_eq!(
-        v,
-        json!({"name":"write","input":{"path":"a.txt","content":"hi"}})
-    );
-    assert_eq!(serde_json::from_value::<ToolCall>(v).unwrap(), call);
-}
-
-#[test]
-fn name_case_variants() {
-    for name in ["write", "Write", "WRITE"] {
-        let call: ToolCall =
-            serde_json::from_value(json!({"name":name,"input":{"path":"a","content":"x"}}))
-                .unwrap();
-        assert!(matches!(call, ToolCall::Write(_)), "{name}");
-        assert_eq!(serde_json::to_value(&call).unwrap()["name"], "write");
+fn call(path: impl Into<String>, content: &str) -> WriteTool {
+    WriteTool {
+        path: path.into(),
+        content: content.into(),
     }
+}
 
-    let r = serde_json::from_value::<ToolCall>(
-        json!({"name":"wRiTe","input":{"path":"a","content":"x"}}),
-    );
-    assert!(r.is_err());
+fn parse(v: serde_json::Value) -> Result<WriteTool, serde_json::Error> {
+    serde_json::from_value(v)
 }
 
 #[test]
-fn missing_content_fails() {
-    let r = serde_json::from_value::<ToolCall>(json!({"name":"write","input":{"path":"a"}}));
-    assert!(r.is_err());
+fn input_roundtrip() {
+    let tool = call("a.txt", "hi");
+    let v = serde_json::to_value(&tool).unwrap();
+    assert_eq!(v, json!({"path":"a.txt","content":"hi"}));
+    assert_eq!(parse(v).unwrap(), tool);
+}
+
+#[test]
+fn missing_fields_fail() {
+    assert!(parse(json!({"path":"a"})).is_err());
+    assert!(parse(json!({"content":"x"})).is_err());
 }
 
 #[test]
@@ -46,32 +35,31 @@ fn wrong_types_fail() {
         json!({"path":"a","content":1}),
         json!({"path":null,"content":"x"}),
     ] {
-        let r = serde_json::from_value::<ToolCall>(json!({"name":"write","input":input}));
-        assert!(r.is_err(), "accepted {input}");
+        assert!(parse(input.clone()).is_err(), "accepted {input}");
     }
 }
 
 #[test]
 fn unknown_fields_ignored() {
-    let call: ToolCall = serde_json::from_value(
-        json!({"name":"write","input":{"path":"a","content":"x","mode":"append"}}),
-    )
-    .unwrap();
     assert_eq!(
-        call,
-        ToolCall::Write(WriteParams {
-            path: "a".into(),
-            content: "x".into(),
-        })
+        parse(json!({"path":"a","content":"x","mode":"append"})).unwrap(),
+        call("a", "x")
     );
 }
 
 #[test]
-fn output_tagged_shape() {
-    let out = ToolOutput::Write(WriteOutput { bytes_written: 3 });
+fn output_shape() {
+    let out = WriteOutput { bytes_written: 3 };
     let v = serde_json::to_value(&out).unwrap();
-    assert_eq!(v, json!({"name":"write","output":{"bytes_written":3}}));
-    assert_eq!(serde_json::from_value::<ToolOutput>(v).unwrap(), out);
+    assert_eq!(v, json!({"bytes_written":3}));
+    assert_eq!(serde_json::from_value::<WriteOutput>(v).unwrap(), out);
+}
+
+#[test]
+fn definition() {
+    let tool = WriteTool::definition();
+    assert_eq!(tool.name.as_ref(), "write");
+    assert_eq!(tool.schema, Some(WriteTool::schema()));
 }
 
 #[tokio::test]
@@ -79,21 +67,11 @@ async fn new_and_overwrite() {
     let dir = tempfile::tempdir().unwrap();
     let f = dir.path().join("a.txt");
 
-    let out = write(WriteParams {
-        path: p(&f),
-        content: "hello".into(),
-    })
-    .await
-    .unwrap();
+    let out = call(p(&f), "hello").run().await.unwrap();
     assert_eq!(out.bytes_written, 5);
     assert_eq!(std::fs::read_to_string(&f).unwrap(), "hello");
 
-    write(WriteParams {
-        path: p(&f),
-        content: "bye".into(),
-    })
-    .await
-    .unwrap();
+    call(p(&f), "bye").run().await.unwrap();
     assert_eq!(std::fs::read_to_string(&f).unwrap(), "bye");
 }
 
@@ -102,12 +80,7 @@ async fn creates_parents() {
     let dir = tempfile::tempdir().unwrap();
     let f = dir.path().join("x/y/z.txt");
 
-    write(WriteParams {
-        path: p(&f),
-        content: "deep".into(),
-    })
-    .await
-    .unwrap();
+    call(p(&f), "deep").run().await.unwrap();
     assert_eq!(std::fs::read_to_string(&f).unwrap(), "deep");
 }
 
@@ -117,12 +90,7 @@ async fn tilde_expands_to_home() {
     let home = tempfile::tempdir().unwrap();
     std::env::set_var("HOME", home.path());
 
-    write(WriteParams {
-        path: "~/sub/t.txt".into(),
-        content: "home".into(),
-    })
-    .await
-    .unwrap();
+    call("~/sub/t.txt", "home").run().await.unwrap();
     assert_eq!(
         std::fs::read_to_string(home.path().join("sub/t.txt")).unwrap(),
         "home"
@@ -136,12 +104,7 @@ async fn relative_path_uses_cwd() {
     let dir = tempfile::tempdir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
-    write(WriteParams {
-        path: "sub/rel.txt".into(),
-        content: "relative\n".into(),
-    })
-    .await
-    .unwrap();
+    call("sub/rel.txt", "relative\n").run().await.unwrap();
     assert_eq!(
         std::fs::read_to_string(dir.path().join("sub/rel.txt")).unwrap(),
         "relative\n"
@@ -153,12 +116,7 @@ async fn empty_content() {
     let dir = tempfile::tempdir().unwrap();
     let f = dir.path().join("empty");
 
-    let out = write(WriteParams {
-        path: p(&f),
-        content: String::new(),
-    })
-    .await
-    .unwrap();
+    let out = call(p(&f), "").run().await.unwrap();
     assert_eq!(out.bytes_written, 0);
     assert_eq!(std::fs::metadata(&f).unwrap().len(), 0);
 }
@@ -169,12 +127,7 @@ async fn counts_bytes_not_chars() {
     let f = dir.path().join("utf8");
     let content = "héllo 🦀";
 
-    let out = write(WriteParams {
-        path: p(&f),
-        content: content.into(),
-    })
-    .await
-    .unwrap();
+    let out = call(p(&f), content).run().await.unwrap();
     assert_eq!(out.bytes_written, content.len());
     assert_ne!(out.bytes_written, content.chars().count());
     assert_eq!(std::fs::read_to_string(&f).unwrap(), content);
@@ -187,32 +140,17 @@ async fn invalid_targets_fail() {
     std::fs::write(&file, "x").unwrap();
 
     // Target is a directory.
-    let err = write(WriteParams {
-        path: p(dir.path()),
-        content: "x".into(),
-    })
-    .await
-    .unwrap_err();
+    let err = call(p(dir.path()), "x").run().await.unwrap_err();
     assert!(err.message.contains(&p(dir.path())));
     assert!(err.message.contains("is a directory"));
 
     // A parent component is a regular file.
     let nested = file.join("child.txt");
-    let err = write(WriteParams {
-        path: p(&nested),
-        content: "x".into(),
-    })
-    .await
-    .unwrap_err();
+    let err = call(p(&nested), "x").run().await.unwrap_err();
     assert!(err.message.contains("child.txt"));
 
     // Empty path.
-    let r = write(WriteParams {
-        path: String::new(),
-        content: "x".into(),
-    })
-    .await;
-    assert!(r.is_err());
+    assert!(call("", "x").run().await.is_err());
 }
 
 #[tokio::test]
@@ -223,33 +161,21 @@ async fn trailing_slash_fails() {
 
     // Nothing exists at the path.
     let new = format!("{}/new/", p(dir.path()));
-    let err = write(WriteParams {
-        path: new.clone(),
-        content: "x".into(),
-    })
-    .await
-    .unwrap_err();
+    let err = call(new.clone(), "x").run().await.unwrap_err();
     assert!(err.message.contains(&new));
     assert!(err.message.contains("ends with '/'"));
     assert!(!dir.path().join("new").exists());
 
     // An existing regular file.
-    let err = write(WriteParams {
-        path: format!("{}/", p(&file)),
-        content: "x".into(),
-    })
-    .await
-    .unwrap_err();
+    let err = call(format!("{}/", p(&file)), "x").run().await.unwrap_err();
     assert!(err.message.contains("ends with '/'"));
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "keep");
 
     // An existing directory.
-    let err = write(WriteParams {
-        path: format!("{}/", p(dir.path())),
-        content: "x".into(),
-    })
-    .await
-    .unwrap_err();
+    let err = call(format!("{}/", p(dir.path())), "x")
+        .run()
+        .await
+        .unwrap_err();
     assert!(err.message.contains("ends with '/'"));
 }
 
@@ -262,12 +188,7 @@ async fn symlink_writes_target() {
     std::fs::write(&target, "old").unwrap();
     std::os::unix::fs::symlink(&target, &link).unwrap();
 
-    write(WriteParams {
-        path: p(&link),
-        content: "new".into(),
-    })
-    .await
-    .unwrap();
+    call(p(&link), "new").run().await.unwrap();
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
     assert!(std::fs::symlink_metadata(&link)
         .unwrap()
@@ -286,11 +207,7 @@ async fn permission_denied() {
     std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
 
     let f = ro.join("a.txt");
-    let r = write(WriteParams {
-        path: p(&f),
-        content: "x".into(),
-    })
-    .await;
+    let r = call(p(&f), "x").run().await;
 
     // Restore so tempdir cleanup works.
     std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -314,10 +231,7 @@ async fn special_files_rejected() {
     assert!(status.success());
 
     for path in [fifo.as_path(), std::path::Path::new("/dev/null")] {
-        let fut = write(WriteParams {
-            path: p(path),
-            content: "x".into(),
-        });
+        let fut = call(p(path), "x").run();
         let r = tokio::time::timeout(std::time::Duration::from_secs(5), fut)
             .await
             .unwrap_or_else(|_| panic!("{} hung", path.display()));
@@ -336,12 +250,7 @@ async fn overwrite_keeps_permissions() {
     std::fs::write(&f, "#!/bin/sh\n").unwrap();
     std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-    write(WriteParams {
-        path: p(&f),
-        content: "#!/bin/sh\necho hi\n".into(),
-    })
-    .await
-    .unwrap();
+    call(p(&f), "#!/bin/sh\necho hi\n").run().await.unwrap();
 
     let mode = std::fs::metadata(&f).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o755);
@@ -358,11 +267,7 @@ async fn read_only_file_fails() {
     std::fs::write(&f, "keep").unwrap();
     std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o444)).unwrap();
 
-    let r = write(WriteParams {
-        path: p(&f),
-        content: "changed".into(),
-    })
-    .await;
+    let r = call(p(&f), "changed").run().await;
 
     // Root bypasses permission checks; nothing to verify then.
     if r.is_ok() {
@@ -380,12 +285,7 @@ async fn broken_symlink_fails() {
     let link = dir.path().join("dangling");
     std::os::unix::fs::symlink(&target, &link).unwrap();
 
-    let err = write(WriteParams {
-        path: p(&link),
-        content: "x".into(),
-    })
-    .await
-    .unwrap_err();
+    let err = call(p(&link), "x").run().await.unwrap_err();
     assert!(err.message.contains("broken symlink"));
     assert!(!target.exists());
 }
