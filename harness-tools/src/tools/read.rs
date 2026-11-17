@@ -1,3 +1,4 @@
+use genai::chat::Tool;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -30,6 +31,16 @@ impl ReadParams {
             },
             "required": ["path"]
         })
+    }
+
+    /// The `read` tool, as sent to the model.
+    pub fn tool() -> Tool {
+        Tool::new("read")
+            .with_description(
+                "Read a text file. Use offset and limit to page through \
+                 large files.",
+            )
+            .with_schema(Self::schema())
     }
 }
 

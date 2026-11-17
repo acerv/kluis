@@ -1,3 +1,4 @@
+use genai::chat::Tool;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -21,6 +22,13 @@ impl WriteParams {
             },
             "required": ["path", "content"]
         })
+    }
+
+    /// The `write` tool, as sent to the model.
+    pub fn tool() -> Tool {
+        Tool::new("write")
+            .with_description("Create or overwrite a file with the given content.")
+            .with_schema(Self::schema())
     }
 }
 
