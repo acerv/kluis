@@ -20,15 +20,15 @@ fn content(resp: &ToolResponse) -> Value {
 
 #[tokio::test]
 async fn response_matches_call() {
-    let resp = run(&call("bash", json!({}))).await;
+    let resp = run(&call("fly", json!({}))).await;
     assert_eq!(resp.call_id, "call_1");
-    assert_eq!(resp.fn_name.as_deref(), Some("bash"));
+    assert_eq!(resp.fn_name.as_deref(), Some("fly"));
 }
 
 #[tokio::test]
 async fn unknown_tool() {
-    let resp = run(&call("bash", json!({"cmd": "ls"}))).await;
-    assert_eq!(content(&resp), json!({"error": "unknown tool bash"}));
+    let resp = run(&call("fly", json!({"to": "moon"}))).await;
+    assert_eq!(content(&resp), json!({"error": "unknown tool fly"}));
 }
 
 #[tokio::test]
@@ -81,6 +81,20 @@ async fn runs_edit() {
     let resp = run(&call("edit", args)).await;
     assert_eq!(content(&resp), json!({"replacements": 1}));
     assert_eq!(std::fs::read_to_string(&f).unwrap(), "bye\n");
+}
+
+#[tokio::test]
+async fn runs_bash() {
+    let resp = run(&call("bash", json!({ "command": "echo hi" }))).await;
+    assert_eq!(
+        content(&resp),
+        json!({
+            "exit_code": 0,
+            "output": "hi\n",
+            "truncated": false,
+            "timed_out": false
+        })
+    );
 }
 
 #[tokio::test]
