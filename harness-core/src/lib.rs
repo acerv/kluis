@@ -3,6 +3,10 @@
 
 //! Agent core for LLM harnesses.
 //!
-//! [`tools`] offers the tools to the model and runs the calls it makes.
+//! An [`Agent`] talks to a model and runs the tool calls it makes;
+//! [`tools`] holds the tools it offers and their dispatch.
 
+mod agent;
 pub mod tools;
+
+pub use agent::{Agent, Error, DEFAULT_MAX_TURNS};
