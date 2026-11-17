@@ -578,6 +578,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness-cli"
+version = "0.1.0"
+dependencies = [
+ "harness-core",
+ "tokio",
+]
+
+[[package]]
 name = "harness-core"
 version = "0.1.0"
 dependencies = [

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["harness-core", "harness-tools"]
+members = ["harness-cli", "harness-core", "harness-tools"]
 
 [workspace.package]
 version = "0.1.0"
