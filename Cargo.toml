@@ -5,7 +5,7 @@ members = ["harness-cli", "harness-core", "harness-sandbox", "harness-tools"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "GPL-2.0-only"
+license = "GPL-3.0-or-later"
 authors = ["Andrea Cervesato <andrea.cervesato@linux.dev>"]
 
 [workspace.dependencies]
