@@ -38,6 +38,10 @@ pub struct Args {
     #[arg(long)]
     no_sandbox: bool,
 
+    /// Strict sandbox: make the current folder read-only by default.
+    #[arg(long, conflicts_with = "no_sandbox")]
+    strict: bool,
+
     /// Also allow reading this path (repeatable).
     #[arg(long, value_name = "PATH")]
     allow_read: Vec<PathBuf>,
@@ -99,6 +103,8 @@ async fn run(args: Args, tools: ToolContext) -> Result<(), Error> {
 
     let sandbox = if args.no_sandbox {
         "no sandbox"
+    } else if args.strict {
+        "strict sandbox"
     } else {
         "sandboxed"
     };

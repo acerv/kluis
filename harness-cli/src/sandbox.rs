@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
 //! Sandbox of the harness: the default [`Profile`] of `harness-sandbox`,
-//! with the current folder always writable.
+//! with the current folder writable (or read-only with `--strict`).
 
 use std::sync::Arc;
 
@@ -24,10 +24,16 @@ pub struct Applied {
 ///
 /// Must run before any other thread starts: it also sets `TMPDIR`.
 pub fn apply(args: &Args) -> Result<Applied, Error> {
-    let mut write = vec![std::env::current_dir()?];
-    write.extend(args.allow_write.iter().cloned());
+    let cwd = std::env::current_dir()?;
+    let mut read = args.allow_read.clone();
+    let mut write = args.allow_write.clone();
+    if args.strict {
+        read.push(cwd);
+    } else {
+        write.push(cwd);
+    }
     let profile = Profile::new(&Options {
-        read: args.allow_read.clone(),
+        read,
         write,
         connect: args.allow_connect.clone(),
         network: args.network,
