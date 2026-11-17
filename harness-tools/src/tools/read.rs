@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
 use crate::error::ToolError;
 use crate::path::expand_tilde;
@@ -15,6 +16,21 @@ pub struct ReadParams {
     /// Maximum number of lines (>= 1). Defaults to [`DEFAULT_READ_LIMIT`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
+}
+
+impl ReadParams {
+    /// JSON Schema of these parameters.
+    pub fn schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path":   { "type": "string" },
+                "offset": { "type": "integer" },
+                "limit":  { "type": "integer" }
+            },
+            "required": ["path"]
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

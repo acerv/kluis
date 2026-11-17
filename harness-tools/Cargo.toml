@@ -7,9 +7,9 @@ license.workspace = true
 
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true
 tokio = { workspace = true, features = ["fs"] }
 
 [dev-dependencies]
-serde_json.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread", "time"] }

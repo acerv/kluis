@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
 use crate::error::ToolError;
 use crate::path::expand_tilde;
@@ -7,6 +8,20 @@ use crate::path::expand_tilde;
 pub struct WriteParams {
     pub path: String,
     pub content: String,
+}
+
+impl WriteParams {
+    /// JSON Schema of these parameters.
+    pub fn schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path":    { "type": "string" },
+                "content": { "type": "string" }
+            },
+            "required": ["path", "content"]
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
