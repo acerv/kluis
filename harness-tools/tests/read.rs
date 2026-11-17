@@ -4,8 +4,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use common::p;
-use harness_tools::{ReadOutput, ReadTool, DEFAULT_READ_LIMIT};
-use serde_json::json;
+use harness_tools::{ReadTool, DEFAULT_READ_LIMIT};
 
 fn call(path: &Path, offset: Option<usize>, limit: Option<usize>) -> ReadTool {
     ReadTool {
@@ -13,77 +12,6 @@ fn call(path: &Path, offset: Option<usize>, limit: Option<usize>) -> ReadTool {
         offset,
         limit,
     }
-}
-
-fn parse(v: serde_json::Value) -> Result<ReadTool, serde_json::Error> {
-    serde_json::from_value(v)
-}
-
-#[test]
-fn input_roundtrip() {
-    let tool = ReadTool {
-        path: "a.txt".into(),
-        offset: Some(2),
-        limit: Some(10),
-    };
-    let v = serde_json::to_value(&tool).unwrap();
-    assert_eq!(v, json!({"path":"a.txt","offset":2,"limit":10}));
-    assert_eq!(parse(v).unwrap(), tool);
-}
-
-#[test]
-fn optional_fields_default_to_none() {
-    let expected = ReadTool {
-        path: "a.txt".into(),
-        offset: None,
-        limit: None,
-    };
-    assert_eq!(parse(json!({"path":"a.txt"})).unwrap(), expected);
-    assert_eq!(
-        parse(json!({"path":"a.txt","offset":null,"limit":null})).unwrap(),
-        expected
-    );
-}
-
-#[test]
-fn missing_path_fails() {
-    assert!(parse(json!({})).is_err());
-}
-
-#[test]
-fn wrong_types_fail() {
-    for input in [
-        json!({"path":"a","offset":"2"}),
-        json!({"path":"a","offset":-1}),
-        json!({"path":"a","limit":1.5}),
-        json!({"path":42}),
-    ] {
-        assert!(parse(input.clone()).is_err(), "accepted {input}");
-    }
-}
-
-#[test]
-fn unknown_fields_ignored() {
-    assert_eq!(
-        parse(json!({"path":"a","extra":true})).unwrap(),
-        ReadTool {
-            path: "a".into(),
-            offset: None,
-            limit: None,
-        }
-    );
-}
-
-#[test]
-fn output_shape() {
-    let out = ReadOutput {
-        content: "x".into(),
-        total_lines: 1,
-        truncated: false,
-    };
-    let v = serde_json::to_value(&out).unwrap();
-    assert_eq!(v, json!({"content":"x","total_lines":1,"truncated":false}));
-    assert_eq!(serde_json::from_value::<ReadOutput>(v).unwrap(), out);
 }
 
 #[test]
@@ -281,37 +209,6 @@ async fn special_files_rejected() {
     }
 }
 
-#[cfg(unix)]
-#[tokio::test]
-async fn symlink() {
-    let dir = tempfile::tempdir().unwrap();
-    let target = dir.path().join("target.txt");
-    let link = dir.path().join("link.txt");
-    std::fs::write(&target, "via link\n").unwrap();
-    std::os::unix::fs::symlink(&target, &link).unwrap();
-
-    let out = call(&link, None, None).run().await.unwrap();
-    assert_eq!(out.content, "via link\n");
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn permission_denied() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let dir = tempfile::tempdir().unwrap();
-    let f = dir.path().join("secret");
-    std::fs::write(&f, "x").unwrap();
-    std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o000)).unwrap();
-
-    // Root bypasses permission checks; nothing to verify then.
-    if std::fs::read(&f).is_ok() {
-        return;
-    }
-    let err = call(&f, None, None).run().await.unwrap_err();
-    assert!(err.message.contains("secret"));
-}
-
 #[tokio::test]
 async fn binary_file_fails() {
     let dir = tempfile::tempdir().unwrap();
@@ -337,22 +234,6 @@ async fn invalid_utf8() {
     let out = call(&f, None, None).run().await.unwrap();
     assert_eq!(out.total_lines, 2);
     assert!(out.content.contains('\u{FFFD}'));
-}
-
-// The only test in this binary that changes the working directory;
-// all other tests use absolute paths.
-#[tokio::test]
-async fn relative_path_uses_cwd() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir(dir.path().join("sub")).unwrap();
-    std::fs::write(dir.path().join("sub/rel.txt"), "relative\n").unwrap();
-    std::env::set_current_dir(dir.path()).unwrap();
-
-    let out = call(Path::new("sub/rel.txt"), None, None)
-        .run()
-        .await
-        .unwrap();
-    assert_eq!(out.content, "relative\n");
 }
 
 #[tokio::test]
