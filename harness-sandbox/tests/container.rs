@@ -224,6 +224,31 @@ fn git_folder_writable_when_allowed() {
 }
 
 #[test]
+fn max_processes_counts_container_only() {
+    let container = Sandbox::new().max_processes(16).container().unwrap();
+    // SAFETY: as in `bind`; the closure only forks children that sleep.
+    let mut command = unsafe {
+        container.command_from_closure(|| {
+            let mut started = 0;
+            for _ in 0..32 {
+                match libc::fork() {
+                    0 => {
+                        libc::sleep(2);
+                        libc::_exit(0);
+                    }
+                    pid if pid > 0 => started += 1,
+                    _ => {}
+                }
+            }
+            started
+        })
+    };
+    let started = command.status().unwrap().code;
+    // Some start: the processes of the user outside do not count.
+    assert!(started > 0 && started < 16, "{started}");
+}
+
+#[test]
 fn missing_path_fails() {
     let err = Sandbox::new()
         .allow_read("/no/such/folder")

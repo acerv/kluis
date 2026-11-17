@@ -99,6 +99,12 @@ fn network_option_allows_any_port() {
 }
 
 #[test]
+fn processes_are_limited() {
+    let out = run(&Options::default(), "ulimit -u");
+    assert_eq!(out.stdout, b"1024\n");
+}
+
+#[test]
 fn missing_given_path_fails() {
     let options = Options {
         read: vec!["/no/such/folder".into()],

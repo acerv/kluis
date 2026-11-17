@@ -31,6 +31,9 @@ const DEFAULT_READ: &[&str] = &[
 /// Port the harness uses to reach the model.
 const HTTPS: u16 = 443;
 
+/// Processes and threads the harness and its commands may run at once.
+const MAX_PROCESSES: u64 = 1024;
+
 /// What to allow on top of the defaults. Paths must exist.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Options {
@@ -52,9 +55,9 @@ impl Sandbox {
     /// needed, its DNS files and the CA certificates rustls uses, and change
     /// the [`Options::write`] paths. It may connect to port 443 to reach the
     /// model, and to [`Options::connect`], or anywhere with
-    /// [`Options::network`].
+    /// [`Options::network`]. It may run at most 1024 processes and threads.
     pub fn with_defaults(options: &Options) -> Self {
-        let mut sandbox = Sandbox::new();
+        let mut sandbox = Sandbox::new().max_processes(MAX_PROCESSES);
         for path in DEFAULT_READ
             .iter()
             .map(PathBuf::from)

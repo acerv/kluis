@@ -28,7 +28,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use hakoniwa::landlock::{CompatMode, Resource, Ruleset};
-use hakoniwa::{Container, Runctl};
+use hakoniwa::{Container, Rlimit, Runctl};
 
 /// Folders and network the harness may use.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -36,6 +36,7 @@ pub struct Sandbox {
     read: Vec<PathBuf>,
     write: Vec<PathBuf>,
     network: Network,
+    max_processes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,6 +101,13 @@ impl Sandbox {
         self
     }
 
+    /// Let the processes and threads of the current user number at most
+    /// `max` in the container, so a fork bomb cannot fill the host.
+    pub fn max_processes(mut self, max: u64) -> Self {
+        self.max_processes = Some(max);
+        self
+    }
+
     /// A container showing only the allowed paths, at the same place, plus
     /// `/dev`, `/proc` and a private `/tmp`. Commands run in it as the
     /// current user, on the host network.
@@ -119,6 +127,9 @@ impl Sandbox {
             } else {
                 container.bindmount_ro(&path, &path);
             }
+        }
+        if let Some(max) = self.max_processes {
+            container.setrlimit(Rlimit::Nproc, max, max);
         }
         if let Network::Ports(ports) = &self.network {
             let mut ruleset = Ruleset::default();
