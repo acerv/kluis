@@ -7,6 +7,7 @@ use genai::chat::{ChatMessage, ChatRequest, ToolCall};
 use genai::Client;
 
 use crate::tools;
+use crate::Event;
 
 /// Error returned by the agent.
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -43,7 +44,13 @@ impl Agent {
 
     /// Send a user message, run the tool calls the model makes, and return
     /// the model's final answer.
-    pub async fn prompt(&mut self, text: &str) -> Result<String, Error> {
+    ///
+    /// `on_event` is called as the work progresses.
+    pub async fn prompt(
+        &mut self,
+        text: &str,
+        mut on_event: impl FnMut(Event),
+    ) -> Result<String, Error> {
         self.req.messages.push(ChatMessage::user(text));
 
         for _ in 0..self.max_turns {
@@ -54,6 +61,10 @@ impl Agent {
             let answer = res.first_text().unwrap_or_default().to_owned();
             let calls: Vec<ToolCall> = res.tool_calls().into_iter().cloned().collect();
 
+            if !answer.is_empty() {
+                on_event(Event::Text(answer.clone()));
+            }
+
             // Keep the whole assistant turn (text, tool calls, thought
             // signatures) in the history, before any tool result.
             self.req.messages.push(ChatMessage::assistant(res.content));
@@ -61,8 +72,10 @@ impl Agent {
                 return Ok(answer);
             }
 
-            for call in &calls {
-                let resp = tools::run(call).await;
+            for call in calls {
+                on_event(Event::ToolCall(call.clone()));
+                let resp = tools::run(&call).await;
+                on_event(Event::ToolResult(resp.clone()));
                 self.req.messages.push(resp.into());
             }
         }

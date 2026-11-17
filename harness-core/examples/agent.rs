@@ -10,7 +10,7 @@
 //!
 //! Set `HARNESS_MODEL` to change model; genai picks the provider from it.
 
-use harness_core::{Agent, Error};
+use harness_core::{Agent, Error, Event};
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -18,6 +18,12 @@ async fn main() -> Result<(), Error> {
     let prompt = std::env::args().nth(1).ok_or("usage: agent <prompt>")?;
 
     let mut agent = Agent::new(model)?;
-    println!("{}", agent.prompt(&prompt).await?);
+    agent
+        .prompt(&prompt, |event| match event {
+            Event::Text(text) => println!("assistant: {text}"),
+            Event::ToolCall(call) => println!("tool:      {} {}", call.fn_name, call.fn_arguments),
+            Event::ToolResult(resp) => println!("result:    {}", resp.content),
+        })
+        .await?;
     Ok(())
 }
