@@ -10,32 +10,13 @@
 //!
 //! Set `HARNESS_MODEL` to change model; genai picks the provider from it.
 
-use genai::chat::{ChatMessage, ChatRequest, ToolCall, ToolResponse};
+use genai::chat::{ChatMessage, ChatRequest, ToolCall};
 use genai::Client;
-use harness_tools::{ReadTool, WriteTool};
-use serde::Deserialize;
-use serde_json::{json, Value};
+use harness_core::tools;
 
 const MAX_TURNS: usize = 10;
 
 type Error = Box<dyn std::error::Error>;
-
-/// Run one tool call and return its result as JSON text for the model.
-async fn run(call: &ToolCall) -> String {
-    match dispatch(call).await {
-        Ok(output) => output.to_string(),
-        Err(err) => json!({ "error": err.to_string() }).to_string(),
-    }
-}
-
-async fn dispatch(call: &ToolCall) -> Result<Value, Error> {
-    let args = &call.fn_arguments;
-    Ok(match call.fn_name.as_str() {
-        "read" => json!(ReadTool::deserialize(args)?.run().await?),
-        "write" => json!(WriteTool::deserialize(args)?.run().await?),
-        other => return Err(format!("unknown tool {other}").into()),
-    })
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -43,8 +24,8 @@ async fn main() -> Result<(), Error> {
     let prompt = std::env::args().nth(1).ok_or("usage: agent <prompt>")?;
 
     let client = Client::new()?;
-    let mut req = ChatRequest::new(vec![ChatMessage::user(prompt)])
-        .with_tools([ReadTool::definition(), WriteTool::definition()]);
+    let mut req =
+        ChatRequest::new(vec![ChatMessage::user(prompt)]).with_tools(tools::definitions());
 
     for _ in 0..MAX_TURNS {
         let res = client.exec_chat(&model, req.clone(), None).await?;
@@ -61,9 +42,9 @@ async fn main() -> Result<(), Error> {
         req = req.append_message(ChatMessage::assistant(res.content));
         for call in &calls {
             println!("tool:      {} {}", call.fn_name, call.fn_arguments);
-            let content = run(call).await;
-            println!("result:    {content}");
-            req = req.append_message(ToolResponse::from_tool_call(call, content));
+            let resp = tools::run(call).await;
+            println!("result:    {}", resp.content);
+            req = req.append_message(resp);
         }
     }
 

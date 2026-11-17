@@ -578,6 +578,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness-core"
+version = "0.1.0"
+dependencies = [
+ "genai",
+ "harness-tools",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "harness-tools"
 version = "0.1.0"
 dependencies = [

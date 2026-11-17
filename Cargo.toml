@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["harness-tools"]
+members = ["harness-core", "harness-tools"]
 
 [workspace.package]
 version = "0.1.0"
@@ -9,6 +9,7 @@ license = "GPL-2.0-only"
 authors = ["Andrea Cervesato <andrea.cervesato@linux.dev>"]
 
 [workspace.dependencies]
+harness-core = { path = "harness-core" }
 harness-tools = { path = "harness-tools" }
 
 serde = { version = "1", features = ["derive"] }
