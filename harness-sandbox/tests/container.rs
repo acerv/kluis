@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
+use std::io::ErrorKind;
 use std::net::{Ipv4Addr, TcpListener};
 use std::path::{Path, PathBuf};
 
 use hakoniwa::Output;
 use harness_sandbox::Sandbox;
-
-const PYTHON: &str = "/usr/bin/python3";
 
 /// Run `script` with bash in the container of `sandbox`.
 fn run(sandbox: &Sandbox, script: &str) -> Output {
@@ -64,8 +63,22 @@ fn connect(port: u16) -> String {
     format!("exec 3<>/dev/tcp/127.0.0.1/{port}")
 }
 
-fn bind(port: u16) -> String {
-    format!("{PYTHON} -c 'import socket; socket.socket().bind((\"127.0.0.1\", {port}))'")
+/// Bind a TCP socket to `port` inside the container of `sandbox`:
+/// 0 on success, 1 when denied, 2 on other errors.
+fn bind(sandbox: &Sandbox, port: u16) -> i32 {
+    let container = sandbox.container().unwrap();
+    // SAFETY: the closure runs in the forked child, which hakoniwa already
+    // sets up with allocations of its own; it only binds a socket.
+    let mut command = unsafe {
+        container.command_from_closure(move || {
+            match TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
+                Ok(_) => 0,
+                Err(e) if e.kind() == ErrorKind::PermissionDenied => 1,
+                Err(_) => 2,
+            }
+        })
+    };
+    command.status().unwrap().code
 }
 
 #[test]
@@ -209,17 +222,7 @@ fn any_network_allows_connect() {
 
 #[test]
 fn bind_needs_any_network() {
-    if !Path::new(PYTHON).exists() {
-        return;
-    }
     let port = free_port();
-
-    let out = run(&system().allow_connect(port), &bind(port));
-    assert!(
-        stderr(&out).contains("Permission denied"),
-        "{}",
-        stderr(&out)
-    );
-    let out = run(&system().allow_any_network(), &bind(port));
-    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(bind(&Sandbox::new().allow_connect(port), port), 1);
+    assert_eq!(bind(&Sandbox::new().allow_any_network(), port), 0);
 }
