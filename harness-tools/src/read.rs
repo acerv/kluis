@@ -11,6 +11,10 @@ use crate::path::expand_tilde;
 /// Default maximum number of lines returned by [`ReadTool::run`].
 pub const DEFAULT_READ_LIMIT: usize = 2000;
 
+/// Maximum bytes returned by [`ReadTool::run`]; the window ends at the
+/// last whole line that fits.
+pub const MAX_READ_BYTES: usize = 50 * 1024;
+
 /// A call of the `read` tool.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadTool {
@@ -29,6 +33,9 @@ pub struct ReadOutput {
     pub total_lines: usize,
     /// True when more lines exist after the returned window.
     pub truncated: bool,
+    /// Offset of the first line after the window, when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_offset: Option<usize>,
 }
 
 impl ReadTool {
@@ -57,9 +64,11 @@ impl ReadTool {
 
     /// Read a text file, optionally a window of lines.
     ///
-    /// A leading `~` in the path expands to `$HOME`. Files containing a NUL
-    /// byte are rejected as binary; other invalid UTF-8 is replaced with
-    /// U+FFFD.
+    /// The window holds at most `limit` lines and [`MAX_READ_BYTES`] bytes,
+    /// and ends at a line boundary; a first line larger than that is an
+    /// error. A leading `~` in the path expands to `$HOME`. Files containing
+    /// a NUL byte are rejected as binary; other invalid UTF-8 is replaced
+    /// with U+FFFD.
     ///
     /// Lines keep their original endings (`\n`, `\r\n` or none on the last
     /// line), so reading a whole file returns its exact text.
@@ -100,6 +109,8 @@ impl ReadTool {
         let start = offset - 1;
         let end = start.saturating_add(limit);
         let (mut from, mut to) = (0, 0);
+        // First line left out because the window reached the byte limit.
+        let mut cut_at = None;
         let mut pos = 0;
         let mut total_lines = 0;
         for (i, line) in text.split_inclusive('\n').enumerate() {
@@ -107,8 +118,12 @@ impl ReadTool {
                 from = pos;
             }
             pos += line.len();
-            if i < end {
-                to = pos;
+            if (start..end).contains(&i) && cut_at.is_none() {
+                if pos - from > MAX_READ_BYTES {
+                    cut_at = Some(i);
+                } else {
+                    to = pos;
+                }
             }
             total_lines += 1;
         }
@@ -118,6 +133,7 @@ impl ReadTool {
                 content: String::new(),
                 total_lines: 0,
                 truncated: false,
+                next_offset: None,
             });
         }
         if offset > total_lines {
@@ -126,11 +142,24 @@ impl ReadTool {
                 self.path
             )));
         }
+        if cut_at == Some(start) {
+            return Err(ToolError::new(format!(
+                "{}: line {offset} is larger than {} KB; use bash to read part \
+                 of it, e.g. sed -n '{offset}p' {} | head -c {MAX_READ_BYTES}",
+                self.path,
+                MAX_READ_BYTES / 1024,
+                self.path
+            )));
+        }
 
+        // Index of the first line after the window.
+        let last = cut_at.unwrap_or(end.min(total_lines));
+        let truncated = last < total_lines;
         Ok(ReadOutput {
             content: text[from..to].to_owned(),
             total_lines,
-            truncated: end < total_lines,
+            truncated,
+            next_offset: truncated.then_some(last + 1),
         })
     }
 }

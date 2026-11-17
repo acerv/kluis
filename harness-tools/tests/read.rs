@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use common::p;
-use harness_tools::{ReadTool, DEFAULT_READ_LIMIT};
+use harness_tools::{ReadTool, DEFAULT_READ_LIMIT, MAX_READ_BYTES};
 
 fn call(path: &Path, offset: Option<usize>, limit: Option<usize>) -> ReadTool {
     ReadTool {
@@ -46,10 +46,12 @@ async fn window() {
     assert_eq!(out.content, "2\n3\n");
     assert_eq!(out.total_lines, 5);
     assert!(out.truncated);
+    assert_eq!(out.next_offset, Some(4));
 
     let out = call(&f, Some(4), Some(10)).run().await.unwrap();
     assert_eq!(out.content, "4\n5\n");
     assert!(!out.truncated);
+    assert_eq!(out.next_offset, None);
 
     // Window ends exactly at the last line.
     let out = call(&f, Some(4), Some(2)).run().await.unwrap();
@@ -59,6 +61,44 @@ async fn window() {
     let out = call(&f, None, Some(5)).run().await.unwrap();
     assert_eq!(out.total_lines, 5);
     assert!(!out.truncated);
+}
+
+#[tokio::test]
+async fn byte_limit_ends_at_a_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("a.txt");
+    // 1000 lines of 100 bytes: 512 of them fill the limit exactly.
+    let line = format!("{}\n", "x".repeat(99));
+    std::fs::write(&f, line.repeat(1000)).unwrap();
+
+    let out = call(&f, None, None).run().await.unwrap();
+    assert_eq!(out.content.len(), MAX_READ_BYTES);
+    assert_eq!(out.content.lines().count(), 512);
+    assert!(out.truncated);
+    assert_eq!(out.next_offset, Some(513));
+
+    // Continuing from next_offset picks up the following lines.
+    let out = call(&f, Some(513), None).run().await.unwrap();
+    assert_eq!(out.content.lines().count(), 488);
+    assert_eq!(out.next_offset, None);
+}
+
+#[tokio::test]
+async fn line_over_byte_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("a.txt");
+    let long = "x".repeat(MAX_READ_BYTES + 1);
+    std::fs::write(&f, format!("short\n{long}\nend\n")).unwrap();
+
+    // The window stops before the long line.
+    let out = call(&f, None, None).run().await.unwrap();
+    assert_eq!(out.content, "short\n");
+    assert_eq!(out.next_offset, Some(2));
+
+    // Starting at it points to bash.
+    let err = call(&f, Some(2), None).run().await.unwrap_err();
+    assert!(err.message.contains("line 2"), "{err}");
+    assert!(err.message.contains("sed -n '2p'"), "{err}");
 }
 
 #[tokio::test]
