@@ -6,6 +6,7 @@ use std::process::{Command, Output, Stdio};
 fn run_cli(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_harness-cli"))
         .args(args)
+        .env_remove("HARNESS_SANDBOXED")
         .stdin(Stdio::null())
         .output()
         .unwrap()
@@ -14,9 +15,31 @@ fn run_cli(args: &[&str]) -> Output {
 #[test]
 fn default_runs_sandboxed() {
     let out = run_cli(&[]);
-    assert!(out.status.success());
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("sandboxed"), "{stdout}");
+}
+
+#[test]
+fn no_sandbox_runs_directly() {
+    let out = run_cli(&["--no-sandbox"]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("no sandbox"), "{stdout}");
+}
+
+#[test]
+fn inner_exit_code_is_returned() {
+    // The inner harness fails on the unknown model.
+    let out = run_cli(&["--model", "no-such-model", "hi"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.starts_with("error:"), "{stderr}");
+    assert!(!stderr.contains("sandbox:"), "{stderr}");
 }
 
 #[test]

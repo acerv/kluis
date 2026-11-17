@@ -10,5 +10,4 @@ authors.workspace = true
 clap.workspace = true
 harness-core.workspace = true
 harness-sandbox.workspace = true
-tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "io-std", "io-util"] }

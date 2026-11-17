@@ -9,7 +9,7 @@
 //! ```
 //!
 //! genai picks the provider from the model name and reads the matching API
-//! key, e.g. `DEEPSEEK_API_KEY`. The harness runs in a Landlock sandbox
+//! key, e.g. `DEEPSEEK_API_KEY`. The harness runs in a hakoniwa container
 //! (see `sandbox.rs`) unless `--no-sandbox` is given.
 
 mod sandbox;
@@ -19,7 +19,6 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
-use harness_core::tools::ToolContext;
 use harness_core::{Agent, Error, Event};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -65,8 +64,13 @@ pub struct Args {
 
 fn main() -> ExitCode {
     let args = Args::parse();
-    match start(args) {
-        Ok(()) => ExitCode::SUCCESS,
+    let result = if args.no_sandbox || sandbox::inside() {
+        start(args).map(|()| ExitCode::SUCCESS)
+    } else {
+        sandbox::run(&args)
+    };
+    match result {
+        Ok(code) => code,
         Err(err) => {
             eprintln!("error: {err}");
             ExitCode::FAILURE
@@ -75,26 +79,14 @@ fn main() -> ExitCode {
 }
 
 fn start(args: Args) -> Result<(), Error> {
-    // The sandbox applies to threads started afterwards, so it must come
-    // before the async runtime. It lives until the harness exits.
-    let sandbox = if args.no_sandbox {
-        None
-    } else {
-        Some(sandbox::apply(&args)?)
-    };
-    let tools = sandbox
-        .as_ref()
-        .map(|s| s.tools.clone())
-        .unwrap_or_default();
-
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(run(args, tools))
+        .block_on(run(args))
 }
 
-async fn run(args: Args, tools: ToolContext) -> Result<(), Error> {
-    let mut agent = Agent::new(&args.model)?.with_tool_context(tools);
+async fn run(args: Args) -> Result<(), Error> {
+    let mut agent = Agent::new(&args.model)?;
 
     if !args.prompt.is_empty() {
         agent.prompt(&args.prompt.join(" "), print_event).await?;
