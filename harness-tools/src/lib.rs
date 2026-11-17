@@ -13,12 +13,14 @@
 #[cfg(not(target_os = "linux"))]
 compile_error!("harness-tools only supports Linux");
 
+mod bash;
 mod edit;
 mod error;
 mod path;
 mod read;
 mod write;
 
+pub use bash::{BashOutput, BashTool, MAX_BASH_LINES, MAX_BASH_OUTPUT};
 pub use edit::{Edit, EditOutput, EditTool};
 pub use error::ToolError;
 pub use read::{ReadOutput, ReadTool, DEFAULT_READ_LIMIT};
