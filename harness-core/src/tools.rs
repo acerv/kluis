@@ -6,7 +6,7 @@
 use genai::chat::{Tool, ToolCall, ToolResponse};
 use harness_tools::{ReadTool, WriteTool};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::json;
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -21,17 +21,18 @@ pub fn definitions() -> Vec<Tool> {
 /// call is invalid or the tool fails, so the model can recover.
 pub async fn run(call: &ToolCall) -> ToolResponse {
     let content = match dispatch(call).await {
-        Ok(output) => output.to_string(),
+        Ok(output) => output,
         Err(err) => json!({ "error": err.to_string() }).to_string(),
     };
     ToolResponse::from_tool_call(call, content)
 }
 
-async fn dispatch(call: &ToolCall) -> Result<Value, Error> {
+/// Run a call and return its output serialized as JSON.
+async fn dispatch(call: &ToolCall) -> Result<String, Error> {
     let args = &call.fn_arguments;
     Ok(match call.fn_name.as_str() {
-        "read" => json!(ReadTool::deserialize(args)?.run().await?),
-        "write" => json!(WriteTool::deserialize(args)?.run().await?),
+        "read" => serde_json::to_string(&ReadTool::deserialize(args)?.run().await?)?,
+        "write" => serde_json::to_string(&WriteTool::deserialize(args)?.run().await?)?,
         other => return Err(format!("unknown tool {other}").into()),
     })
 }
