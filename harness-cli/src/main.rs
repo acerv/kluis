@@ -8,32 +8,101 @@
 //! harness-cli "fix the typo in README.md"   # single prompt
 //! ```
 //!
-//! The model comes from `HARNESS_MODEL` (default `deepseek-chat`); genai
-//! picks the provider from its name and reads the matching API key, e.g.
-//! `DEEPSEEK_API_KEY`.
+//! genai picks the provider from the model name and reads the matching API
+//! key, e.g. `DEEPSEEK_API_KEY`. The harness runs in a Landlock sandbox
+//! (see `sandbox.rs`) unless `--no-sandbox` is given.
+
+mod sandbox;
 
 use std::io::Write;
+use std::path::PathBuf;
+use std::process::ExitCode;
 
+use clap::Parser;
+use harness_core::tools::ToolContext;
 use harness_core::{Agent, Error, Event};
 use tokio::io::{AsyncBufReadExt, BufReader};
-
-const DEFAULT_MODEL: &str = "deepseek-chat";
 
 /// Longest tool argument or result shown, in characters.
 const SUMMARY_LEN: usize = 120;
 
-#[tokio::main]
-async fn main() -> Result<(), Error> {
-    let model = std::env::var("HARNESS_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.into());
-    let mut agent = Agent::new(&model)?;
+/// Line-based command-line coding agent.
+#[derive(Parser)]
+#[command(version)]
+pub struct Args {
+    /// Model to use; the provider is picked from its name.
+    #[arg(long, env = "HARNESS_MODEL", default_value = "deepseek-chat")]
+    model: String,
 
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if !args.is_empty() {
-        agent.prompt(&args.join(" "), print_event).await?;
+    /// Run without the sandbox.
+    #[arg(long)]
+    no_sandbox: bool,
+
+    /// Also allow reading this path (repeatable).
+    #[arg(long, value_name = "PATH")]
+    allow_read: Vec<PathBuf>,
+
+    /// Also allow changing this path (repeatable).
+    #[arg(long, value_name = "PATH")]
+    allow_write: Vec<PathBuf>,
+
+    /// Also let the harness connect to this TCP port, e.g. for a local
+    /// model (repeatable).
+    #[arg(long, value_name = "PORT")]
+    allow_connect: Vec<u16>,
+
+    /// Let commands use the network.
+    #[arg(long)]
+    network: bool,
+
+    /// Prompt to run once; starts an interactive chat when absent.
+    prompt: Vec<String>,
+}
+
+fn main() -> ExitCode {
+    let args = Args::parse();
+    match start(args) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("error: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn start(args: Args) -> Result<(), Error> {
+    // The sandbox applies to threads started afterwards, so it must come
+    // before the async runtime. It lives until the harness exits.
+    let sandbox = if args.no_sandbox {
+        None
+    } else {
+        Some(sandbox::apply(&args)?)
+    };
+    let tools = sandbox
+        .as_ref()
+        .map(|s| s.tools.clone())
+        .unwrap_or_default();
+
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run(args, tools))
+}
+
+async fn run(args: Args, tools: ToolContext) -> Result<(), Error> {
+    let mut agent = Agent::new(&args.model)?.with_tool_context(tools);
+
+    if !args.prompt.is_empty() {
+        agent.prompt(&args.prompt.join(" "), print_event).await?;
         return Ok(());
     }
 
-    println!("harness-cli ({model}), Ctrl-D to quit");
+    let sandbox = if args.no_sandbox {
+        "no sandbox"
+    } else {
+        "sandboxed"
+    };
+    println!("harness-cli ({}, {sandbox}), Ctrl-D to quit", args.model);
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     loop {
         print!("> ");

@@ -7,5 +7,9 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+clap.workspace = true
 harness-core.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-std", "io-util"] }
+harness-sandbox.workspace = true
+openssl-probe.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "io-std", "io-util"] }
