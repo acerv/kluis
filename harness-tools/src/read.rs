@@ -94,8 +94,24 @@ impl ReadTool {
             return Err(ToolError::new(format!("{}: binary file", self.path)));
         }
         let text = String::from_utf8_lossy(&bytes);
-        let lines: Vec<&str> = text.split_inclusive('\n').collect();
-        let total_lines = lines.len();
+
+        // One pass: count the lines and find the byte range of the window,
+        // without building a list of every line.
+        let start = offset - 1;
+        let end = start.saturating_add(limit);
+        let (mut from, mut to) = (0, 0);
+        let mut pos = 0;
+        let mut total_lines = 0;
+        for (i, line) in text.split_inclusive('\n').enumerate() {
+            if i == start {
+                from = pos;
+            }
+            pos += line.len();
+            if i < end {
+                to = pos;
+            }
+            total_lines += 1;
+        }
 
         if total_lines == 0 {
             return Ok(ReadOutput {
@@ -111,11 +127,8 @@ impl ReadTool {
             )));
         }
 
-        let start = offset - 1;
-        let end = start.saturating_add(limit).min(total_lines);
-
         Ok(ReadOutput {
-            content: lines[start..end].concat(),
+            content: text[from..to].to_owned(),
             total_lines,
             truncated: end < total_lines,
         })
