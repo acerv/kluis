@@ -5,9 +5,9 @@
 //! Landlock (Linux 6.7 or newer).
 //!
 //! A [`Sandbox`] lists the folders the harness may read and write and the
-//! TCP ports it may connect to or bind; everything else is denied by the
-//! kernel once the sandbox is applied. UDP and Unix sockets are not
-//! filtered.
+//! TCP ports it may connect to or bind, or allows any network; everything
+//! else is denied by the kernel once the sandbox is applied. UDP and Unix
+//! sockets are not filtered.
 
 #[cfg(not(target_os = "linux"))]
 compile_error!("harness-sandbox only supports Linux");
@@ -24,18 +24,35 @@ use landlock::{
 
 /// Landlock ABI the rules need: filesystem and TCP rules (Linux 6.7).
 const TARGET_ABI: ABI = ABI::V4;
+const TARGET_ABI_VERSION: i64 = 4;
 
 /// Always readable and writable: nearly every program needs it, and
 /// spawning a process with closed stdin opens it.
 const DEV_NULL: &str = "/dev/null";
 
-/// Folders and TCP ports the harness may use.
+/// Folders and network the harness may use.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Sandbox {
     read: Vec<PathBuf>,
     write: Vec<PathBuf>,
-    connect: Vec<u16>,
-    bind: Vec<u16>,
+    network: Network,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Network {
+    /// Only these TCP ports; no network when both are empty.
+    Ports { connect: Vec<u16>, bind: Vec<u16> },
+    /// No TCP filtering.
+    Any,
+}
+
+impl Default for Network {
+    fn default() -> Self {
+        Network::Ports {
+            connect: Vec::new(),
+            bind: Vec::new(),
+        }
+    }
 }
 
 /// A sandbox ready to be applied, e.g. in a child process before `exec`.
@@ -78,13 +95,23 @@ impl Sandbox {
 
     /// Allow TCP connections to `port` on any host.
     pub fn allow_connect(mut self, port: u16) -> Self {
-        self.connect.push(port);
+        if let Network::Ports { connect, .. } = &mut self.network {
+            connect.push(port);
+        }
         self
     }
 
     /// Allow binding TCP sockets to `port`.
     pub fn allow_bind(mut self, port: u16) -> Self {
-        self.bind.push(port);
+        if let Network::Ports { bind, .. } = &mut self.network {
+            bind.push(port);
+        }
+        self
+    }
+
+    /// Allow any TCP connection and bind; port rules no longer matter.
+    pub fn allow_any_network(mut self) -> Self {
+        self.network = Network::Any;
         self
     }
 
@@ -102,14 +129,24 @@ impl Sandbox {
     ///
     /// Fails if the kernel lacks Landlock filesystem and TCP support.
     pub fn prepare(&self) -> Result<Prepared, SandboxError> {
+        if abi_version() < TARGET_ABI_VERSION {
+            return Err(landlock_error(
+                "Linux 6.7 or newer with Landlock enabled is required",
+            ));
+        }
         let fs = AccessFs::from_all(TARGET_ABI);
-        let net = AccessNet::from_all(TARGET_ABI);
 
         let mut ruleset = Ruleset::default()
             .set_compatibility(CompatLevel::HardRequirement)
             .handle_access(fs)
-            .and_then(|r| r.handle_access(net))
-            .and_then(Ruleset::create)
+            .map_err(landlock_error)?;
+        if let Network::Ports { .. } = self.network {
+            ruleset = ruleset
+                .handle_access(AccessNet::from_all(TARGET_ABI))
+                .map_err(landlock_error)?;
+        }
+        let mut ruleset = ruleset
+            .create()
             .map_err(landlock_error)?
             .add_rule(rule(Path::new(DEV_NULL), fs)?)
             .map_err(landlock_error)?;
@@ -123,14 +160,13 @@ impl Sandbox {
                     .map_err(landlock_error)?;
             }
         }
-        for (ports, access) in [
-            (&self.connect, AccessNet::ConnectTcp),
-            (&self.bind, AccessNet::BindTcp),
-        ] {
-            for &port in ports {
-                ruleset = ruleset
-                    .add_rule(NetPort::new(port, access))
-                    .map_err(landlock_error)?;
+        if let Network::Ports { connect, bind } = &self.network {
+            for (ports, access) in [(connect, AccessNet::ConnectTcp), (bind, AccessNet::BindTcp)] {
+                for &port in ports {
+                    ruleset = ruleset
+                        .add_rule(NetPort::new(port, access))
+                        .map_err(landlock_error)?;
+                }
             }
         }
 
@@ -162,6 +198,20 @@ impl Prepared {
             }
         }
         Ok(())
+    }
+}
+
+/// Landlock ABI version of the running kernel; 0 or less without Landlock.
+fn abi_version() -> i64 {
+    const LANDLOCK_CREATE_RULESET_VERSION: libc::c_uint = 1;
+    // SAFETY: with this flag the call only returns the version.
+    unsafe {
+        libc::syscall(
+            libc::SYS_landlock_create_ruleset,
+            std::ptr::null::<libc::c_void>(),
+            0usize,
+            LANDLOCK_CREATE_RULESET_VERSION,
+        )
     }
 }
 

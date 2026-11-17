@@ -201,6 +201,24 @@ fn bind_only_allowed_port() {
 }
 
 #[test]
+fn any_network_keeps_file_rules() {
+    let (_server, port) = server();
+    let (_outside, file) = folder();
+    let sandbox = Sandbox::new().allow_connect(1).allow_any_network();
+
+    let (connect, bind, read) = sandboxed(sandbox, move || {
+        (
+            TcpStream::connect((Ipv4Addr::LOCALHOST, port)),
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)),
+            std::fs::read(&file),
+        )
+    });
+    assert!(connect.is_ok());
+    assert!(bind.is_ok());
+    assert!(denied(read));
+}
+
+#[test]
 fn prepared_sandbox_restricts_only_the_child() {
     let (_server, port) = server();
     let (dir, file) = folder();
