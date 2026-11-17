@@ -224,6 +224,15 @@ fn git_folder_writable_when_allowed() {
 }
 
 #[test]
+fn max_tmp_size_fills_up() {
+    let sandbox = system().max_tmp_size(1 << 20);
+
+    let out = run(&sandbox, "head -c 2M /dev/zero > /tmp/big");
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("No space left"), "{}", stderr(&out));
+}
+
+#[test]
 fn max_processes_counts_container_only() {
     let container = Sandbox::new().max_processes(16).container().unwrap();
     // SAFETY: as in `bind`; the closure only forks children that sleep.

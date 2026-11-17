@@ -34,6 +34,9 @@ const HTTPS: u16 = 443;
 /// Processes and threads the harness and its commands may run at once.
 const MAX_PROCESSES: u64 = 1024;
 
+/// Size of the private `/tmp`, which lives in memory.
+const MAX_TMP_SIZE: u64 = 1 << 30;
+
 /// What to allow on top of the defaults. Paths must exist.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Options {
@@ -55,9 +58,12 @@ impl Sandbox {
     /// needed, its DNS files and the CA certificates rustls uses, and change
     /// the [`Options::write`] paths. It may connect to port 443 to reach the
     /// model, and to [`Options::connect`], or anywhere with
-    /// [`Options::network`]. It may run at most 1024 processes and threads.
+    /// [`Options::network`]. It may run at most 1024 processes and threads,
+    /// and store at most 1 GiB in `/tmp`.
     pub fn with_defaults(options: &Options) -> Self {
-        let mut sandbox = Sandbox::new().max_processes(MAX_PROCESSES);
+        let mut sandbox = Sandbox::new()
+            .max_processes(MAX_PROCESSES)
+            .max_tmp_size(MAX_TMP_SIZE);
         for path in DEFAULT_READ
             .iter()
             .map(PathBuf::from)

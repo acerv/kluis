@@ -105,6 +105,12 @@ fn processes_are_limited() {
 }
 
 #[test]
+fn tmp_is_limited() {
+    let out = run(&Options::default(), "df --output=size -B1 /tmp | tail -1");
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "1073741824");
+}
+
+#[test]
 fn missing_given_path_fails() {
     let options = Options {
         read: vec!["/no/such/folder".into()],
