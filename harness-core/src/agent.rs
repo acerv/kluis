@@ -6,7 +6,7 @@
 use genai::chat::{ChatMessage, ChatRequest};
 use genai::Client;
 
-use crate::tools;
+use crate::tools::{self, ToolContext};
 use crate::Event;
 
 /// Error returned by the agent.
@@ -23,6 +23,7 @@ pub struct Agent {
     model: String,
     req: ChatRequest,
     max_turns: usize,
+    tools: ToolContext,
 }
 
 impl Agent {
@@ -33,12 +34,19 @@ impl Agent {
             model: model.into(),
             req: ChatRequest::default().with_tools(tools::definitions()),
             max_turns: DEFAULT_MAX_TURNS,
+            tools: ToolContext::default(),
         })
     }
 
     /// Set the maximum number of model calls for a single prompt.
     pub fn with_max_turns(mut self, max_turns: usize) -> Self {
         self.max_turns = max_turns;
+        self
+    }
+
+    /// Set how tools run, e.g. a sandbox for commands.
+    pub fn with_tool_context(mut self, tools: ToolContext) -> Self {
+        self.tools = tools;
         self
     }
 
@@ -78,7 +86,7 @@ impl Agent {
             let mut results = Vec::with_capacity(calls.len());
             for call in calls {
                 on_event(Event::ToolCall(call));
-                let resp = tools::run(call).await;
+                let resp = tools::run_with(call, &self.tools).await;
                 on_event(Event::ToolResult(&resp));
                 results.push(ChatMessage::from(resp));
             }

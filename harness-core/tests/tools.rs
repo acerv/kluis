@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
+use std::sync::Arc;
+
 use genai::chat::{ToolCall, ToolResponse};
-use harness_core::tools::{definitions, run};
+use harness_core::tools::{definitions, run, run_with, BashContext, ToolContext};
 use serde_json::{json, Value};
 
 fn call(name: &str, args: Value) -> ToolCall {
@@ -95,6 +97,20 @@ async fn runs_bash() {
             "timed_out": false
         })
     );
+}
+
+#[tokio::test]
+async fn bash_uses_tool_context() {
+    // EPERM from the hook stops the command before it runs.
+    let ctx = ToolContext {
+        bash: BashContext {
+            pre_exec: Some(Arc::new(|| Err(std::io::Error::from_raw_os_error(1)))),
+        },
+    };
+
+    let resp = run_with(&call("bash", json!({ "command": "echo hi" })), &ctx).await;
+    let err = content(&resp)["error"].as_str().unwrap().to_owned();
+    assert!(err.contains("Operation not permitted"), "{err}");
 }
 
 #[tokio::test]
