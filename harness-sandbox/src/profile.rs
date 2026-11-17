@@ -10,7 +10,7 @@ use tempfile::TempDir;
 use crate::{Sandbox, SandboxError};
 
 /// Read by commands and the harness: programs, the dynamic loader cache,
-/// user and group names, the time zone, and random numbers.
+/// user and group names, and the time zone.
 const COMMAND_READ: &[&str] = &[
     "/usr",
     // Real folders on systems without a merged /usr; links to it otherwise.
@@ -24,9 +24,10 @@ const COMMAND_READ: &[&str] = &[
     "/etc/group",
     "/etc/nsswitch.conf",
     "/etc/localtime",
-    "/dev/urandom",
-    "/dev/zero",
 ];
+
+/// Devices read by commands, for random numbers.
+const COMMAND_DEVICES: &[&str] = &["/dev/urandom", "/dev/zero"];
 
 /// Read by the harness only, for name resolution.
 const HARNESS_READ: &[&str] = &[
@@ -80,7 +81,8 @@ impl Profile {
                 message: format!("temporary folder: {e}"),
             })?;
 
-        let mut commands = allow_existing(Sandbox::new(), COMMAND_READ).allow_write(tmp.path());
+        let commands = allow_existing(Sandbox::new(), COMMAND_READ);
+        let mut commands = allow_existing(commands, COMMAND_DEVICES).allow_write(tmp.path());
         for path in &options.read {
             commands = commands.allow_read(path);
         }
@@ -111,6 +113,41 @@ impl Profile {
             commands,
             tmp,
         })
+    }
+}
+
+impl Sandbox {
+    /// The sandbox of a harness and the commands it runs, for
+    /// [`Sandbox::container`].
+    ///
+    /// It may run programs from `/usr`, read the few `/etc` files commonly
+    /// needed, its DNS files and the CA certificates rustls uses, and change
+    /// the [`Options::write`] paths. It may connect to port 443 to reach the
+    /// model, and to [`Options::connect`], or anywhere with
+    /// [`Options::network`].
+    pub fn with_defaults(options: &Options) -> Self {
+        let mut sandbox = allow_existing(Sandbox::new(), COMMAND_READ);
+        sandbox = allow_existing(sandbox, HARNESS_READ);
+        // The certificates rustls loads, found the same way it finds them,
+        // including SSL_CERT_FILE and SSL_CERT_DIR.
+        let certs = openssl_probe::probe();
+        for path in certs.cert_file.into_iter().chain(certs.cert_dir) {
+            sandbox = sandbox.allow_read(path);
+        }
+        for path in &options.read {
+            sandbox = sandbox.allow_read(path);
+        }
+        for path in &options.write {
+            sandbox = sandbox.allow_write(path);
+        }
+        if options.network {
+            return sandbox.allow_any_network();
+        }
+        sandbox = sandbox.allow_connect(HTTPS);
+        for &port in &options.connect {
+            sandbox = sandbox.allow_connect(port);
+        }
+        sandbox
     }
 }
 
