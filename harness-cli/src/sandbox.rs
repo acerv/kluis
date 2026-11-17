@@ -3,13 +3,16 @@
 
 //! Sandbox of the harness: it runs again inside the default container of
 //! `harness-sandbox`, with the current folder writable (or read-only with
-//! `--strict`). Tools and commands share that container.
+//! `--strict`). Tools and commands share that container, but commands get
+//! no network unless `--network` is given.
 
 use std::ffi::OsString;
 use std::process::ExitCode;
+use std::sync::Arc;
 
+use harness_core::tools::{BashContext, ToolContext};
 use harness_core::Error;
-use harness_sandbox::{Options, Sandbox};
+use harness_sandbox::{NoNetwork, Options, Sandbox};
 
 use crate::Args;
 
@@ -22,6 +25,20 @@ const CONTAINER_FAILURE: i32 = 125;
 /// Whether this process already runs inside the container.
 pub fn inside() -> bool {
     std::env::var_os(MARKER).is_some()
+}
+
+/// How tools run inside the container: commands lose the network unless
+/// `--network` is given.
+pub fn tools(args: &Args) -> ToolContext {
+    if args.network {
+        return ToolContext::default();
+    }
+    let no_network = NoNetwork::new();
+    ToolContext {
+        bash: BashContext {
+            pre_exec: Some(Arc::new(move || no_network.apply())),
+        },
+    }
 }
 
 /// Run this program again, with the same arguments, inside the container,

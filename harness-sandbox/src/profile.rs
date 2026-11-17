@@ -38,7 +38,7 @@ pub struct Options {
     pub read: Vec<PathBuf>,
     /// Writable by the harness and its commands.
     pub write: Vec<PathBuf>,
-    /// TCP ports the harness and its commands may connect to besides 443.
+    /// TCP ports the harness may connect to besides 443.
     pub connect: Vec<u16>,
     /// Allow any network to the harness and its commands.
     pub network: bool,

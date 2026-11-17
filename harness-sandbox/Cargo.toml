@@ -8,6 +8,7 @@ authors.workspace = true
 
 [dependencies]
 hakoniwa.workspace = true
+libc.workspace = true
 openssl-probe.workspace = true
 
 [dev-dependencies]

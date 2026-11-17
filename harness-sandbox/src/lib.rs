@@ -8,13 +8,16 @@
 //! TCP ports it may connect to, or allows any network. Its
 //! [`container`](Sandbox::container) shows only those folders, and
 //! Landlock (Linux 6.7 or newer) limits TCP to those ports. UDP and Unix
-//! sockets are not filtered.
+//! sockets are not filtered; [`NoNetwork`] takes away all network from
+//! commands.
 
 #[cfg(not(target_os = "linux"))]
 compile_error!("harness-sandbox only supports Linux");
 
+mod network;
 mod profile;
 
+pub use network::NoNetwork;
 pub use profile::Options;
 
 use std::fmt;

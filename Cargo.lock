@@ -801,6 +801,7 @@ name = "harness-sandbox"
 version = "0.1.0"
 dependencies = [
  "hakoniwa",
+ "libc",
  "openssl-probe",
  "tempfile",
 ]

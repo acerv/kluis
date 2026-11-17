@@ -19,6 +19,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
+use harness_core::tools::ToolContext;
 use harness_core::{Agent, Error, Event};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -49,12 +50,12 @@ pub struct Args {
     #[arg(long, value_name = "PATH")]
     allow_write: Vec<PathBuf>,
 
-    /// Also let the harness and its commands connect to this TCP port,
-    /// e.g. for a local model (repeatable).
+    /// Also let the harness connect to this TCP port, e.g. for a local
+    /// model (repeatable).
     #[arg(long, value_name = "PORT")]
     allow_connect: Vec<u16>,
 
-    /// Allow any network.
+    /// Allow any network, to commands too.
     #[arg(long)]
     network: bool,
 
@@ -64,8 +65,11 @@ pub struct Args {
 
 fn main() -> ExitCode {
     let args = Args::parse();
-    let result = if args.no_sandbox || sandbox::inside() {
-        start(args).map(|()| ExitCode::SUCCESS)
+    let result = if args.no_sandbox {
+        start(args, ToolContext::default()).map(|()| ExitCode::SUCCESS)
+    } else if sandbox::inside() {
+        let tools = sandbox::tools(&args);
+        start(args, tools).map(|()| ExitCode::SUCCESS)
     } else {
         sandbox::run(&args)
     };
@@ -78,15 +82,15 @@ fn main() -> ExitCode {
     }
 }
 
-fn start(args: Args) -> Result<(), Error> {
+fn start(args: Args, tools: ToolContext) -> Result<(), Error> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(run(args))
+        .block_on(run(args, tools))
 }
 
-async fn run(args: Args) -> Result<(), Error> {
-    let mut agent = Agent::new(&args.model)?;
+async fn run(args: Args, tools: ToolContext) -> Result<(), Error> {
+    let mut agent = Agent::new(&args.model)?.with_tool_context(tools);
 
     if !args.prompt.is_empty() {
         agent.prompt(&args.prompt.join(" "), print_event).await?;
