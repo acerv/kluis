@@ -82,12 +82,13 @@ impl WriteTool {
             }
         }
 
-        tokio::fs::write(&path, self.content.as_bytes())
+        // Pass the String by value: tokio moves it to the blocking thread
+        // instead of copying a borrowed slice.
+        let bytes_written = self.content.len();
+        tokio::fs::write(&path, self.content)
             .await
             .map_err(|e| ToolError::io(&self.path, e))?;
 
-        Ok(WriteOutput {
-            bytes_written: self.content.len(),
-        })
+        Ok(WriteOutput { bytes_written })
     }
 }
