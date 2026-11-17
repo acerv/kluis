@@ -6,12 +6,15 @@
 use genai::chat::{ToolCall, ToolResponse};
 
 /// Progress reported by [`Agent::prompt`](crate::Agent::prompt).
-#[derive(Debug, Clone)]
-pub enum Event {
+///
+/// Events borrow from the agent's history to avoid copies; clone what you
+/// need to keep beyond the callback.
+#[derive(Debug, Clone, Copy)]
+pub enum Event<'a> {
     /// Text the model wrote in a turn.
-    Text(String),
+    Text(&'a str),
     /// A tool call the model made, before it runs.
-    ToolCall(ToolCall),
+    ToolCall(&'a ToolCall),
     /// The result of a tool call, as sent back to the model.
-    ToolResult(ToolResponse),
+    ToolResult(&'a ToolResponse),
 }
