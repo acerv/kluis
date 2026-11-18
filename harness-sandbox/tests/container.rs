@@ -224,6 +224,62 @@ fn git_folder_writable_when_allowed() {
 }
 
 #[test]
+fn kept_read_only_inside_writable_folder() {
+    let (dir, file) = folder();
+    let sandbox = system().allow_write(dir.path()).keep_read_only(&file);
+
+    let script = format!(
+        "cat {0}; echo x > {1}/new.txt; echo y > {0}; rm -f {0}; mv {0} {1}/moved",
+        file.display(),
+        dir.path().display()
+    );
+    let out = run(&sandbox, &script);
+    assert_eq!(stdout(&out), "data");
+    assert!(dir.path().join("new.txt").exists());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "data");
+}
+
+#[test]
+fn kept_read_only_survives_renamed_parent() {
+    // Moving the folder above away would leave the path free for a new file.
+    let (dir, _) = folder();
+    let sub = dir.path().join("sub");
+    std::fs::create_dir(&sub).unwrap();
+    let file = sub.join("config.toml");
+    std::fs::write(&file, "data").unwrap();
+    let sandbox = system().allow_write(dir.path()).keep_read_only(&file);
+
+    let script = format!(
+        "echo x > {0}/other.txt; mv {0} {1}/old; mkdir -p {0} && echo evil > {2}",
+        sub.display(),
+        dir.path().display(),
+        file.display()
+    );
+    run(&sandbox, &script);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "data");
+    // The rest of the folder stays writable.
+    assert!(sub.join("other.txt").exists());
+}
+
+#[test]
+fn kept_read_only_wins_over_writable() {
+    let (_dir, file) = folder();
+    let sandbox = system().allow_write(&file).keep_read_only(&file);
+
+    run(&sandbox, &format!("echo y > {}", file.display()));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "data");
+}
+
+#[test]
+fn kept_read_only_is_readable() {
+    let (_dir, file) = folder();
+    let sandbox = system().keep_read_only(&file);
+
+    let out = run(&sandbox, &format!("cat {}", file.display()));
+    assert_eq!(stdout(&out), "data");
+}
+
+#[test]
 fn max_tmp_size_fills_up() {
     let sandbox = system().max_tmp_size(1 << 20);
 

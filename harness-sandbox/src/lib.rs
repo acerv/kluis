@@ -25,7 +25,7 @@ pub use profile::Options;
 pub use protect::protect_self;
 
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use hakoniwa::landlock::{CompatMode, Resource, Ruleset};
 use hakoniwa::{Container, MountOptions, Rlimit, Runctl};
@@ -35,6 +35,7 @@ use hakoniwa::{Container, MountOptions, Rlimit, Runctl};
 pub struct Sandbox {
     read: Vec<PathBuf>,
     write: Vec<PathBuf>,
+    read_only: Vec<PathBuf>,
     network: Network,
     max_processes: Option<u64>,
     max_tmp_size: Option<u64>,
@@ -85,6 +86,15 @@ impl Sandbox {
     /// host would otherwise run the hooks and commands written there.
     pub fn allow_write(mut self, path: impl Into<PathBuf>) -> Self {
         self.write.push(path.into());
+        self
+    }
+
+    /// Allow reading and executing anything below `path`, and keep it
+    /// read-only even below, or at, a writable path. The folders between
+    /// that writable path and `path` can then no longer be moved or
+    /// removed, which would let a new file take its place.
+    pub fn keep_read_only(mut self, path: impl Into<PathBuf>) -> Self {
+        self.read_only.push(path.into());
         self
     }
 
@@ -159,20 +169,12 @@ impl Sandbox {
 
     /// Absolute paths to mount and whether they are writable, without the
     /// ones already shown by a mount of a parent folder, plus the `.git` of
-    /// writable folders as read-only.
+    /// writable folders and the paths to keep read-only as read-only.
     fn mounts(&self) -> Result<Vec<(String, bool)>, SandboxError> {
         let mut all = Vec::new();
         for (paths, writable) in [(&self.read, false), (&self.write, true)] {
             for path in paths {
-                let error = |e: &dyn fmt::Display| SandboxError {
-                    message: format!("{}: {e}", path.display()),
-                };
-                let path = std::path::absolute(path).map_err(|e| error(&e))?;
-                std::fs::metadata(&path).map_err(|e| error(&e))?;
-                if path.to_str().is_none() {
-                    return Err(error(&"not UTF-8"));
-                }
-                all.push((path, writable));
+                all.push((checked(path)?, writable));
             }
         }
         // A mount inside another one would create its mount point on the
@@ -189,6 +191,21 @@ impl Sandbox {
                 mounts.push((git, false));
             }
         }
+        // Last: a later mount of the same path replaces a writable one.
+        for path in &self.read_only {
+            let path = std::fs::canonicalize(path).map_err(|e| SandboxError {
+                message: format!("{}: {e}", path.display()),
+            })?;
+            let path = checked(&path)?;
+            // The folders on the way from a writable mount become mount
+            // points, which cannot be moved away to free the path.
+            if let Some(root) = writable_parent(&mounts, &path) {
+                for dir in path.ancestors().skip(1).take_while(|d| *d != root) {
+                    mounts.push((dir.to_path_buf(), true));
+                }
+            }
+            mounts.push((path, false));
+        }
         Ok(mounts
             .into_iter()
             .filter_map(|(path, writable)| {
@@ -196,4 +213,27 @@ impl Sandbox {
             })
             .collect())
     }
+}
+
+/// The closest mount above `path`, if it is writable.
+fn writable_parent(mounts: &[(PathBuf, bool)], path: &Path) -> Option<PathBuf> {
+    mounts
+        .iter()
+        .filter(|(mount, _)| mount != path && path.starts_with(mount))
+        .max_by_key(|(mount, _)| mount.components().count())
+        .filter(|(_, writable)| *writable)
+        .map(|(mount, _)| mount.clone())
+}
+
+/// `path` made absolute, if it exists and is UTF-8.
+fn checked(path: &Path) -> Result<PathBuf, SandboxError> {
+    let error = |e: &dyn fmt::Display| SandboxError {
+        message: format!("{}: {e}", path.display()),
+    };
+    let path = std::path::absolute(path).map_err(|e| error(&e))?;
+    std::fs::metadata(&path).map_err(|e| error(&e))?;
+    if path.to_str().is_none() {
+        return Err(error(&"not UTF-8"));
+    }
+    Ok(path)
 }
