@@ -231,3 +231,19 @@ fn file_behind_link_works() {
     let out = run_cli(home.path(), &["--config", link.to_str().unwrap()]);
     assert!(out.status.success(), "{}", stderr(&out));
 }
+
+#[test]
+fn file_behind_unmounted_link_works() {
+    // Neither the link's folder nor the target's folder is mounted.
+    let home = tempdir();
+    let link_dir = tempdir();
+    let target_dir = tempdir();
+    let target = target_dir.path().join("real.toml");
+    std::fs::write(&target, "[sandbox]\nnetwork = true\n").unwrap();
+    let link = link_dir.path().join("link.toml");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+
+    let out = run_cli(home.path(), &["--config", link.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("network"), "{}", stdout(&out));
+}

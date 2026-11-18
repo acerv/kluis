@@ -76,6 +76,7 @@ pub fn run(args: &Args) -> Result<ExitCode, Error> {
         .collect::<Result<Vec<_>, _>>()?;
     // Variables that are not UTF-8 cannot be passed on.
     let env = std::env::vars_os()
+        .filter(|(k, _)| k != crate::config::ENV)
         .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)));
     let mut command = container.command(&utf8(exe.into_os_string())?);
     command
@@ -84,7 +85,8 @@ pub fn run(args: &Args) -> Result<ExitCode, Error> {
         .env(MARKER, "1")
         .current_dir(cwd);
     if let Some(config) = &args.config {
-        command.env(crate::config::ENV, &utf8(config.clone().into_os_string())?);
+        let canonical = std::fs::canonicalize(config)?;
+        command.env(crate::config::ENV, &utf8(canonical.into_os_string())?);
     }
     let status = command.status().map_err(|e| format!("sandbox: {e}"))?;
 

@@ -97,14 +97,21 @@ fn launch(mut args: Args) -> Result<ExitCode, Error> {
 }
 
 /// Add the settings of the config file to `args`, and leave in
-/// `args.config` the absolute path of the file used, if any.
+/// `args.config` the path of the file used, if any.
 fn apply_config(args: &mut Args) -> Result<(), Error> {
-    let (path, required) = match args.config.take() {
-        Some(path) => (std::path::absolute(path)?, true),
-        None => match config::default_path() {
-            Some(path) => (path, false),
+    let (path, required) = if sandbox::inside() {
+        match std::env::var_os(config::ENV) {
+            Some(path) => (PathBuf::from(path), true),
             None => return Ok(()),
-        },
+        }
+    } else {
+        match args.config.take() {
+            Some(path) => (std::path::absolute(path)?, true),
+            None => match config::default_path() {
+                Some(path) => (path, false),
+                None => return Ok(()),
+            },
+        }
     };
     let Some(config) = config::load(&path, required)? else {
         return Ok(());
@@ -114,8 +121,7 @@ fn apply_config(args: &mut Args) -> Result<(), Error> {
     args.allow_connect.extend(config.sandbox.connect);
     args.network |= config.sandbox.network;
     args.pass_env.extend(config.sandbox.env);
-    // The real path: the one shown in the container.
-    args.config = Some(std::fs::canonicalize(path)?);
+    args.config = Some(path);
     Ok(())
 }
 
