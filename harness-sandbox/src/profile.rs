@@ -44,6 +44,9 @@ pub struct Options {
     pub read: Vec<PathBuf>,
     /// Writable by the harness and its commands.
     pub write: Vec<PathBuf>,
+    /// Hidden from the harness and its commands, even below a readable or
+    /// writable path.
+    pub deny: Vec<PathBuf>,
     /// TCP ports the harness may connect to besides 443.
     pub connect: Vec<u16>,
     /// Allow any network to the harness and its commands.
@@ -86,6 +89,9 @@ impl Sandbox {
         }
         for path in &options.write {
             sandbox = sandbox.allow_write(path);
+        }
+        for path in &options.deny {
+            sandbox = sandbox.deny_read(path);
         }
         if options.network {
             return sandbox.allow_any_network();

@@ -38,6 +38,7 @@ pub struct Sandbox {
     read: Vec<PathBuf>,
     write: Vec<PathBuf>,
     read_only: Vec<PathBuf>,
+    deny: Vec<PathBuf>,
     network: Network,
     max_processes: Option<u64>,
     max_tmp_size: Option<u64>,
@@ -49,6 +50,13 @@ enum Network {
     Ports(Vec<u16>),
     /// No TCP filtering.
     Any,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MountKind {
+    Bind { writable: bool },
+    MaskDir,
+    MaskFile,
 }
 
 impl Default for Network {
@@ -101,6 +109,13 @@ impl Sandbox {
         self
     }
 
+    /// Hide `path` even below, at, or above a readable or writable path.
+    /// A missing path is ignored.
+    pub fn deny_read(mut self, path: impl Into<PathBuf>) -> Self {
+        self.deny.push(path.into());
+        self
+    }
+
     /// Allow TCP connections to `port` on any host.
     pub fn allow_connect(mut self, port: u16) -> Self {
         if let Network::Ports(ports) = &mut self.network {
@@ -147,11 +162,35 @@ impl Sandbox {
                 MountOptions::NOSUID | MountOptions::NODEV,
                 self.max_tmp_size.map(|bytes| format!("size={bytes}")),
             );
-        for (path, writable) in self.mounts()? {
-            if writable {
-                container.bindmount_rw(&path, &path);
-            } else {
-                container.bindmount_ro(&path, &path);
+        for (path, kind) in self.mounts()? {
+            match kind {
+                MountKind::Bind { writable: true } => {
+                    container.bindmount_rw(&path, &path);
+                }
+                MountKind::Bind { writable: false } => {
+                    container.bindmount_ro(&path, &path);
+                }
+                MountKind::MaskDir => {
+                    container.mount(
+                        "tmpfs",
+                        &path,
+                        "tmpfs",
+                        MountOptions::RDONLY | MountOptions::NOSUID | MountOptions::NODEV,
+                        Some("size=0,mode=000".to_string()),
+                    );
+                }
+                MountKind::MaskFile => {
+                    container.mount(
+                        "/dev/null",
+                        &path,
+                        "",
+                        MountOptions::BIND
+                            | MountOptions::RDONLY
+                            | MountOptions::NOSUID
+                            | MountOptions::NODEV,
+                        None,
+                    );
+                }
             }
         }
         if let Some(max) = self.max_processes {
@@ -170,16 +209,19 @@ impl Sandbox {
         Ok(container)
     }
 
-    /// Absolute paths to mount and whether they are writable, without the
-    /// ones already shown by a mount of a parent folder, plus the `.git` of
-    /// writable folders and the paths to keep read-only as read-only.
-    fn mounts(&self) -> Result<Vec<(String, bool)>, SandboxError> {
+    /// Absolute paths to mount and how to mount them, without the ones
+    /// already shown by a mount of a parent folder, plus the `.git` of
+    /// writable folders and the paths to keep read-only as read-only, and
+    /// any denied paths masked over them.
+    fn mounts(&self) -> Result<Vec<(String, MountKind)>, SandboxError> {
         let mut all = Vec::new();
         for (paths, writable) in [(&self.read, false), (&self.write, true)] {
             for path in paths {
                 all.push((checked(path)?, writable));
             }
         }
+        let denied_targets = resolve_denied(&self.deny)?;
+
         // A mount inside another one would create its mount point on the
         // host; a writable mount of the same path also supersedes a
         // read-only one.
@@ -189,26 +231,29 @@ impl Sandbox {
                     || (other == path && *w && !writable)
             })
         };
-        let mut base_mounts = Vec::new();
-        for mount in all.iter().filter(|m| !covered(m)) {
-            if !base_mounts.contains(mount) {
-                base_mounts.push(mount.clone());
+        let mut canon_mounts = Vec::new();
+        for (mount, writable) in all.iter().filter(|m| !covered(m)) {
+            if canon_mounts
+                .iter()
+                .any(|(m, _, w)| m == mount && w == writable)
+            {
+                continue;
+            }
+            let canon = std::fs::canonicalize(mount).map_err(|e| SandboxError {
+                message: format!("{}: {e}", mount.display()),
+            })?;
+            if !path_or_canon_denied(mount, &canon, &denied_targets) {
+                canon_mounts.push((mount.clone(), canon, *writable));
             }
         }
         let all_writable: Vec<_> = all.iter().filter(|(_, w)| *w).map(|(p, _)| p).collect();
-        let writable_roots: Vec<_> = base_mounts
-            .iter()
-            .filter(|(_, w)| *w)
-            .map(|(p, _)| p.clone())
-            .collect();
-        let canon_mounts: Vec<_> = base_mounts
-            .iter()
-            .filter_map(|(m, w)| Some((m.clone(), std::fs::canonicalize(m).ok()?, *w)))
-            .collect();
 
         let mut ro_paths = Vec::new();
-        for root in &writable_roots {
-            for git in collect_git(root, &all_writable) {
+        for (root, canon_root, writable) in &canon_mounts {
+            if !*writable {
+                continue;
+            }
+            for git in collect_git(root, canon_root, &all_writable, &denied_targets) {
                 // Skip `.git` entries that vanished or cannot be mounted
                 // (e.g. non-UTF-8 paths) instead of failing startup.
                 let mut found = Vec::new();
@@ -222,30 +267,43 @@ impl Sandbox {
         for path in &self.read_only {
             resolve_read_only(&canon_mounts, path, true, &mut ro_paths)?;
         }
+        ro_paths.retain(|p| !covered_by_denied(p, &denied_targets));
 
         // A path kept read-only also overrides writable mounts at or below it.
-        base_mounts.retain(|(path, writable)| {
-            if !*writable {
-                return true;
-            }
-            let canon = std::fs::canonicalize(path).ok();
-            !ro_paths.iter().any(|ro| {
-                path.starts_with(ro) || canon.as_deref().is_some_and(|c| c.starts_with(ro))
-            })
+        canon_mounts.retain(|(path, canon, writable)| {
+            !*writable
+                || !ro_paths
+                    .iter()
+                    .any(|ro| path.starts_with(ro) || canon.starts_with(ro))
         });
 
-        let mut effective = base_mounts.clone();
+        let mask_paths = map_denied(&canon_mounts, &denied_targets);
+        ro_paths.retain(|ro| !mask_paths.iter().any(|(d, _)| ro.starts_with(d)));
+
+        let mut effective: Vec<_> = canon_mounts
+            .iter()
+            .map(|(m, _, w)| (m.clone(), *w))
+            .collect();
         for path in &ro_paths {
             effective.push((path.clone(), false));
         }
+        for (path, _) in &mask_paths {
+            effective.push((path.clone(), false));
+        }
 
-        let mut mounts = base_mounts;
-        for path in &ro_paths {
+        let mut mounts: Vec<_> = canon_mounts
+            .into_iter()
+            .map(|(path, _, writable)| (path, MountKind::Bind { writable }))
+            .collect();
+        for path in ro_paths.iter().chain(mask_paths.iter().map(|(p, _)| p)) {
             // The folders on the way from a writable mount become mount
             // points, which cannot be moved away to free the path.
             if let Some((root, true)) = closest_ancestor(&effective, path) {
                 for dir in path.ancestors().skip(1).take_while(|d| *d != root) {
-                    mounts.push((dir.to_path_buf(), true));
+                    let pin = (dir.to_path_buf(), MountKind::Bind { writable: true });
+                    if !mounts.contains(&pin) {
+                        mounts.push(pin);
+                    }
                 }
             }
         }
@@ -254,26 +312,123 @@ impl Sandbox {
             // inside an existing mount touches the target on the host, which
             // fails on files owned by another user (e.g. under /usr).
             if !matches!(closest_ancestor(&effective, &path), Some((_, false))) {
-                mounts.push((path, false));
+                mounts.push((path, MountKind::Bind { writable: false }));
             }
+        }
+        for (path, is_dir) in mask_paths {
+            let kind = if is_dir {
+                MountKind::MaskDir
+            } else {
+                MountKind::MaskFile
+            };
+            mounts.push((path, kind));
         }
         mounts
             .into_iter()
-            .map(|(path, writable)| {
+            .map(|(path, kind)| {
                 let path = path
                     .into_os_string()
                     .into_string()
                     .map_err(|p| SandboxError {
                         message: format!("{}: not UTF-8", PathBuf::from(p).display()),
                     })?;
-                Ok((path, writable))
+                Ok((path, kind))
             })
             .collect()
     }
 }
 
-/// `.git` folders and files inside `root`, unless already covered by `writable`.
-fn collect_git(root: &Path, writable: &[&PathBuf]) -> Vec<PathBuf> {
+/// Canonical paths and whether they are directories for existing `deny` entries.
+fn resolve_denied(deny: &[PathBuf]) -> Result<Vec<(PathBuf, bool)>, SandboxError> {
+    let mut out = Vec::new();
+    for raw in deny {
+        let error = |e: &dyn fmt::Display| SandboxError {
+            message: format!("{}: {e}", raw.display()),
+        };
+        let abs = std::path::absolute(raw).map_err(|e| error(&e))?;
+        if abs.to_str().is_none() {
+            return Err(error(&"not UTF-8"));
+        }
+        let meta = match std::fs::metadata(&abs) {
+            Ok(meta) => meta,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                continue;
+            }
+            Err(e) => return Err(error(&e)),
+        };
+        let canon = std::fs::canonicalize(&abs).map_err(|e| error(&e))?;
+        if canon.to_str().is_none() {
+            return Err(error(&"not UTF-8"));
+        }
+        let entry = (canon, meta.is_dir());
+        if !out.contains(&entry) {
+            out.push(entry);
+        }
+    }
+    Ok(out)
+}
+
+/// Whether `path` or its canonical target `canon` is at or below any denied target.
+fn path_or_canon_denied(path: &Path, canon: &Path, denied: &[(PathBuf, bool)]) -> bool {
+    denied
+        .iter()
+        .any(|(d, _)| path.starts_with(d) || canon.starts_with(d))
+}
+
+/// Whether `path` (or its canonical target) is at or below any denied target.
+fn covered_by_denied(path: &Path, denied: &[(PathBuf, bool)]) -> bool {
+    if denied.is_empty() {
+        return false;
+    }
+    let canon = std::fs::canonicalize(path).ok();
+    denied
+        .iter()
+        .any(|(d, _)| path.starts_with(d) || canon.as_deref().is_some_and(|c| c.starts_with(d)))
+}
+
+/// Denied targets mapped into every surviving mount that strictly contains
+/// them, without entries already inside a denied directory.
+fn map_denied(
+    canon_mounts: &[(PathBuf, PathBuf, bool)],
+    denied: &[(PathBuf, bool)],
+) -> Vec<(PathBuf, bool)> {
+    let mut mapped = Vec::new();
+    for (target, is_dir) in denied {
+        for (mount, canon, _) in canon_mounts {
+            if target != canon {
+                if let Ok(rest) = target.strip_prefix(canon) {
+                    let entry = (mount.join(rest), *is_dir);
+                    if !mapped.contains(&entry) {
+                        mapped.push(entry);
+                    }
+                }
+            }
+        }
+    }
+    mapped
+        .iter()
+        .filter(|(path, _)| {
+            !mapped
+                .iter()
+                .any(|(other, is_dir)| *is_dir && other != path && path.starts_with(other))
+        })
+        .cloned()
+        .collect()
+}
+
+/// `.git` folders and files inside `root`, unless already covered by
+/// `writable` or `denied`.
+fn collect_git(
+    root: &Path,
+    canon_root: &Path,
+    writable: &[&PathBuf],
+    denied: &[(PathBuf, bool)],
+) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let Ok(meta) = std::fs::metadata(root) else {
         return found;
@@ -295,7 +450,16 @@ fn collect_git(root: &Path, writable: &[&PathBuf]) -> Vec<PathBuf> {
                 continue;
             }
             if entry.file_type().is_ok_and(|ft| ft.is_dir()) {
-                stack.push(path);
+                // `entry` is a real directory (not a symlink), so its
+                // canonical path under `canon_root` needs no syscall.
+                let is_denied = !denied.is_empty()
+                    && path.strip_prefix(root).is_ok_and(|rel| {
+                        let canon = canon_root.join(rel);
+                        path_or_canon_denied(&path, &canon, denied)
+                    });
+                if !is_denied {
+                    stack.push(path);
+                }
             }
         }
     }

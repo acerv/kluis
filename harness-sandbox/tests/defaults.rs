@@ -142,3 +142,28 @@ fn missing_given_path_fails() {
     let err = Sandbox::with_defaults(&options).container().unwrap_err();
     assert!(err.message.contains("/no/such/folder"), "{err}");
 }
+
+#[test]
+fn denied_paths_are_hidden() {
+    let dir = tempfile::tempdir().unwrap();
+    let secret = dir.path().join(".ssh");
+    std::fs::create_dir(&secret).unwrap();
+    std::fs::write(secret.join("id_ed25519"), "secret-key").unwrap();
+    let public = dir.path().join("public.txt");
+    std::fs::write(&public, "public\n").unwrap();
+
+    let options = Options {
+        read: vec![dir.path().into()],
+        deny: vec![secret.clone(), dir.path().join("missing")],
+        ..Options::default()
+    };
+    let script = format!("cat {} && ls {}", public.display(), secret.display());
+    let out = run(&options, &script);
+    assert!(!out.status.success());
+    assert_eq!(out.stdout, b"public\n");
+    assert!(
+        stderr(&out).contains("Permission denied"),
+        "{}",
+        stderr(&out)
+    );
+}

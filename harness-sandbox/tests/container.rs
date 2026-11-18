@@ -590,6 +590,117 @@ fn kept_read_only_overrides_writable_child() {
 }
 
 #[test]
+fn denied_folder_is_unreadable() {
+    let (dir, file) = folder();
+    let secret = dir.path().join(".ssh");
+    std::fs::create_dir(&secret).unwrap();
+    let key = secret.join("id_ed25519");
+    std::fs::write(&key, "private-key").unwrap();
+    let sandbox = system().allow_read(dir.path()).deny_read(&secret);
+
+    let script = format!(
+        "cat {} && (ls {} || true) && (cat {} || true)",
+        file.display(),
+        secret.display(),
+        key.display()
+    );
+    let out = run(&sandbox, &script);
+    assert_eq!(stdout(&out), "data");
+    assert!(
+        !stdout(&out).contains("private-key") && !stderr(&out).contains("private-key"),
+        "{} {}",
+        stdout(&out),
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains("Permission denied"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn denied_file_is_unreadable() {
+    let (dir, file) = folder();
+    let secret = dir.path().join(".netrc");
+    std::fs::write(&secret, "password123").unwrap();
+    let sandbox = system().allow_read(dir.path()).deny_read(&secret);
+
+    let script = format!("cat {} && cat {}", file.display(), secret.display());
+    let out = run(&sandbox, &script);
+    assert!(!out.status.success());
+    assert_eq!(stdout(&out), "data");
+    assert!(
+        stderr(&out).contains("Permission denied"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn denied_inside_writable_folder() {
+    let (dir, _) = folder();
+    let sub = dir.path().join("sub");
+    let nested = sub.join("nested");
+    std::fs::create_dir_all(nested.join(".git")).unwrap();
+    let secret = sub.join("secret.txt");
+    std::fs::write(&secret, "secret").unwrap();
+    let sandbox = system()
+        .allow_write(dir.path())
+        .deny_read(&secret)
+        .deny_read(&nested);
+
+    let script = format!(
+        "cat {0}; echo evil > {0}; rm -f {0}; ls {1}; \
+         mv {2} {3}/old && echo evil > {0}; \
+         echo ok > {2}/other.txt",
+        secret.display(),
+        nested.display(),
+        sub.display(),
+        dir.path().display()
+    );
+    let out = run(&sandbox, &script);
+    assert!(!stdout(&out).contains("secret"));
+    assert_eq!(std::fs::read_to_string(&secret).unwrap(), "secret");
+    assert_eq!(
+        std::fs::read_to_string(sub.join("other.txt")).unwrap(),
+        "ok\n"
+    );
+}
+
+#[test]
+fn denied_overrides_allowed_mount() {
+    let (dir, file) = folder();
+    let sub = dir.path().join("sub");
+    std::fs::create_dir(&sub).unwrap();
+    let sub_file = sub.join("s.txt");
+    std::fs::write(&sub_file, "sub-secret").unwrap();
+
+    let sandbox = system()
+        .allow_read(dir.path())
+        .allow_write(&sub)
+        .deny_read(&sub);
+    let out = run(&sandbox, &format!("cat {}", sub_file.display()));
+    assert!(!out.status.success());
+    assert!(!stdout(&out).contains("sub-secret"));
+
+    let sandbox = system().allow_write(dir.path()).deny_read(dir.path());
+    let out = run(&sandbox, &format!("cat {}", file.display()));
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("No such file"), "{}", stderr(&out));
+}
+
+#[test]
+fn missing_denied_path_is_ignored() {
+    let (_dir, file) = folder();
+    let sandbox = system()
+        .deny_read("/no/such/secret/folder")
+        .deny_read(file.join("under-a-file"));
+    let out = run(&sandbox, "echo ok");
+    assert!(out.status.success(), "{}", stderr(&out));
+}
+
+#[test]
 fn max_tmp_size_fills_up() {
     let sandbox = system().max_tmp_size(1 << 20);
 
