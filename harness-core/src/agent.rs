@@ -29,13 +29,19 @@ pub struct Agent {
 impl Agent {
     /// Create an agent for `model`; genai picks the provider from its name.
     pub fn new(model: impl Into<String>) -> Result<Self, Error> {
-        Ok(Self {
-            client: Client::new()?,
+        Ok(Self::with_client(Client::new()?, model))
+    }
+
+    /// Create an agent for `model` using `client`, e.g. one sending requests
+    /// to a custom endpoint.
+    pub fn with_client(client: Client, model: impl Into<String>) -> Self {
+        Self {
+            client,
             model: model.into(),
             req: ChatRequest::default().with_tools(tools::definitions()),
             max_turns: DEFAULT_MAX_TURNS,
             tools: ToolContext::default(),
-        })
+        }
     }
 
     /// Set the maximum number of model calls for a single prompt.
