@@ -70,8 +70,7 @@ pub struct Args {
     #[arg(long, value_name = "NUM", value_parser = clap::value_parser!(u64).range(1..))]
     max_processes: Option<u64>,
 
-    /// Size of the private /tmp in bytes, or with a K, M or G suffix
-    /// [default: 10% of memory].
+    /// Size of the private /tmp in bytes, or with a K, M or G suffix.
     #[arg(long, value_name = "SIZE", value_parser = config::parse_size)]
     tmp_size: Option<u64>,
 

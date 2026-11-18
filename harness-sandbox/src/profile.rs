@@ -34,9 +34,6 @@ const HTTPS: u16 = 443;
 /// Processes and threads the harness and its commands may run at once.
 const MAX_PROCESSES: u64 = 1024;
 
-/// Share of the memory the private `/tmp`, which lives there, may use.
-const TMP_MEMORY_PERCENT: u64 = 10;
-
 /// What to allow on top of the defaults. Paths must exist.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Options {
@@ -54,7 +51,7 @@ pub struct Options {
     /// Processes and threads the harness and its commands may run at once
     /// (1024 by default).
     pub max_processes: Option<u64>,
-    /// Bytes the private `/tmp` may hold (10% of memory by default).
+    /// Bytes the private `/tmp` may hold.
     pub tmp_size: Option<u64>,
 }
 
@@ -67,15 +64,13 @@ impl Sandbox {
     /// `$HOME`, and change the [`Options::write`] paths. It may connect to
     /// port 443 to reach the model, and to [`Options::connect`], or anywhere
     /// with [`Options::network`]. It may run at most 1024 processes and
-    /// threads (or [`Options::max_processes`]), and store in `/tmp` at most
-    /// 10% of the memory (or [`Options::tmp_size`]).
+    /// threads (or [`Options::max_processes`]).
     pub fn with_defaults(options: &Options) -> Self {
-        let tmp_size = options
-            .tmp_size
-            .unwrap_or_else(|| total_memory() * TMP_MEMORY_PERCENT / 100);
-        let mut sandbox = Sandbox::new()
-            .max_processes(options.max_processes.unwrap_or(MAX_PROCESSES))
-            .max_tmp_size(tmp_size);
+        let mut sandbox =
+            Sandbox::new().max_processes(options.max_processes.unwrap_or(MAX_PROCESSES));
+        if let Some(bytes) = options.tmp_size {
+            sandbox = sandbox.max_tmp_size(bytes);
+        }
         for path in DEFAULT_READ
             .iter()
             .map(PathBuf::from)
@@ -110,19 +105,5 @@ impl Sandbox {
             sandbox = sandbox.allow_connect(port);
         }
         sandbox
-    }
-}
-
-/// Physical memory of the machine in bytes.
-fn total_memory() -> u64 {
-    // SAFETY: sysinfo only fills the struct it is given.
-    unsafe {
-        let mut info: libc::sysinfo = std::mem::zeroed();
-        if libc::sysinfo(&mut info) != 0 {
-            // Cannot happen with a valid pointer; 0 would mean no limit.
-            return 1 << 30;
-        }
-        // `totalram` is a `c_ulong`, 32 bits wide on some machines.
-        info.totalram as u64 * u64::from(info.mem_unit)
     }
 }
