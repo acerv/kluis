@@ -238,12 +238,18 @@ impl Sandbox {
                 mounts.push((path, false));
             }
         }
-        Ok(mounts
+        mounts
             .into_iter()
-            .filter_map(|(path, writable)| {
-                Some((path.into_os_string().into_string().ok()?, writable))
+            .map(|(path, writable)| {
+                let path = path
+                    .into_os_string()
+                    .into_string()
+                    .map_err(|p| SandboxError {
+                        message: format!("{}: not UTF-8", PathBuf::from(p).display()),
+                    })?;
+                Ok((path, writable))
             })
-            .collect())
+            .collect()
     }
 }
 
@@ -360,7 +366,7 @@ fn walk_symlinks(
                         });
                     }
                     if let Some(dir) = writable_symlink_parent(canon_mounts, &cur) {
-                        push_unique(ro_paths, dir);
+                        push_unique(ro_paths, checked(&dir)?);
                     }
                     let target = std::fs::read_link(&next).map_err(|e| SandboxError {
                         message: format!("{}: {e}", next.display()),

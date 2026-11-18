@@ -523,6 +523,27 @@ fn non_utf8_nested_git_does_not_fail_startup() {
 }
 
 #[test]
+fn keep_read_only_rejects_non_utf8_symlink_parent() {
+    let (dir, _) = folder();
+    let (_outside, real) = folder();
+    let bad = dir.path().join(OsStr::from_bytes(b"bad\xffdir"));
+    let sub = dir.path().join("sub");
+    std::fs::create_dir(&bad).unwrap();
+    std::fs::create_dir(&sub).unwrap();
+    let hop = bad.join("hop");
+    std::os::unix::fs::symlink(&real, &hop).unwrap();
+    let link = sub.join("link");
+    std::os::unix::fs::symlink(&hop, &link).unwrap();
+
+    let err = system()
+        .allow_write(dir.path())
+        .keep_read_only(&link)
+        .container()
+        .unwrap_err();
+    assert!(err.message.contains("not UTF-8"), "{err}");
+}
+
+#[test]
 fn max_tmp_size_fills_up() {
     let sandbox = system().max_tmp_size(1 << 20);
 
