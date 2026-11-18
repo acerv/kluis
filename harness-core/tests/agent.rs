@@ -102,6 +102,8 @@ async fn tool_call_round_trip() {
     let answer = agent
         .prompt("run it", |event| {
             events.push(match event {
+                Event::TurnStart => "start".to_owned(),
+                Event::TurnEnd(usage) => format!("end {:?}", usage.and_then(|u| u.total_tokens)),
                 Event::TextDelta(text) => format!("delta {text}"),
                 Event::Text(text) => format!("text {text}"),
                 Event::ToolCall(call) => format!("call {}", call.fn_name),
@@ -114,7 +116,16 @@ async fn tool_call_round_trip() {
     assert_eq!(answer, "ok");
     assert_eq!(
         events,
-        ["call bash", "result call_1", "delta ok", "text ok"]
+        [
+            "start",
+            "end Some(15)",
+            "call bash",
+            "result call_1",
+            "start",
+            "delta ok",
+            "text ok",
+            "end Some(15)"
+        ]
     );
     assert_eq!(
         roles(&agent),
@@ -277,8 +288,14 @@ async fn broken_stream_is_an_error() {
     let dir = tempfile::tempdir().unwrap();
     let mut agent = agent(&model, dir.path());
 
-    let err = prompt(&mut agent, "first").await.unwrap_err();
+    let mut ended = false;
+    let run = agent.prompt("first", |event| ended |= matches!(event, Event::TurnEnd(_)));
+    let err = tokio::time::timeout(Duration::from_secs(10), run)
+        .await
+        .expect("prompt hangs")
+        .unwrap_err();
     assert!(err.to_string().contains("ended early"), "{err}");
+    assert!(!ended, "a cut turn must not end");
     assert_eq!(roles(&agent), [ChatRole::User]);
     assert_eq!(prompt(&mut agent, "next").await.unwrap(), "again");
 }

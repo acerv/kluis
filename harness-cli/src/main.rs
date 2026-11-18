@@ -147,6 +147,7 @@ fn print_event(event: Event<'_>) {
         }
         // Already printed piece by piece: end its line.
         Event::Text(_) => println!(),
+        Event::TurnStart | Event::TurnEnd(_) => {}
         Event::ToolCall(call) => println!(
             "→ {} {}",
             call.fn_name,

@@ -6,6 +6,7 @@
 use futures_util::StreamExt;
 use genai::chat::{
     ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, MessageContent, ToolCall, ToolResponse,
+    Usage,
 };
 use genai::Client;
 use serde_json::json;
@@ -83,7 +84,8 @@ impl Agent {
         self.req.messages.push(ChatMessage::user(text));
 
         for _ in 0..self.max_turns {
-            let content = self.next_turn(&mut on_event).await?;
+            on_event(Event::TurnStart);
+            let (content, usage) = self.next_turn(&mut on_event).await?;
 
             // Keep the whole assistant turn (text, tool calls, thought
             // signatures) in the history, before any tool result.
@@ -94,6 +96,7 @@ impl Agent {
             if !answer.is_empty() {
                 on_event(Event::Text(answer));
             }
+            on_event(Event::TurnEnd(usage.as_ref()));
 
             // A copy, so results can join the history while calls run.
             let calls: Vec<ToolCall> = turn.tool_calls().into_iter().cloned().collect();
@@ -117,17 +120,19 @@ impl Agent {
         Err(format!("stopped after {} turns", self.max_turns).into())
     }
 
-    /// Ask the model for its next turn, reporting its text as it streams.
+    /// Ask the model for its next turn, reporting its text as it streams,
+    /// and return it with its token usage.
     ///
     /// The turn joins the history only once complete: a cut stream, like
     /// pi does, is never sent back to the model.
     async fn next_turn(
         &self,
         on_event: &mut impl FnMut(Event<'_>),
-    ) -> Result<MessageContent, Error> {
+    ) -> Result<(MessageContent, Option<Usage>), Error> {
         let options = ChatOptions::default()
             .with_capture_content(true)
-            .with_capture_tool_calls(true);
+            .with_capture_tool_calls(true)
+            .with_capture_usage(true);
         let mut stream = self
             .client
             .exec_chat_stream(&self.model, self.req.clone(), Some(&options))
@@ -136,7 +141,10 @@ impl Agent {
         while let Some(event) = stream.next().await {
             match event? {
                 ChatStreamEvent::Chunk(chunk) => on_event(Event::TextDelta(&chunk.content)),
-                ChatStreamEvent::End(end) => return Ok(end.captured_content.unwrap_or_default()),
+                ChatStreamEvent::End(end) => {
+                    let content = end.captured_content.unwrap_or_default();
+                    return Ok((content, end.captured_usage));
+                }
                 _ => {}
             }
         }

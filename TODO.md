@@ -23,7 +23,8 @@
 
 ## Core
 
-- [ ] Events for token usage and turn start/end
+- [ ] Send the model's reasoning back (`reasoning_content`), as
+      DeepSeek and Kimi need for tool calls in thinking mode
 
 ## Tools
 
