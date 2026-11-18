@@ -28,15 +28,24 @@ pub fn inside() -> bool {
 }
 
 /// How tools run inside the container: commands lose the network unless
-/// `--network` is given.
+/// `--network` is given, and get any memory limit.
 pub fn tools(args: &Args) -> ToolContext {
-    if args.network {
+    let no_network = (!args.network).then(NoNetwork::new);
+    let max_memory = args.max_memory;
+    if no_network.is_none() && max_memory.is_none() {
         return ToolContext::default();
     }
-    let no_network = NoNetwork::new();
     ToolContext {
         bash: BashContext {
-            pre_exec: Some(Arc::new(move || no_network.apply())),
+            pre_exec: Some(Arc::new(move || {
+                if let Some(no_network) = &no_network {
+                    no_network.apply()?;
+                }
+                if let Some(bytes) = max_memory {
+                    harness_sandbox::limit_memory(bytes)?;
+                }
+                Ok(())
+            })),
             ..BashContext::default()
         },
         ..ToolContext::default()

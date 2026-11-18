@@ -346,3 +346,34 @@ fn tmp_size_is_accepted_and_validated() {
     assert!(!out.status.success());
     assert!(stderr(&out).contains("--tmp-size"), "{}", stderr(&out));
 }
+
+#[test]
+fn max_memory_is_accepted_and_validated() {
+    let home = tempdir();
+    for text in [
+        "[sandbox]\nmax_memory = \"512M\"\n",
+        "[sandbox]\nmax_memory = 536870912\n",
+    ] {
+        write_default(home.path(), text);
+        let out = run_cli(home.path(), &[]);
+        assert!(out.status.success(), "{text}: {}", stderr(&out));
+    }
+
+    let out = run_cli(home.path(), &["--max-memory", "1G"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    for bad in [
+        "[sandbox]\nmax_memory = 0\n",
+        "[sandbox]\nmax_memory = \"0G\"\n",
+        "[sandbox]\nmax_memory = \"10X\"\n",
+    ] {
+        write_default(home.path(), bad);
+        let out = run_cli(home.path(), &["--no-sandbox"]);
+        assert!(!out.status.success(), "{bad}");
+    }
+
+    write_default(home.path(), "");
+    let out = run_cli(home.path(), &["--no-sandbox", "--max-memory", "0"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("--max-memory"), "{}", stderr(&out));
+}

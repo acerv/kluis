@@ -75,6 +75,10 @@ pub struct Args {
     #[arg(long, value_name = "SIZE", value_parser = config::parse_size)]
     tmp_size: Option<u64>,
 
+    /// Virtual memory limit for commands in bytes, or with a K, M or G suffix.
+    #[arg(long, value_name = "SIZE", value_parser = config::parse_size)]
+    max_memory: Option<u64>,
+
     /// Also pass this environment variable to commands (repeatable).
     #[arg(long, value_name = "NAME")]
     pass_env: Vec<String>,
@@ -137,6 +141,7 @@ fn apply_config(args: &mut Args) -> Result<(), Error> {
     args.network |= config.sandbox.network;
     args.max_processes = args.max_processes.or(config.sandbox.max_processes);
     args.tmp_size = args.tmp_size.or(config.sandbox.tmp_size);
+    args.max_memory = args.max_memory.or(config.sandbox.max_memory);
     args.pass_env.extend(config.sandbox.env);
     args.config = Some(path);
     Ok(())

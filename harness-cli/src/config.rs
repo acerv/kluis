@@ -18,6 +18,8 @@
 //! max_processes = 1024
 //! # Size of the private /tmp in bytes, or with a K, M or G suffix.
 //! tmp_size = "512M"
+//! # Virtual memory limit for commands in bytes, or with a K, M or G suffix.
+//! max_memory = "4G"
 //! # Also pass these environment variables to commands.
 //! env = ["CC", "CFLAGS"]
 //! ```
@@ -67,6 +69,9 @@ pub struct SandboxConfig {
     /// Private `/tmp` size in bytes, like `--tmp-size`.
     #[serde(default, deserialize_with = "deserialize_opt_size")]
     pub tmp_size: Option<u64>,
+    /// Virtual memory limit in bytes, like `--max-memory`.
+    #[serde(default, deserialize_with = "deserialize_opt_size")]
+    pub max_memory: Option<u64>,
     /// Also passed to commands, like `--pass-env`.
     #[serde(default)]
     pub env: Vec<String>,
