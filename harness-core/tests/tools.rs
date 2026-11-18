@@ -119,7 +119,9 @@ async fn every_definition_is_dispatched() {
     for tool in definitions() {
         let name = tool.name.as_ref();
         let resp = run(&call(name, json!({}))).await;
-        let err = content(&resp)["error"].as_str().unwrap().to_owned();
-        assert!(!err.starts_with("unknown tool"), "{name}: {err}");
+        // Tools with no required argument succeed on an empty call.
+        if let Some(err) = content(&resp)["error"].as_str() {
+            assert!(!err.starts_with("unknown tool"), "{name}: {err}");
+        }
     }
 }

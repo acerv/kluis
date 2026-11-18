@@ -38,7 +38,6 @@ Same set as pi: `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`.
 - [ ] `bash`: save the full output to a file when truncated
 - [ ] `grep`: regex or literal, glob filter, context, respects `.gitignore`
 - [ ] `find`: glob pattern, respects `.gitignore`
-- [ ] `ls`: sorted entries, `/` after folders, dotfiles included
 - [ ] Move `path.rs` unit tests to `tests/`
 
 ## TUI

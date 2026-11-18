@@ -16,6 +16,7 @@ compile_error!("harness-tools only supports Linux");
 mod bash;
 mod edit;
 mod error;
+mod ls;
 mod path;
 mod read;
 mod write;
@@ -26,5 +27,6 @@ pub use bash::{
 };
 pub use edit::{Edit, EditOutput, EditTool};
 pub use error::ToolError;
+pub use ls::{LsOutput, LsTool, DEFAULT_LS_LIMIT, MAX_LS_BYTES};
 pub use read::{ReadOutput, ReadTool, DEFAULT_READ_LIMIT, MAX_READ_BYTES};
 pub use write::{WriteOutput, WriteTool};

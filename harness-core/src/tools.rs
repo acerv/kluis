@@ -4,7 +4,7 @@
 //! The tools offered to the model and the dispatch of its calls.
 
 use genai::chat::{Tool, ToolCall, ToolResponse};
-use harness_tools::{BashTool, EditTool, ReadTool, WriteTool};
+use harness_tools::{BashTool, EditTool, LsTool, ReadTool, WriteTool};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -24,6 +24,7 @@ pub fn definitions() -> Vec<Tool> {
         ReadTool::definition(),
         WriteTool::definition(),
         EditTool::definition(),
+        LsTool::definition(),
         BashTool::definition(),
     ]
 }
@@ -52,6 +53,7 @@ async fn dispatch(call: &ToolCall, ctx: &ToolContext) -> Result<String, Error> {
         "read" => serde_json::to_string(&ReadTool::deserialize(args)?.run().await?)?,
         "write" => serde_json::to_string(&WriteTool::deserialize(args)?.run().await?)?,
         "edit" => serde_json::to_string(&EditTool::deserialize(args)?.run().await?)?,
+        "ls" => serde_json::to_string(&LsTool::deserialize(args)?.run().await?)?,
         "bash" => {
             let tool = BashTool::deserialize(args)?;
             serde_json::to_string(&tool.run_with(&ctx.bash).await?)?
