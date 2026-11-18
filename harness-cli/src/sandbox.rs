@@ -55,14 +55,18 @@ pub fn run(args: &Args) -> Result<ExitCode, Error> {
     } else {
         write.push(cwd.clone());
     }
-    let container = Sandbox::with_defaults(&Options {
+    let mut container = Sandbox::with_defaults(&Options {
         read,
         write,
         connect: args.allow_connect.clone(),
         network: args.network,
     })
-    .allow_read(&exe)
-    .container()?;
+    .allow_read(&exe);
+    // The copy inside reads the same config file, wherever it is.
+    if let Some(config) = &args.config {
+        container = container.allow_read(config);
+    }
+    let container = container.container()?;
 
     let argv = std::env::args_os()
         .skip(1)
@@ -71,14 +75,16 @@ pub fn run(args: &Args) -> Result<ExitCode, Error> {
     // Variables that are not UTF-8 cannot be passed on.
     let env = std::env::vars_os()
         .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)));
-    let status = container
-        .command(&utf8(exe.into_os_string())?)
+    let mut command = container.command(&utf8(exe.into_os_string())?);
+    command
         .args(argv)
         .envs(env)
         .env(MARKER, "1")
-        .current_dir(cwd)
-        .status()
-        .map_err(|e| format!("sandbox: {e}"))?;
+        .current_dir(cwd);
+    if let Some(config) = &args.config {
+        command.env(crate::config::ENV, &utf8(config.clone().into_os_string())?);
+    }
+    let status = command.status().map_err(|e| format!("sandbox: {e}"))?;
 
     match status.exit_code {
         Some(code) => Ok(exit_code(code)),

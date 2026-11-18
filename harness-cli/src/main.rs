@@ -10,8 +10,10 @@
 //!
 //! genai picks the provider from the model name and reads the matching API
 //! key, e.g. `DEEPSEEK_API_KEY`. The harness runs in a hakoniwa container
-//! (see `sandbox.rs`) unless `--no-sandbox` is given.
+//! (see `sandbox.rs`) unless `--no-sandbox` is given. Settings may also come
+//! from a config file (see `config.rs`).
 
+mod config;
 mod sandbox;
 
 use std::io::Write;
@@ -63,27 +65,53 @@ pub struct Args {
     #[arg(long, value_name = "NAME")]
     pass_env: Vec<String>,
 
+    /// Config file [default: ~/.config/harness/config.toml]
+    #[arg(long, env = config::ENV, value_name = "PATH")]
+    config: Option<PathBuf>,
+
     /// Prompt to run once; starts an interactive chat when absent.
     prompt: Vec<String>,
 }
 
 fn main() -> ExitCode {
-    let args = Args::parse();
-    let result = if args.no_sandbox {
-        start(args, ToolContext::default()).map(|()| ExitCode::SUCCESS)
-    } else if sandbox::inside() {
-        let tools = sandbox::tools(&args);
-        start(args, tools).map(|()| ExitCode::SUCCESS)
-    } else {
-        sandbox::run(&args)
-    };
-    match result {
+    match launch(Args::parse()) {
         Ok(code) => code,
         Err(err) => {
             eprintln!("error: {err}");
             ExitCode::FAILURE
         }
     }
+}
+
+fn launch(mut args: Args) -> Result<ExitCode, Error> {
+    apply_config(&mut args)?;
+    if args.no_sandbox {
+        start(args, ToolContext::default())?;
+    } else if sandbox::inside() {
+        let tools = sandbox::tools(&args);
+        start(args, tools)?;
+    } else {
+        return sandbox::run(&args);
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Add the settings of the config file to `args`, and leave in
+/// `args.config` the absolute path of the file used, if any.
+fn apply_config(args: &mut Args) -> Result<(), Error> {
+    let (path, required) = match args.config.take() {
+        Some(path) => (std::path::absolute(path)?, true),
+        None => match config::default_path() {
+            Some(path) => (path, false),
+            None => return Ok(()),
+        },
+    };
+    let Some(config) = config::load(&path, required)? else {
+        return Ok(());
+    };
+    args.pass_env.extend(config.sandbox.env);
+    args.config = Some(path);
+    Ok(())
 }
 
 fn start(args: Args, mut tools: ToolContext) -> Result<(), Error> {

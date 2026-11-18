@@ -8,7 +8,7 @@
 - [ ] Extra mount points, read-only or writable (`/etc/ssl`, ...)
 - [ ] Memory limit for commands
 - [ ] Process limit and `/tmp` size
-- [ ] Environment variables passed to commands
+- [x] Environment variables passed to commands
 - [ ] TCP ports and network access
 
 ## Sandbox
