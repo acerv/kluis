@@ -294,3 +294,26 @@ async fn empty_file() {
     assert_eq!(out.content, "");
     assert_eq!(out.total_lines, 0);
 }
+
+#[tokio::test]
+async fn relative_path_starts_at_cwd() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "inside\n").unwrap();
+
+    let out = call(Path::new("a.txt"), None, None)
+        .run_in(dir.path())
+        .await
+        .unwrap();
+    assert_eq!(out.content, "inside\n");
+}
+
+#[tokio::test]
+async fn absolute_path_ignores_cwd() {
+    let dir = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    let f = dir.path().join("a.txt");
+    std::fs::write(&f, "here\n").unwrap();
+
+    let out = call(&f, None, None).run_in(other.path()).await.unwrap();
+    assert_eq!(out.content, "here\n");
+}

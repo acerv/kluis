@@ -267,3 +267,29 @@ async fn environment_inherited_by_default() {
         .unwrap();
     assert_eq!(out.output, format!("{}\n", env!("CARGO_MANIFEST_DIR")));
 }
+
+#[tokio::test]
+async fn runs_in_cwd() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = call("pwd", None)
+        .run_in(dir.path(), &BashContext::default())
+        .await
+        .unwrap();
+    let pwd = std::fs::canonicalize(dir.path()).unwrap();
+    assert_eq!(out.output, format!("{}\n", pwd.display()));
+}
+
+#[tokio::test]
+async fn missing_cwd_is_reported() {
+    let dir = tempfile::tempdir().unwrap();
+    let gone = dir.path().join("gone");
+    let err = call("true", None)
+        .run_in(&gone, &BashContext::default())
+        .await
+        .unwrap_err();
+    assert!(
+        err.message.starts_with(&gone.display().to_string()),
+        "{err}"
+    );
+    assert!(err.message.contains("No such file or directory"), "{err}");
+}

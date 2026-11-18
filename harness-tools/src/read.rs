@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
+use std::path::Path;
+
 use genai::chat::Tool;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::error::ToolError;
-use crate::path::expand_tilde;
+use crate::path::resolve;
 
 /// Default maximum number of lines returned by [`ReadTool::run`].
 pub const DEFAULT_READ_LIMIT: usize = 2000;
@@ -71,8 +73,14 @@ impl ReadTool {
     /// with U+FFFD.
     ///
     /// Lines keep their original endings (`\n`, `\r\n` or none on the last
-    /// line), so reading a whole file returns its exact text.
+    /// line), so reading a whole file returns its exact text. A relative
+    /// path starts at the current directory.
     pub async fn run(self) -> Result<ReadOutput, ToolError> {
+        self.run_in(Path::new(".")).await
+    }
+
+    /// Like [`run`](Self::run), with relative paths starting at `cwd`.
+    pub async fn run_in(self, cwd: &Path) -> Result<ReadOutput, ToolError> {
         let offset = self.offset.unwrap_or(1);
         if offset == 0 {
             return Err(ToolError::new("offset must be >= 1"));
@@ -82,7 +90,7 @@ impl ReadTool {
             return Err(ToolError::new("limit must be >= 1"));
         }
 
-        let path = expand_tilde(&self.path);
+        let path = resolve(cwd, &self.path);
         let meta = tokio::fs::metadata(&path)
             .await
             .map_err(|e| ToolError::io(&self.path, e))?;

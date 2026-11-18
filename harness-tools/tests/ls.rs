@@ -190,3 +190,22 @@ async fn tilde_expands_to_home() {
     let out = call("~").run().await.unwrap();
     assert_eq!(out.entries, ["f.txt"]);
 }
+
+#[tokio::test]
+async fn relative_and_default_paths_start_at_cwd() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub/f.txt"), "").unwrap();
+
+    let out = call("sub").run_in(dir.path()).await.unwrap();
+    assert_eq!(out.entries, ["f.txt"]);
+
+    let out = LsTool {
+        path: None,
+        limit: None,
+    }
+    .run_in(dir.path())
+    .await
+    .unwrap();
+    assert_eq!(out.entries, ["sub/"]);
+}

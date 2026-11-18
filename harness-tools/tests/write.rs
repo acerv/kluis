@@ -133,3 +133,17 @@ async fn broken_symlink_fails() {
     assert!(err.message.contains("broken symlink"));
     assert!(!target.exists());
 }
+
+#[tokio::test]
+async fn relative_path_starts_at_cwd() {
+    let dir = tempfile::tempdir().unwrap();
+
+    call("sub/a.txt", "inside")
+        .run_in(dir.path())
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("sub/a.txt")).unwrap(),
+        "inside"
+    );
+}

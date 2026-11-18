@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
+use std::path::Path;
+
 use genai::chat::Tool;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::error::ToolError;
-use crate::path::expand_tilde;
+use crate::path::resolve;
 
 /// A call of the `write` tool.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,10 +44,16 @@ impl WriteTool {
 
     /// Create or overwrite a file, creating missing parent directories.
     ///
-    /// A leading `~` in the path expands to `$HOME`. Existing targets must be
-    /// regular files (symlinks to regular files are followed); directories,
-    /// FIFOs, devices and broken symlinks are rejected.
+    /// A leading `~` in the path expands to `$HOME`; a relative path starts
+    /// at the current directory. Existing targets must be regular files
+    /// (symlinks to regular files are followed); directories, FIFOs, devices
+    /// and broken symlinks are rejected.
     pub async fn run(self) -> Result<WriteOutput, ToolError> {
+        self.run_in(Path::new(".")).await
+    }
+
+    /// Like [`run`](Self::run), with relative paths starting at `cwd`.
+    pub async fn run_in(self, cwd: &Path) -> Result<WriteOutput, ToolError> {
         // Without this, the OS reports a confusing "Is a directory" error
         // even when nothing exists at the path.
         if self.path.ends_with('/') {
@@ -54,7 +62,7 @@ impl WriteTool {
                 self.path
             )));
         }
-        let path = expand_tilde(&self.path);
+        let path = resolve(cwd, &self.path);
 
         match tokio::fs::metadata(&path).await {
             Ok(meta) if meta.is_dir() => {

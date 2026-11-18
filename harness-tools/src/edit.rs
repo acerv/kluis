@@ -2,13 +2,14 @@
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
 use std::borrow::Cow;
+use std::path::Path;
 
 use genai::chat::Tool;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::error::ToolError;
-use crate::path::expand_tilde;
+use crate::path::resolve;
 
 const BOM: &str = "\u{feff}";
 
@@ -77,12 +78,17 @@ impl EditTool {
 
     /// Apply the edits to an existing text file.
     ///
-    /// A leading `~` in the path expands to `$HOME`. Text is matched with
-    /// `\r\n` and `\r` read as `\n`; lines keep their original endings and a
-    /// leading byte order mark is preserved. Nothing is written unless every
-    /// edit matches.
+    /// A leading `~` in the path expands to `$HOME`; a relative path starts
+    /// at the current directory. Text is matched with `\r\n` and `\r` read
+    /// as `\n`; lines keep their original endings and a leading byte order
+    /// mark is preserved. Nothing is written unless every edit matches.
     pub async fn run(self) -> Result<EditOutput, ToolError> {
-        let path = expand_tilde(&self.path);
+        self.run_in(Path::new(".")).await
+    }
+
+    /// Like [`run`](Self::run), with relative paths starting at `cwd`.
+    pub async fn run_in(self, cwd: &Path) -> Result<EditOutput, ToolError> {
+        let path = resolve(cwd, &self.path);
         let meta = tokio::fs::metadata(&path)
             .await
             .map_err(|e| ToolError::io(&self.path, e))?;

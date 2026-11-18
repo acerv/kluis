@@ -107,11 +107,43 @@ async fn bash_uses_tool_context() {
             pre_exec: Some(Arc::new(|| Err(std::io::Error::from_raw_os_error(1)))),
             ..BashContext::default()
         },
+        ..ToolContext::default()
     };
 
     let resp = run_with(&call("bash", json!({ "command": "echo hi" })), &ctx).await;
     let err = content(&resp)["error"].as_str().unwrap().to_owned();
     assert!(err.contains("Operation not permitted"), "{err}");
+}
+
+#[tokio::test]
+async fn tools_use_context_cwd() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = ToolContext {
+        cwd: dir.path().to_owned(),
+        ..ToolContext::default()
+    };
+    let run = |name: &str, args: Value| {
+        let call = call(name, args);
+        let ctx = ctx.clone();
+        async move { content(&run_with(&call, &ctx).await) }
+    };
+
+    let out = run("write", json!({ "path": "a.txt", "content": "one\n" })).await;
+    assert_eq!(out["bytes_written"], 4, "{out}");
+    let edits = json!([{ "oldText": "one", "newText": "two" }]);
+    let out = run("edit", json!({ "path": "a.txt", "edits": edits })).await;
+    assert_eq!(out["replacements"], 1, "{out}");
+    let out = run("read", json!({ "path": "a.txt" })).await;
+    assert_eq!(out["content"], "two\n", "{out}");
+    let out = run("ls", json!({})).await;
+    assert_eq!(out["entries"], json!(["a.txt"]), "{out}");
+    let out = run("bash", json!({ "command": "cat a.txt" })).await;
+    assert_eq!(out["output"], "two\n", "{out}");
+
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "two\n"
+    );
 }
 
 #[tokio::test]

@@ -5,6 +5,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::io;
 use std::os::unix::process::ExitStatusExt;
+use std::path::Path;
 use std::process::{ExitStatus, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
@@ -116,22 +117,37 @@ impl BashTool {
     /// runs in a new session without a controlling terminal, killed
     /// as a whole on timeout, on error, or when this future is dropped.
     /// Background jobs keep running after the shell exits; their output is
-    /// read until it stays quiet for a moment.
+    /// read until it stays quiet for a moment. The command starts in the
+    /// current directory.
     pub async fn run(self) -> Result<BashOutput, ToolError> {
         self.run_with(&BashContext::default()).await
     }
 
     /// Like [`run`](Self::run), with the host's [`BashContext`].
     pub async fn run_with(self, ctx: &BashContext) -> Result<BashOutput, ToolError> {
+        self.run_in(Path::new("."), ctx).await
+    }
+
+    /// Like [`run_with`](Self::run_with), starting the command in `cwd`.
+    pub async fn run_in(self, cwd: &Path, ctx: &BashContext) -> Result<BashOutput, ToolError> {
         if self.timeout == Some(0) {
             return Err(ToolError::new("timeout must be >= 1"));
+        }
+        // Spawning in a missing folder fails like a missing bash would.
+        match tokio::fs::metadata(cwd).await {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => {
+                let cwd = cwd.display();
+                return Err(ToolError::new(format!("{cwd}: not a directory")));
+            }
+            Err(e) => return Err(ToolError::io(&cwd.display().to_string(), e)),
         }
         // A timeout too large to represent means no limit.
         let deadline = Instant::now().checked_add(Duration::from_secs(
             self.timeout.unwrap_or(DEFAULT_BASH_TIMEOUT),
         ));
 
-        let (mut child, pipe) = spawn(&self.command, ctx).map_err(bash_error)?;
+        let (mut child, pipe) = spawn(&self.command, cwd, ctx).map_err(bash_error)?;
         let mut group = GroupGuard(child.id());
         let mut pipe = Some(pipe);
         let mut filter = Filter::default();
@@ -189,12 +205,14 @@ impl BashTool {
     }
 }
 
-/// Start `command` with stdout and stderr on a single pipe, as `ctx` asks.
-fn spawn(command: &str, ctx: &BashContext) -> io::Result<(Child, Receiver)> {
+/// Start `command` in `cwd` with stdout and stderr on a single pipe, as
+/// `ctx` asks.
+fn spawn(command: &str, cwd: &Path, ctx: &BashContext) -> io::Result<(Child, Receiver)> {
     let (reader, writer) = io::pipe()?;
     let mut cmd = Command::new("bash");
     cmd.arg("-c")
         .arg(command)
+        .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(writer.try_clone()?)
         .stderr(writer)

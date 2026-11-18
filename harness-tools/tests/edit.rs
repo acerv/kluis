@@ -218,3 +218,15 @@ async fn rejected_files() {
     let err = call(&f, vec![edit("a", "b")]).run().await.unwrap_err();
     assert!(err.message.contains("not valid UTF-8"), "{err}");
 }
+
+#[tokio::test]
+async fn relative_path_starts_at_cwd() {
+    let (dir, f) = file("old\n");
+
+    let out = call(Path::new("a.txt"), vec![edit("old", "new")])
+        .run_in(dir.path())
+        .await
+        .unwrap();
+    assert_eq!(out.replacements, 1);
+    assert_eq!(read(&f), "new\n");
+}

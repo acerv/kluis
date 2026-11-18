@@ -2,7 +2,14 @@
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Where `path` points when seen from `cwd`: a leading `~` expands to
+/// `$HOME`, and relative paths start at `cwd`.
+pub(crate) fn resolve(cwd: &Path, path: &str) -> PathBuf {
+    // Joining an absolute path replaces `cwd`.
+    cwd.join(expand_tilde(path))
+}
 
 /// Expand a leading `~` or `~/` to `$HOME`.
 ///

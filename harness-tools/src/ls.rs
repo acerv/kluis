@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::error::ToolError;
-use crate::path::expand_tilde;
+use crate::path::resolve;
 
 /// Default maximum number of entries returned by [`LsTool::run`].
 pub const DEFAULT_LS_LIMIT: usize = 500;
@@ -79,6 +79,12 @@ impl LsTool {
     /// most `limit` names and [`MAX_LS_BYTES`] bytes are returned, but
     /// `total` counts the whole directory.
     pub async fn run(self) -> Result<LsOutput, ToolError> {
+        self.run_in(Path::new(".")).await
+    }
+
+    /// Like [`run`](Self::run), with relative paths, and the default one,
+    /// starting at `cwd`.
+    pub async fn run_in(self, cwd: &Path) -> Result<LsOutput, ToolError> {
         let limit = self.limit.unwrap_or(DEFAULT_LS_LIMIT);
         if limit == 0 {
             return Err(ToolError::new("limit must be >= 1"));
@@ -87,7 +93,7 @@ impl LsTool {
             None | Some("") => ".",
             Some(path) => path,
         };
-        let path = expand_tilde(given);
+        let path = resolve(cwd, given);
 
         let meta = tokio::fs::metadata(&path)
             .await
