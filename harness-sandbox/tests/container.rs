@@ -707,6 +707,9 @@ fn max_tmp_size_fills_up() {
     let out = run(&sandbox, "head -c 2M /dev/zero > /tmp/big");
     assert!(!out.status.success());
     assert!(stderr(&out).contains("No space left"), "{}", stderr(&out));
+
+    let err = Sandbox::new().max_tmp_size(0).container().unwrap_err();
+    assert!(err.message.contains("max_tmp_size"), "{err}");
 }
 
 #[test]

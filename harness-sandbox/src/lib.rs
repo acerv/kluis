@@ -151,6 +151,11 @@ impl Sandbox {
     /// fails without user namespaces, or without Landlock TCP support
     /// (Linux 6.7) unless any network is allowed.
     pub fn container(&self) -> Result<Container, SandboxError> {
+        if self.max_tmp_size == Some(0) {
+            return Err(SandboxError {
+                message: "max_tmp_size: must be at least 1".to_string(),
+            });
+        }
         let mut container = Container::new();
         container
             .runctl(Runctl::MountFallback)

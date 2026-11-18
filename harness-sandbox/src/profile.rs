@@ -54,6 +54,8 @@ pub struct Options {
     /// Processes and threads the harness and its commands may run at once
     /// (1024 by default).
     pub max_processes: Option<u64>,
+    /// Bytes the private `/tmp` may hold (10% of memory by default).
+    pub tmp_size: Option<u64>,
 }
 
 impl Sandbox {
@@ -66,11 +68,14 @@ impl Sandbox {
     /// port 443 to reach the model, and to [`Options::connect`], or anywhere
     /// with [`Options::network`]. It may run at most 1024 processes and
     /// threads (or [`Options::max_processes`]), and store in `/tmp` at most
-    /// 10% of the memory.
+    /// 10% of the memory (or [`Options::tmp_size`]).
     pub fn with_defaults(options: &Options) -> Self {
+        let tmp_size = options
+            .tmp_size
+            .unwrap_or_else(|| total_memory() * TMP_MEMORY_PERCENT / 100);
         let mut sandbox = Sandbox::new()
             .max_processes(options.max_processes.unwrap_or(MAX_PROCESSES))
-            .max_tmp_size(total_memory() * TMP_MEMORY_PERCENT / 100);
+            .max_tmp_size(tmp_size);
         for path in DEFAULT_READ
             .iter()
             .map(PathBuf::from)
