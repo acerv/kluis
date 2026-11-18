@@ -84,8 +84,9 @@ impl Sandbox {
     }
 
     /// Allow reading, executing and changing anything below `path`, but
-    /// its `.git`, which stays read-only unless allowed itself: git on the
-    /// host would otherwise run the hooks and commands written there.
+    /// any `.git` below it, which stays read-only unless allowed itself:
+    /// git on the host would otherwise run the hooks and commands written
+    /// there.
     pub fn allow_write(mut self, path: impl Into<PathBuf>) -> Self {
         self.write.push(path.into());
         self
@@ -187,16 +188,20 @@ impl Sandbox {
         };
         let base_mounts: Vec<_> = all.iter().filter(|m| !covered(m)).cloned().collect();
         let all_writable: Vec<_> = all.iter().filter(|(_, w)| *w).map(|(p, _)| p).collect();
+        let writable_roots: Vec<_> = base_mounts
+            .iter()
+            .filter(|(_, w)| *w)
+            .map(|(p, _)| p.clone())
+            .collect();
         let canon_mounts: Vec<_> = base_mounts
             .iter()
             .filter_map(|(m, w)| Some((m.clone(), std::fs::canonicalize(m).ok()?, *w)))
             .collect();
 
         let mut ro_paths = Vec::new();
-        for root in &all_writable {
-            let git = root.join(".git");
-            if git.exists() && !all_writable.iter().any(|w| w.starts_with(&git)) {
-                push_unique(&mut ro_paths, git);
+        for root in &writable_roots {
+            for git in collect_git(root, &all_writable) {
+                resolve_read_only(&canon_mounts, &git, &mut ro_paths)?;
             }
         }
         for path in &self.read_only {
@@ -228,6 +233,36 @@ impl Sandbox {
             })
             .collect())
     }
+}
+
+/// `.git` folders and files inside `root`, unless already covered by `writable`.
+fn collect_git(root: &Path, writable: &[&PathBuf]) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let Ok(meta) = std::fs::metadata(root) else {
+        return found;
+    };
+    if !meta.is_dir() {
+        return found;
+    }
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if entry.file_name() == ".git" {
+                if path.exists() && !writable.iter().any(|w| w.starts_with(&path)) {
+                    found.push(path);
+                }
+                continue;
+            }
+            if entry.file_type().is_ok_and(|ft| ft.is_dir()) {
+                stack.push(path);
+            }
+        }
+    }
+    found
 }
 
 /// Resolve `raw` while collecting its target and the parents of any

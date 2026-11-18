@@ -280,6 +280,89 @@ fn kept_read_only_is_readable() {
 }
 
 #[test]
+fn nested_git_folder_read_only() {
+    let (dir, _) = folder();
+    let nested = dir.path().join("sub/nested");
+    let git = nested.join(".git");
+    std::fs::create_dir_all(git.join("hooks")).unwrap();
+    std::fs::write(git.join("config"), "cfg\n").unwrap();
+    let sandbox = system().allow_write(dir.path());
+
+    let script = format!(
+        "cat {0}/config && echo x > {0}/hooks/pre-commit; \
+         mv {1} {2}/old && mkdir -p {1}/.git/hooks && echo evil > {0}/hooks/pre-commit; \
+         echo ok > {1}/code.txt",
+        git.display(),
+        nested.display(),
+        dir.path().display()
+    );
+    let out = run(&sandbox, &script);
+    assert_eq!(stdout(&out), "cfg\n");
+    assert!(
+        stderr(&out).contains("Read-only file system"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(
+        std::fs::read_to_string(nested.join("code.txt")).unwrap(),
+        "ok\n"
+    );
+    assert!(!git.join("hooks/pre-commit").exists());
+}
+
+#[test]
+fn nested_git_file_read_only() {
+    let (dir, _) = folder();
+    let nested = dir.path().join("sub/mod");
+    std::fs::create_dir_all(&nested).unwrap();
+    let git = nested.join(".git");
+    std::fs::write(&git, "gitdir: /elsewhere\n").unwrap();
+    let sandbox = system().allow_write(dir.path());
+
+    let script = format!(
+        "echo evil > {0}; mv {1} {2}/old && echo evil > {0}",
+        git.display(),
+        dir.path().join("sub").display(),
+        dir.path().display()
+    );
+    run(&sandbox, &script);
+    assert_eq!(
+        std::fs::read_to_string(&git).unwrap(),
+        "gitdir: /elsewhere\n"
+    );
+}
+
+#[test]
+fn nested_git_writable_when_allowed() {
+    let (dir, _) = folder();
+    let git_allowed = dir.path().join("a/.git");
+    let git_kept = dir.path().join("b/.git");
+    for git in [&git_allowed, &git_kept] {
+        std::fs::create_dir_all(git).unwrap();
+        std::fs::write(git.join("config"), "init\n").unwrap();
+    }
+    let sandbox = system().allow_write(dir.path()).allow_write(&git_allowed);
+
+    let out = run(
+        &sandbox,
+        &format!(
+            "echo ok > {}/config && echo no > {}/config",
+            git_allowed.display(),
+            git_kept.display()
+        ),
+    );
+    assert!(!out.status.success());
+    assert_eq!(
+        std::fs::read_to_string(git_allowed.join("config")).unwrap(),
+        "ok\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(git_kept.join("config")).unwrap(),
+        "init\n"
+    );
+}
+
+#[test]
 fn kept_read_only_protects_symlink_in_writable_subfolder() {
     let (dir, _) = folder();
     let (_outside, real) = folder();
