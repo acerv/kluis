@@ -93,8 +93,8 @@ impl Sandbox {
     }
 
     /// Allow reading and executing anything below `path`, and keep it
-    /// read-only even below, or at, a writable path. The folders between
-    /// that writable path and `path` can then no longer be moved or
+    /// read-only even below, at, or above a writable path. The folders
+    /// between a writable parent and `path` can then no longer be moved or
     /// removed, which would let a new file take its place.
     pub fn keep_read_only(mut self, path: impl Into<PathBuf>) -> Self {
         self.read_only.push(path.into());
@@ -222,6 +222,17 @@ impl Sandbox {
         for path in &self.read_only {
             resolve_read_only(&canon_mounts, path, true, &mut ro_paths)?;
         }
+
+        // A path kept read-only also overrides writable mounts at or below it.
+        base_mounts.retain(|(path, writable)| {
+            if !*writable {
+                return true;
+            }
+            let canon = std::fs::canonicalize(path).ok();
+            !ro_paths.iter().any(|ro| {
+                path.starts_with(ro) || canon.as_deref().is_some_and(|c| c.starts_with(ro))
+            })
+        });
 
         let mut effective = base_mounts.clone();
         for path in &ro_paths {

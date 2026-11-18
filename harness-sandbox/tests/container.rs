@@ -572,6 +572,24 @@ fn allow_write_overrides_allow_read_on_same_path() {
 }
 
 #[test]
+fn kept_read_only_overrides_writable_child() {
+    let (dir, _) = folder();
+    let sub = dir.path().join("sub");
+    std::fs::create_dir(&sub).unwrap();
+    let child = sub.join("child.txt");
+    std::fs::write(&child, "data").unwrap();
+    let sandbox = system().allow_write(&sub).keep_read_only(dir.path());
+
+    let out = run(&sandbox, &format!("echo evil > {}", child.display()));
+    assert!(
+        stderr(&out).contains("Read-only file system"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(std::fs::read_to_string(&child).unwrap(), "data");
+}
+
+#[test]
 fn max_tmp_size_fills_up() {
     let sandbox = system().max_tmp_size(1 << 20);
 
