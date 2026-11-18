@@ -20,6 +20,7 @@ mod find;
 mod ls;
 mod path;
 mod read;
+mod walk;
 mod write;
 
 pub use bash::{

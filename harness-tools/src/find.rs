@@ -3,16 +3,17 @@
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::mpsc;
 
 use genai::chat::Tool;
 use globset::{GlobBuilder, GlobMatcher};
-use ignore::{WalkBuilder, WalkState};
+use ignore::WalkState;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::error::ToolError;
 use crate::path::resolve;
+use crate::walk::{self, StopOnDrop};
 
 /// Default maximum number of paths returned by [`FindTool::run`].
 pub const DEFAULT_FIND_LIMIT: usize = 1000;
@@ -156,63 +157,37 @@ impl FindTool {
 /// Paths below `root` matching `glob`, relative to `root`, in no order.
 fn walk(root: &Path, glob: &GlobMatcher, by_path: bool, stop: &AtomicBool) -> Vec<String> {
     let (tx, rx) = mpsc::channel();
-    WalkBuilder::new(root)
-        .hidden(false)
-        // Like git, let a nested repository stop the .gitignore rules of the
-        // outer one; outside any repository, apply them anyway.
-        .require_git(in_git_repo(root))
-        .current_dir(root)
-        .filter_entry(|entry| entry.file_name() != ".git")
-        .build_parallel()
-        .run(|| {
-            let tx = tx.clone();
-            Box::new(move |entry| {
-                if stop.load(Ordering::Relaxed) {
-                    return WalkState::Quit;
+    walk::builder(root).build_parallel().run(|| {
+        let tx = tx.clone();
+        Box::new(move |entry| {
+            if stop.load(Ordering::Relaxed) {
+                return WalkState::Quit;
+            }
+            // Folders we may not read, and races with deletions.
+            let Ok(entry) = entry else {
+                return WalkState::Continue;
+            };
+            let Ok(rel) = entry.path().strip_prefix(root) else {
+                return WalkState::Continue;
+            };
+            if entry.depth() == 0 {
+                return WalkState::Continue;
+            }
+            let hit = if by_path {
+                glob.is_match(rel)
+            } else {
+                glob.is_match(entry.file_name())
+            };
+            if hit {
+                let mut path = rel.to_string_lossy().into_owned();
+                if entry.file_type().is_some_and(|t| t.is_dir()) {
+                    path.push('/');
                 }
-                // Folders we may not read, and races with deletions.
-                let Ok(entry) = entry else {
-                    return WalkState::Continue;
-                };
-                let Ok(rel) = entry.path().strip_prefix(root) else {
-                    return WalkState::Continue;
-                };
-                if entry.depth() == 0 {
-                    return WalkState::Continue;
-                }
-                let hit = if by_path {
-                    glob.is_match(rel)
-                } else {
-                    glob.is_match(entry.file_name())
-                };
-                if hit {
-                    let mut path = rel.to_string_lossy().into_owned();
-                    if entry.file_type().is_some_and(|t| t.is_dir()) {
-                        path.push('/');
-                    }
-                    let _ = tx.send(path);
-                }
-                WalkState::Continue
-            })
-        });
+                let _ = tx.send(path);
+            }
+            WalkState::Continue
+        })
+    });
     drop(tx);
     rx.into_iter().collect()
-}
-
-/// Whether `dir` is inside a git work tree.
-fn in_git_repo(dir: &Path) -> bool {
-    let Ok(dir) = std::path::absolute(dir) else {
-        return false;
-    };
-    dir.ancestors().any(|d| d.join(".git").exists())
-}
-
-/// Raises its flag when dropped.
-#[derive(Default)]
-struct StopOnDrop(Arc<AtomicBool>);
-
-impl Drop for StopOnDrop {
-    fn drop(&mut self) {
-        self.0.store(true, Ordering::Relaxed);
-    }
 }
