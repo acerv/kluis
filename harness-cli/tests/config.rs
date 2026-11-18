@@ -12,12 +12,11 @@ fn tempdir() -> TempDir {
     tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap()
 }
 
-/// Run the harness with `home` as `$HOME` and no `$XDG_CONFIG_HOME`.
+/// Run the harness with `home` as `$HOME`.
 fn run_cli(home: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_kl-cli"))
         .args(args)
         .env("HOME", home)
-        .env_remove("XDG_CONFIG_HOME")
         .env_remove("HARNESS_CONFIG")
         .env_remove("HARNESS_SANDBOXED")
         .stdin(Stdio::null())
@@ -27,7 +26,7 @@ fn run_cli(home: &Path, args: &[&str]) -> Output {
 
 /// Write `text` as the default config file of `home`.
 fn write_default(home: &Path, text: &str) -> PathBuf {
-    let dir = home.join(".config/harness");
+    let dir = home.join(".kluis");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("config.toml");
     std::fs::write(&path, text).unwrap();
@@ -41,7 +40,7 @@ fn stderr(out: &Output) -> String {
 #[test]
 fn missing_default_file_is_created_with_defaults() {
     let home = tempdir();
-    let path = home.path().join(".config/harness/config.toml");
+    let path = home.path().join(".kluis/config.toml");
     assert!(!path.exists());
 
     let out = run_cli(home.path(), &[]);
@@ -75,26 +74,6 @@ fn default_file_is_read() {
         "{}",
         stderr(&out)
     );
-}
-
-#[test]
-fn xdg_config_home_is_used() {
-    let home = tempdir();
-    let xdg = tempdir();
-    let dir = xdg.path().join("harness");
-    std::fs::create_dir(&dir).unwrap();
-    std::fs::write(dir.join("config.toml"), "not toml").unwrap();
-
-    let out = Command::new(env!("CARGO_BIN_EXE_kl-cli"))
-        .env("HOME", home.path())
-        .env("XDG_CONFIG_HOME", xdg.path())
-        .env_remove("HARNESS_CONFIG")
-        .env_remove("HARNESS_SANDBOXED")
-        .stdin(Stdio::null())
-        .output()
-        .unwrap();
-    assert!(!out.status.success());
-    assert!(stderr(&out).contains("config.toml"), "{}", stderr(&out));
 }
 
 #[test]
@@ -223,7 +202,6 @@ fn file_in_current_folder_works() {
         .args(["--config", "sub/config.toml"])
         .current_dir(cwd.path())
         .env("HOME", home.path())
-        .env_remove("XDG_CONFIG_HOME")
         .env_remove("HARNESS_CONFIG")
         .env_remove("HARNESS_SANDBOXED")
         .stdin(Stdio::null())
@@ -271,7 +249,6 @@ fn no_sandbox_uses_given_config_even_if_marker_set() {
         .args(["--no-sandbox", "--config", missing.to_str().unwrap()])
         .env("HOME", home.path())
         .env("HARNESS_SANDBOXED", "1")
-        .env_remove("XDG_CONFIG_HOME")
         .env_remove("HARNESS_CONFIG")
         .stdin(Stdio::null())
         .output()

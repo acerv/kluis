@@ -82,7 +82,7 @@ pub struct Args {
     #[arg(long, value_name = "NAME")]
     pass_env: Vec<String>,
 
-    /// Config file [default: ~/.config/harness/config.toml]
+    /// Config file [default: ~/.kluis/config.toml]
     #[arg(long, env = config::ENV, value_name = "PATH")]
     config: Option<PathBuf>,
 

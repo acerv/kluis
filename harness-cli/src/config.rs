@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
-//! Config file, `~/.config/harness/config.toml` by default:
+//! Config file, `~/.kluis/config.toml` by default:
 //!
 //! ```toml
 //! [sandbox]
@@ -88,13 +88,9 @@ impl Default for SandboxConfig {
 }
 
 /// Where the config file is looked for when not given:
-/// `$XDG_CONFIG_HOME/harness/config.toml`, or `~/.config/harness/config.toml`.
+/// `~/.kluis/config.toml`.
 pub fn default_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| home().map(|home| home.join(".config")))?;
-    Some(base.join("harness").join("config.toml"))
+    Some(home()?.join(".kluis").join("config.toml"))
 }
 
 /// Read the config file at `path`, creating it with the default template

@@ -4,10 +4,10 @@
 use std::process::{Command, Output, Stdio};
 
 fn run_cli(args: &[&str]) -> Output {
-    let xdg = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     Command::new(env!("CARGO_BIN_EXE_kl-cli"))
         .args(args)
-        .env("XDG_CONFIG_HOME", xdg.path())
+        .env("HOME", home.path())
         .env_remove("HARNESS_CONFIG")
         .env_remove("HARNESS_SANDBOXED")
         .stdin(Stdio::null())

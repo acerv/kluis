@@ -2,7 +2,7 @@
 
 ## Config file
 
-`[sandbox]` section in `~/.config/harness/config.toml`:
+`[sandbox]` section in `~/.kluis/config.toml`:
 
 - [x] Paths to deny reading (`.ssh`, `.gnupg`, `.pi`, ...)
 - [x] Extra mount points, read-only or writable (`/etc/ssl`, ...)
