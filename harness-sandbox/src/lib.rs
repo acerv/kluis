@@ -27,6 +27,7 @@ pub use protect::protect_self;
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::fmt;
+use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use hakoniwa::landlock::{CompatMode, Resource, Ruleset};
@@ -598,6 +599,22 @@ fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
     if !paths.contains(&path) {
         paths.push(path);
     }
+}
+
+/// Limit the virtual memory of the calling process and its children to
+/// `bytes`, e.g. a command before `exec`.
+///
+/// Only makes a system call, so it is safe to use in `Command::pre_exec`.
+pub fn limit_memory(bytes: u64) -> io::Result<()> {
+    let limit = libc::rlimit {
+        rlim_cur: bytes,
+        rlim_max: bytes,
+    };
+    // SAFETY: plain system call with a valid rlimit struct.
+    if unsafe { libc::setrlimit(libc::RLIMIT_AS, &limit) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// The closest mount strictly above `path` and whether it is writable.

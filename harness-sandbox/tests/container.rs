@@ -713,6 +713,25 @@ fn max_tmp_size_fills_up() {
 }
 
 #[test]
+fn limit_memory_caps_child_address_space() {
+    use std::os::unix::process::CommandExt;
+    use std::process::Command;
+
+    let mut cmd = Command::new("/bin/bash");
+    cmd.args(["-c", "ulimit -v"]);
+    // SAFETY: limit_memory only makes a system call.
+    unsafe {
+        cmd.pre_exec(|| harness_sandbox::limit_memory(64 << 20));
+    }
+    let out = cmd.output().unwrap();
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        format!("{}\n", 64 << 10)
+    );
+}
+
+#[test]
 fn max_processes_counts_container_only() {
     let container = Sandbox::new().max_processes(16).container().unwrap();
     // SAFETY: as in `bind`; the closure only forks children that sleep.
