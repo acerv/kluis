@@ -39,10 +39,25 @@ fn stderr(out: &Output) -> String {
 }
 
 #[test]
-fn missing_default_file_is_fine() {
+fn missing_default_file_is_created_with_defaults() {
     let home = tempdir();
+    let path = home.path().join(".config/harness/config.toml");
+    assert!(!path.exists());
+
     let out = run_cli(home.path(), &[]);
     assert!(out.status.success(), "{}", stderr(&out));
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("deny = [\"~/.ssh\", \"~/.gnupg\"]"), "{text}");
+    assert!(!text.contains(".pi"), "{text}");
+
+    // Existing file is not overwritten on the next run.
+    std::fs::write(&path, "[sandbox]\nenv = [\"CC\"]\n").unwrap();
+    let out = run_cli(home.path(), &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "[sandbox]\nenv = [\"CC\"]\n"
+    );
 }
 
 #[test]

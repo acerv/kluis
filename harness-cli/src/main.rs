@@ -130,9 +130,7 @@ fn apply_config(args: &mut Args) -> Result<(), Error> {
             },
         }
     };
-    let Some(config) = config::load(&path, required)? else {
-        return Ok(());
-    };
+    let config = config::load(&path, required)?;
     args.allow_read.extend(config.sandbox.read);
     args.allow_write.extend(config.sandbox.write);
     args.deny_read.extend(config.sandbox.deny);
