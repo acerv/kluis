@@ -16,6 +16,8 @@
 //! network = false
 //! # Processes and threads the harness and its commands may run at once.
 //! max_processes = 1024
+//! # Size of the private /tmp in bytes, or with a K, M or G suffix.
+//! tmp_size = "512M"
 //! # Also pass these environment variables to commands.
 //! env = ["CC", "CFLAGS"]
 //! ```
@@ -27,7 +29,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use harness_core::Error;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 /// Environment variable naming the config file, like `--config`. Also how
 /// the harness tells its copy in the container which file it uses.
@@ -62,6 +64,9 @@ pub struct SandboxConfig {
     pub network: bool,
     /// Process and thread limit, like `--max-processes`.
     pub max_processes: Option<u64>,
+    /// Private `/tmp` size in bytes, like `--tmp-size`.
+    #[serde(default, deserialize_with = "deserialize_opt_size")]
+    pub tmp_size: Option<u64>,
     /// Also passed to commands, like `--pass-env`.
     #[serde(default)]
     pub env: Vec<String>,
@@ -116,4 +121,45 @@ fn home() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
+}
+
+/// Parse a byte size from a number with an optional `K`, `M` or `G` suffix
+/// (powers of 1024). Zero is rejected.
+pub fn parse_size(text: &str) -> Result<u64, String> {
+    let s = text.trim();
+    let (num, unit) = match s.as_bytes().last() {
+        Some(b'k' | b'K') => (&s[..s.len() - 1], 1u64 << 10),
+        Some(b'm' | b'M') => (&s[..s.len() - 1], 1u64 << 20),
+        Some(b'g' | b'G') => (&s[..s.len() - 1], 1u64 << 30),
+        _ => (s, 1u64),
+    };
+    let value: u64 = num
+        .parse()
+        .map_err(|_| format!("{text}: invalid byte size"))?;
+    let bytes = value
+        .checked_mul(unit)
+        .ok_or_else(|| format!("{text}: size is too large"))?;
+    if bytes == 0 {
+        return Err("size must be at least 1".to_string());
+    }
+    Ok(bytes)
+}
+
+fn deserialize_opt_size<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum RawSize {
+        Bytes(u64),
+        Text(String),
+    }
+
+    match RawSize::deserialize(deserializer)? {
+        RawSize::Bytes(n) => parse_size(&n.to_string()),
+        RawSize::Text(s) => parse_size(&s),
+    }
+    .map(Some)
+    .map_err(serde::de::Error::custom)
 }

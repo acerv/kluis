@@ -70,6 +70,11 @@ pub struct Args {
     #[arg(long, value_name = "NUM", value_parser = clap::value_parser!(u64).range(1..))]
     max_processes: Option<u64>,
 
+    /// Size of the private /tmp in bytes, or with a K, M or G suffix
+    /// [default: 10% of memory].
+    #[arg(long, value_name = "SIZE", value_parser = config::parse_size)]
+    tmp_size: Option<u64>,
+
     /// Also pass this environment variable to commands (repeatable).
     #[arg(long, value_name = "NAME")]
     pass_env: Vec<String>,
@@ -131,6 +136,7 @@ fn apply_config(args: &mut Args) -> Result<(), Error> {
     args.allow_connect.extend(config.sandbox.connect);
     args.network |= config.sandbox.network;
     args.max_processes = args.max_processes.or(config.sandbox.max_processes);
+    args.tmp_size = args.tmp_size.or(config.sandbox.tmp_size);
     args.pass_env.extend(config.sandbox.env);
     args.config = Some(path);
     Ok(())

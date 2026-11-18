@@ -62,6 +62,7 @@ pub fn run(args: &Args) -> Result<ExitCode, Error> {
         connect: args.allow_connect.clone(),
         network: args.network,
         max_processes: args.max_processes,
+        tmp_size: args.tmp_size,
     })
     .allow_read(&exe);
     // The copy inside reads the same config file, wherever it is. Commands

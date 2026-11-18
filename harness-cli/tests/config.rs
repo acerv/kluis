@@ -314,3 +314,35 @@ fn max_processes_is_accepted_and_validated() {
     assert!(!out.status.success());
     assert!(stderr(&out).contains("--max-processes"), "{}", stderr(&out));
 }
+
+#[test]
+fn tmp_size_is_accepted_and_validated() {
+    let home = tempdir();
+    for text in [
+        "[sandbox]\ntmp_size = \"64M\"\n",
+        "[sandbox]\ntmp_size = 67108864\n",
+    ] {
+        write_default(home.path(), text);
+        let out = run_cli(home.path(), &[]);
+        assert!(out.status.success(), "{text}: {}", stderr(&out));
+    }
+
+    let out = run_cli(home.path(), &["--tmp-size", "32M"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    for bad in [
+        "[sandbox]\ntmp_size = 0\n",
+        "[sandbox]\ntmp_size = \"0M\"\n",
+        "[sandbox]\ntmp_size = \"10X\"\n",
+        "[sandbox]\ntmp_size = \"999999999999999G\"\n",
+    ] {
+        write_default(home.path(), bad);
+        let out = run_cli(home.path(), &["--no-sandbox"]);
+        assert!(!out.status.success(), "{bad}");
+    }
+
+    write_default(home.path(), "");
+    let out = run_cli(home.path(), &["--no-sandbox", "--tmp-size", "0"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("--tmp-size"), "{}", stderr(&out));
+}

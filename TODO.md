@@ -7,7 +7,7 @@
 - [x] Paths to deny reading (`.ssh`, `.gnupg`, `.pi`, ...)
 - [x] Extra mount points, read-only or writable (`/etc/ssl`, ...)
 - [ ] Memory limit for commands
-- [ ] `/tmp` size
+- [x] Process limit and `/tmp` size
 - [x] Environment variables passed to commands
 - [x] TCP ports and network access
 
