@@ -24,8 +24,10 @@ pub use network::NoNetwork;
 pub use profile::Options;
 pub use protect::protect_self;
 
+use std::collections::VecDeque;
+use std::ffi::OsString;
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use hakoniwa::landlock::{CompatMode, Resource, Ruleset};
 use hakoniwa::{Container, MountOptions, Rlimit, Runctl};
@@ -183,27 +185,40 @@ impl Sandbox {
             all.iter()
                 .any(|(other, w)| other != path && path.starts_with(other) && (*w || !writable))
         };
-        let mut mounts: Vec<_> = all.iter().filter(|m| !covered(m)).cloned().collect();
-        let writable: Vec<_> = all.iter().filter(|(_, w)| *w).map(|(p, _)| p).collect();
-        for root in &writable {
+        let base_mounts: Vec<_> = all.iter().filter(|m| !covered(m)).cloned().collect();
+        let all_writable: Vec<_> = all.iter().filter(|(_, w)| *w).map(|(p, _)| p).collect();
+        let canon_mounts: Vec<_> = base_mounts
+            .iter()
+            .filter_map(|(m, w)| Some((m.clone(), std::fs::canonicalize(m).ok()?, *w)))
+            .collect();
+
+        let mut ro_paths = Vec::new();
+        for root in &all_writable {
             let git = root.join(".git");
-            if git.exists() && !writable.iter().any(|w| w.starts_with(&git)) {
-                mounts.push((git, false));
+            if git.exists() && !all_writable.iter().any(|w| w.starts_with(&git)) {
+                push_unique(&mut ro_paths, git);
             }
         }
-        // Last: a later mount of the same path replaces a writable one.
         for path in &self.read_only {
-            let path = std::fs::canonicalize(path).map_err(|e| SandboxError {
-                message: format!("{}: {e}", path.display()),
-            })?;
-            let path = checked(&path)?;
+            resolve_read_only(&canon_mounts, path, &mut ro_paths)?;
+        }
+
+        let mut effective = base_mounts.clone();
+        for path in &ro_paths {
+            effective.push((path.clone(), false));
+        }
+
+        let mut mounts = base_mounts;
+        for path in &ro_paths {
             // The folders on the way from a writable mount become mount
             // points, which cannot be moved away to free the path.
-            if let Some(root) = writable_parent(&mounts, &path) {
+            if let Some(root) = writable_parent(&effective, path) {
                 for dir in path.ancestors().skip(1).take_while(|d| *d != root) {
                     mounts.push((dir.to_path_buf(), true));
                 }
             }
+        }
+        for path in ro_paths {
             mounts.push((path, false));
         }
         Ok(mounts
@@ -212,6 +227,130 @@ impl Sandbox {
                 Some((path.into_os_string().into_string().ok()?, writable))
             })
             .collect())
+    }
+}
+
+/// Resolve `raw` while collecting its target and the parents of any
+/// symlinks inside writable folders (other than the writable roots
+/// themselves) into `ro_paths`.
+fn resolve_read_only(
+    canon_mounts: &[(PathBuf, PathBuf, bool)],
+    raw: &Path,
+    ro_paths: &mut Vec<PathBuf>,
+) -> Result<(), SandboxError> {
+    let abs = checked(raw)?;
+    let canonical = walk_symlinks(canon_mounts, &abs, ro_paths)?;
+    let canonical = checked(&canonical)?;
+    // If a mount root itself sits behind a symlink on the host, also protect
+    // the path as seen inside that mount.
+    for (mount, canon, _) in canon_mounts {
+        if mount != canon {
+            if let Ok(rest) = canonical.strip_prefix(canon) {
+                let mapped = mount.join(rest);
+                if mapped != canonical {
+                    push_unique(ro_paths, mapped);
+                }
+            }
+        }
+    }
+    push_unique(ro_paths, canonical);
+    Ok(())
+}
+
+enum Step {
+    Root,
+    Parent,
+    Name(OsString),
+}
+
+fn push_steps(queue: &mut VecDeque<Step>, path: &Path) {
+    let steps: Vec<_> = path
+        .components()
+        .filter_map(|c| match c {
+            Component::RootDir => Some(Step::Root),
+            Component::ParentDir => Some(Step::Parent),
+            Component::Normal(name) => Some(Step::Name(name.to_owned())),
+            Component::CurDir | Component::Prefix(_) => None,
+        })
+        .collect();
+    for step in steps.into_iter().rev() {
+        queue.push_front(step);
+    }
+}
+
+/// Walk `abs` component by component, following symlinks and recording the
+/// writable parent directory of any symlink strictly below a writable root.
+fn walk_symlinks(
+    canon_mounts: &[(PathBuf, PathBuf, bool)],
+    abs: &Path,
+    ro_paths: &mut Vec<PathBuf>,
+) -> Result<PathBuf, SandboxError> {
+    const MAX_SYMLINKS: usize = 40;
+    let mut cur = PathBuf::from("/");
+    let mut queue = VecDeque::new();
+    push_steps(&mut queue, abs);
+    let mut hops = 0usize;
+
+    while let Some(step) = queue.pop_front() {
+        match step {
+            Step::Root => cur = PathBuf::from("/"),
+            Step::Parent => {
+                cur.pop();
+            }
+            Step::Name(name) => {
+                let next = cur.join(&name);
+                let meta = std::fs::symlink_metadata(&next).map_err(|e| SandboxError {
+                    message: format!("{}: {e}", next.display()),
+                })?;
+                if meta.file_type().is_symlink() {
+                    hops += 1;
+                    if hops > MAX_SYMLINKS {
+                        return Err(SandboxError {
+                            message: format!(
+                                "{}: too many levels of symbolic links",
+                                abs.display()
+                            ),
+                        });
+                    }
+                    if let Some(dir) = writable_symlink_parent(canon_mounts, &cur) {
+                        push_unique(ro_paths, dir);
+                    }
+                    let target = std::fs::read_link(&next).map_err(|e| SandboxError {
+                        message: format!("{}: {e}", next.display()),
+                    })?;
+                    push_steps(&mut queue, &target);
+                } else {
+                    cur = next;
+                }
+            }
+        }
+    }
+    Ok(cur)
+}
+
+/// If `dir` is strictly inside a writable mount, return its path relative
+/// to that mount so it can be kept read-only.
+fn writable_symlink_parent(
+    canon_mounts: &[(PathBuf, PathBuf, bool)],
+    dir: &Path,
+) -> Option<PathBuf> {
+    let (mount, canon, _) = canon_mounts
+        .iter()
+        .filter(|(_, canon, _)| dir.starts_with(canon))
+        .max_by_key(|(_, canon, _)| canon.components().count())
+        .filter(|(_, _, writable)| *writable)?;
+    let rest = dir.strip_prefix(canon).ok()?;
+    if rest.as_os_str().is_empty() {
+        // The symlink sits directly inside a writable root; making the
+        // whole root read-only would break `allow_write`.
+        return None;
+    }
+    Some(mount.join(rest))
+}
+
+fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.contains(&path) {
+        paths.push(path);
     }
 }
 

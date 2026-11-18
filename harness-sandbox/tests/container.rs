@@ -280,6 +280,108 @@ fn kept_read_only_is_readable() {
 }
 
 #[test]
+fn kept_read_only_protects_symlink_in_writable_subfolder() {
+    let (dir, _) = folder();
+    let (_outside, real) = folder();
+    let sub = dir.path().join("sub");
+    std::fs::create_dir(&sub).unwrap();
+    let link = sub.join("link.toml");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let sandbox = system().allow_write(dir.path()).keep_read_only(&link);
+
+    let script = format!(
+        "cat {0}; echo ok > {1}/ok.txt; rm -f {0}; echo evil > {0}",
+        link.display(),
+        dir.path().display()
+    );
+    let out = run(&sandbox, &script);
+    assert_eq!(stdout(&out), "data");
+    assert!(dir.path().join("ok.txt").exists());
+    assert!(std::fs::symlink_metadata(&link)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(std::fs::read_to_string(&real).unwrap(), "data");
+}
+
+#[test]
+fn kept_read_only_protects_dir_symlink_in_writable_subfolder() {
+    let (dir, _) = folder();
+    let (outside, real) = folder();
+    let sub = dir.path().join("sub");
+    std::fs::create_dir(&sub).unwrap();
+    let dirlink = sub.join("dirlink");
+    std::os::unix::fs::symlink(outside.path(), &dirlink).unwrap();
+    let target = dirlink.join("file.txt");
+    let sandbox = system().allow_write(dir.path()).keep_read_only(&target);
+
+    let script = format!(
+        "rm -f {0}; echo evil > {1}; mkdir -p {0} && echo evil > {2}",
+        dirlink.display(),
+        real.display(),
+        target.display()
+    );
+    run(&sandbox, &script);
+    assert!(std::fs::symlink_metadata(&dirlink)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(std::fs::read_to_string(&real).unwrap(), "data");
+}
+
+#[test]
+fn kept_read_only_under_symlinked_writable_root() {
+    let (base, _) = folder();
+    let real_root = base.path().join("real");
+    let sub = real_root.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    let secret = sub.join("secret.txt");
+    std::fs::write(&secret, "secret").unwrap();
+    let link_root = base.path().join("link");
+    std::os::unix::fs::symlink(&real_root, &link_root).unwrap();
+
+    let via_link = link_root.join("sub/secret.txt");
+    let sandbox = system().allow_write(&link_root).keep_read_only(&via_link);
+
+    let script = format!(
+        "echo ok > {0}/sub/other.txt; echo evil > {1}; mv {0}/sub {0}/old && echo evil > {1}",
+        link_root.display(),
+        via_link.display()
+    );
+    let out = run(&sandbox, &script);
+    assert!(
+        stderr(&out).contains("Read-only file system"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(sub.join("other.txt").exists());
+    assert_eq!(std::fs::read_to_string(&secret).unwrap(), "secret");
+}
+
+#[test]
+fn kept_read_only_parent_covers_child_pin() {
+    let (dir, _) = folder();
+    let a = dir.path().join("a");
+    let b = a.join("b");
+    std::fs::create_dir_all(&b).unwrap();
+    let file = b.join("file.txt");
+    std::fs::write(&file, "data").unwrap();
+    // Child registered before parent: parent read-only must still win for `b`.
+    let sandbox = system()
+        .allow_write(dir.path())
+        .keep_read_only(&file)
+        .keep_read_only(&a);
+
+    let out = run(&sandbox, &format!("echo evil > {}/other.txt", b.display()));
+    assert!(
+        stderr(&out).contains("Read-only file system"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!b.join("other.txt").exists());
+}
+
+#[test]
 fn max_tmp_size_fills_up() {
     let sandbox = system().max_tmp_size(1 << 20);
 
