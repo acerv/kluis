@@ -181,12 +181,20 @@ impl Sandbox {
             }
         }
         // A mount inside another one would create its mount point on the
-        // host.
+        // host; a writable mount of the same path also supersedes a
+        // read-only one.
         let covered = |(path, writable): &(PathBuf, bool)| {
-            all.iter()
-                .any(|(other, w)| other != path && path.starts_with(other) && (*w || !writable))
+            all.iter().any(|(other, w)| {
+                (other != path && path.starts_with(other) && (*w || !writable))
+                    || (other == path && *w && !writable)
+            })
         };
-        let base_mounts: Vec<_> = all.iter().filter(|m| !covered(m)).cloned().collect();
+        let mut base_mounts = Vec::new();
+        for mount in all.iter().filter(|m| !covered(m)) {
+            if !base_mounts.contains(mount) {
+                base_mounts.push(mount.clone());
+            }
+        }
         let all_writable: Vec<_> = all.iter().filter(|(_, w)| *w).map(|(p, _)| p).collect();
         let writable_roots: Vec<_> = base_mounts
             .iter()

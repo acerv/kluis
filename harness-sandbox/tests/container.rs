@@ -544,6 +544,34 @@ fn keep_read_only_rejects_non_utf8_symlink_parent() {
 }
 
 #[test]
+fn allow_write_overrides_allow_read_on_same_path() {
+    let (dir, file) = folder();
+    let keep = dir.path().join("keep.txt");
+    std::fs::write(&keep, "keep").unwrap();
+    let sandbox = system()
+        .allow_read(dir.path())
+        .allow_write(dir.path())
+        .allow_write(dir.path())
+        .keep_read_only(&keep);
+
+    let out = run(
+        &sandbox,
+        &format!(
+            "echo ok > {} && echo no > {}",
+            file.display(),
+            keep.display()
+        ),
+    );
+    assert!(
+        stderr(&out).contains("Read-only file system"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "ok\n");
+    assert_eq!(std::fs::read_to_string(&keep).unwrap(), "keep");
+}
+
+#[test]
 fn max_tmp_size_fills_up() {
     let sandbox = system().max_tmp_size(1 << 20);
 
