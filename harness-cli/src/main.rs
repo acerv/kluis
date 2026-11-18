@@ -140,7 +140,13 @@ async fn run(args: Args, tools: ToolContext) -> Result<(), Error> {
 
 fn print_event(event: Event<'_>) {
     match event {
-        Event::Text(text) => println!("{text}"),
+        Event::TextDelta(text) => {
+            print!("{text}");
+            // Show the text as it comes, not line by line.
+            let _ = std::io::stdout().flush();
+        }
+        // Already printed piece by piece: end its line.
+        Event::Text(_) => println!(),
         Event::ToolCall(call) => println!(
             "→ {} {}",
             call.fn_name,

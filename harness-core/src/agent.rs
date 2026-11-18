@@ -3,7 +3,10 @@
 
 //! The agent loop.
 
-use genai::chat::{ChatMessage, ChatRequest, ToolCall, ToolResponse};
+use futures_util::StreamExt;
+use genai::chat::{
+    ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, MessageContent, ToolCall, ToolResponse,
+};
 use genai::Client;
 use serde_json::json;
 
@@ -69,8 +72,9 @@ impl Agent {
     /// `on_event` is called as the work progresses.
     ///
     /// Dropping the future, e.g. to cancel, keeps the history valid for the
-    /// next prompt: the user message stays, tool results already made stay,
-    /// and the calls left get a result saying they were cancelled.
+    /// next prompt: the user message stays, a reply cut while streaming is
+    /// left out, tool results already made stay, and the calls left get a
+    /// result saying they were cancelled.
     pub async fn prompt(
         &mut self,
         text: &str,
@@ -79,14 +83,11 @@ impl Agent {
         self.req.messages.push(ChatMessage::user(text));
 
         for _ in 0..self.max_turns {
-            let res = self
-                .client
-                .exec_chat(&self.model, self.req.clone(), None)
-                .await?;
+            let content = self.next_turn(&mut on_event).await?;
 
             // Keep the whole assistant turn (text, tool calls, thought
             // signatures) in the history, before any tool result.
-            self.req.messages.push(ChatMessage::assistant(res.content));
+            self.req.messages.push(ChatMessage::assistant(content));
             let turn = &self.req.messages[self.req.messages.len() - 1].content;
 
             let answer = turn.first_text().unwrap_or_default();
@@ -114,6 +115,32 @@ impl Agent {
         }
 
         Err(format!("stopped after {} turns", self.max_turns).into())
+    }
+
+    /// Ask the model for its next turn, reporting its text as it streams.
+    ///
+    /// The turn joins the history only once complete: a cut stream, like
+    /// pi does, is never sent back to the model.
+    async fn next_turn(
+        &self,
+        on_event: &mut impl FnMut(Event<'_>),
+    ) -> Result<MessageContent, Error> {
+        let options = ChatOptions::default()
+            .with_capture_content(true)
+            .with_capture_tool_calls(true);
+        let mut stream = self
+            .client
+            .exec_chat_stream(&self.model, self.req.clone(), Some(&options))
+            .await?
+            .stream;
+        while let Some(event) = stream.next().await {
+            match event? {
+                ChatStreamEvent::Chunk(chunk) => on_event(Event::TextDelta(&chunk.content)),
+                ChatStreamEvent::End(end) => return Ok(end.captured_content.unwrap_or_default()),
+                _ => {}
+            }
+        }
+        Err("the model's reply ended early".into())
     }
 }
 

@@ -102,6 +102,7 @@ async fn tool_call_round_trip() {
     let answer = agent
         .prompt("run it", |event| {
             events.push(match event {
+                Event::TextDelta(text) => format!("delta {text}"),
                 Event::Text(text) => format!("text {text}"),
                 Event::ToolCall(call) => format!("call {}", call.fn_name),
                 Event::ToolResult(resp) => format!("result {}", resp.call_id),
@@ -111,7 +112,10 @@ async fn tool_call_round_trip() {
         .unwrap();
 
     assert_eq!(answer, "ok");
-    assert_eq!(events, ["call bash", "result call_1", "text ok"]);
+    assert_eq!(
+        events,
+        ["call bash", "result call_1", "delta ok", "text ok"]
+    );
     assert_eq!(
         roles(&agent),
         [
@@ -213,4 +217,68 @@ async fn cancel_while_waiting_keeps_the_user_message() {
     assert_eq!(roles(&agent), [ChatRole::User]);
     assert_eq!(prompt(&mut agent, "again").await.unwrap(), "second");
     assert_eq!(sent(&model.requests()[1], "user").len(), 2);
+}
+
+#[tokio::test]
+async fn text_streams_in_pieces() {
+    let model = MockModel::start(vec![text("hello world")]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = agent(&model, dir.path());
+
+    let mut events = Vec::new();
+    agent
+        .prompt("hi", |event| match event {
+            Event::TextDelta(text) => events.push(format!("delta {text}")),
+            Event::Text(text) => events.push(format!("text {text}")),
+            _ => {}
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        events,
+        [
+            "delta hel",
+            "delta lo ",
+            "delta wor",
+            "delta ld",
+            "text hello world"
+        ]
+    );
+    assert_eq!(agent.history()[1].content.first_text(), Some("hello world"));
+}
+
+#[tokio::test]
+async fn cancel_while_streaming_drops_the_partial_reply() {
+    let model =
+        MockModel::start(vec![Reply::Partial("half an answer".into()), text("again")]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = agent(&model, dir.path());
+
+    let streaming = Notify::new();
+    let run = agent.prompt("first", |event| {
+        if let Event::TextDelta(_) = event {
+            streaming.notify_one();
+        }
+    });
+    tokio::select! {
+        out = run => panic!("prompt ended before the cancel: {out:?}"),
+        _ = streaming.notified() => {}
+    }
+
+    assert_eq!(roles(&agent), [ChatRole::User]);
+    assert_eq!(prompt(&mut agent, "next").await.unwrap(), "again");
+    assert!(sent(&model.requests()[1], "assistant").is_empty());
+}
+
+#[tokio::test]
+async fn broken_stream_is_an_error() {
+    let model = MockModel::start(vec![Reply::Broken("half an answer".into()), text("again")]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = agent(&model, dir.path());
+
+    let err = prompt(&mut agent, "first").await.unwrap_err();
+    assert!(err.to_string().contains("ended early"), "{err}");
+    assert_eq!(roles(&agent), [ChatRole::User]);
+    assert_eq!(prompt(&mut agent, "next").await.unwrap(), "again");
 }

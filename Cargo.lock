@@ -883,6 +883,7 @@ dependencies = [
 name = "harness-core"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "genai",
  "harness-tools",
  "serde",

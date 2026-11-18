@@ -11,7 +11,9 @@ use genai::chat::{ToolCall, ToolResponse};
 /// need to keep beyond the callback.
 #[derive(Debug, Clone, Copy)]
 pub enum Event<'a> {
-    /// Text the model wrote in a turn.
+    /// A piece of the text the model is writing, as it arrives.
+    TextDelta(&'a str),
+    /// The whole text the model wrote in a turn, once the turn is done.
     Text(&'a str),
     /// A tool call the model made, before it runs.
     ToolCall(&'a ToolCall),

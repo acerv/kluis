@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
-//! A fake OpenAI-compatible model server for agent tests.
+//! A fake OpenAI-compatible model server for agent tests. It streams its
+//! replies as server-sent events, as the agent always asks for a stream.
 
 #![allow(dead_code)]
 
@@ -15,46 +16,50 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
+/// Characters per streamed piece of text.
+const PIECE: usize = 3;
+
+/// Token usage reported at the end of every complete reply.
+pub const USAGE: (i32, i32) = (10, 5);
+
 /// What the server answers to a request.
 pub enum Reply {
-    /// A chat completion body.
-    Json(Value),
+    /// A whole model turn: text, then tool calls, then usage.
+    Turn { text: String, calls: Vec<Value> },
+    /// The first pieces of some text, then nothing more.
+    Partial(String),
+    /// The first pieces of some text, then the connection closes.
+    Broken(String),
     /// No answer at all, as a model that takes forever.
     Hang,
 }
 
 /// A reply with only text.
 pub fn text(text: &str) -> Reply {
-    completion(json!({ "role": "assistant", "content": text }), "stop")
+    Reply::Turn {
+        text: text.into(),
+        calls: Vec::new(),
+    }
 }
 
 /// A reply calling tools, given as `(id, name, arguments)`.
 pub fn tool_calls(calls: &[(&str, &str, Value)]) -> Reply {
-    let calls: Vec<Value> = calls
+    let calls = calls
         .iter()
-        .map(|(id, name, args)| {
+        .enumerate()
+        .map(|(index, (id, name, args))| {
             json!({
+                "index": index,
                 "id": id,
                 "type": "function",
                 "function": { "name": name, "arguments": args.to_string() }
             })
         })
         .collect();
-    completion(
-        json!({ "role": "assistant", "content": null, "tool_calls": calls }),
-        "tool_calls",
-    )
-}
-
-fn completion(message: Value, finish_reason: &str) -> Reply {
-    Reply::Json(json!({
-        "id": "chatcmpl-test",
-        "object": "chat.completion",
-        "created": 0,
-        "model": "test",
-        "choices": [{ "index": 0, "message": message, "finish_reason": finish_reason }],
-        "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
-    }))
+    Reply::Turn {
+        text: String::new(),
+        calls,
+    }
 }
 
 /// A server answering chat requests with scripted replies, in order.
@@ -104,48 +109,104 @@ impl MockModel {
     }
 }
 
-/// Answer the requests of one connection, which the client may keep open.
+/// Answer one request, then close the connection.
 async fn serve(
     stream: TcpStream,
     seen: Arc<Mutex<Vec<Value>>>,
     replies: Arc<Mutex<VecDeque<Reply>>>,
 ) {
     let mut stream = BufReader::new(stream);
+    let mut length = 0;
     loop {
-        let mut length = 0;
-        loop {
-            let mut line = String::new();
-            if stream.read_line(&mut line).await.unwrap_or(0) == 0 {
-                return;
-            }
-            let line = line.trim_end();
-            if line.is_empty() {
-                break;
-            }
-            if let Some((name, value)) = line.split_once(':') {
-                if name.eq_ignore_ascii_case("content-length") {
-                    length = value.trim().parse().unwrap();
-                }
+        let mut line = String::new();
+        if stream.read_line(&mut line).await.unwrap_or(0) == 0 {
+            return;
+        }
+        let line = line.trim_end();
+        if line.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("content-length") {
+                length = value.trim().parse().unwrap();
             }
         }
-        let mut body = vec![0; length];
-        stream.read_exact(&mut body).await.unwrap();
-        seen.lock()
-            .unwrap()
-            .push(serde_json::from_slice(&body).unwrap());
-
-        let reply = replies.lock().unwrap().pop_front();
-        let body = match reply {
-            Some(Reply::Json(body)) => body.to_string(),
-            Some(Reply::Hang) => std::future::pending().await,
-            None => panic!("no reply left for this request"),
-        };
-        let head = format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n",
-            body.len()
-        );
-        let out = stream.get_mut();
-        out.write_all(head.as_bytes()).await.unwrap();
-        out.write_all(body.as_bytes()).await.unwrap();
     }
+    let mut body = vec![0; length];
+    stream.read_exact(&mut body).await.unwrap();
+    seen.lock()
+        .unwrap()
+        .push(serde_json::from_slice(&body).unwrap());
+
+    let reply = replies.lock().unwrap().pop_front();
+    let reply = reply.expect("no reply left for this request");
+    if let Reply::Hang = reply {
+        return std::future::pending().await;
+    }
+
+    let out = stream.get_mut();
+    let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n";
+    out.write_all(head.as_bytes()).await.unwrap();
+    match reply {
+        Reply::Turn { text, calls } => {
+            for piece in pieces(&text) {
+                send(out, delta(json!({ "content": piece }), None)).await;
+            }
+            for call in &calls {
+                send(out, delta(json!({ "tool_calls": [call] }), None)).await;
+            }
+            let reason = if calls.is_empty() {
+                "stop"
+            } else {
+                "tool_calls"
+            };
+            send(out, delta(json!({}), Some(reason))).await;
+            let (prompt, completion) = USAGE;
+            let usage = json!({
+                "prompt_tokens": prompt,
+                "completion_tokens": completion,
+                "total_tokens": prompt + completion
+            });
+            send(out, json!({ "choices": [], "usage": usage }).to_string()).await;
+            send(out, "[DONE]".into()).await;
+        }
+        Reply::Partial(text) => {
+            for piece in pieces(&text) {
+                send(out, delta(json!({ "content": piece }), None)).await;
+            }
+            std::future::pending::<()>().await;
+        }
+        // Returning drops the connection in the middle of the reply.
+        Reply::Broken(text) => {
+            for piece in pieces(&text) {
+                send(out, delta(json!({ "content": piece }), None)).await;
+            }
+        }
+        Reply::Hang => unreachable!(),
+    }
+}
+
+/// `text` in pieces of [`PIECE`] characters.
+fn pieces(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    chars.chunks(PIECE).map(|c| c.iter().collect()).collect()
+}
+
+/// A streamed chunk changing the reply by `delta`.
+fn delta(delta: Value, finish_reason: Option<&str>) -> String {
+    json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "created": 0,
+        "model": "test",
+        "choices": [{ "index": 0, "delta": delta, "finish_reason": finish_reason }]
+    })
+    .to_string()
+}
+
+async fn send(out: &mut TcpStream, data: String) {
+    out.write_all(format!("data: {data}\n\n").as_bytes())
+        .await
+        .unwrap();
+    out.flush().await.unwrap();
 }

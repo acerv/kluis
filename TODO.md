@@ -23,7 +23,6 @@
 
 ## Core
 
-- [ ] Stream model text (`exec_chat_stream`, `Event::TextDelta`)
 - [ ] Events for token usage and turn start/end
 
 ## Tools
