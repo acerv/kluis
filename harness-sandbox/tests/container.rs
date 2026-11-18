@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
+use std::ffi::OsStr;
 use std::io::ErrorKind;
 use std::net::{Ipv4Addr, TcpListener};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use hakoniwa::Output;
@@ -472,6 +474,52 @@ fn kept_read_only_inside_read_only_system_folder() {
     let sandbox = system().keep_read_only("/bin/sh");
     let out = run(&sandbox, "test -r /bin/sh");
     assert!(out.status.success(), "{}", stderr(&out));
+}
+
+#[test]
+fn nested_git_under_symlinked_writable_root_does_not_expose_canonical() {
+    let (base, _) = folder();
+    let real_root = base.path().join("real");
+    let git = real_root.join(".git");
+    std::fs::create_dir_all(&git).unwrap();
+    std::fs::write(git.join("config"), "cfg\n").unwrap();
+    let link_root = base.path().join("link");
+    std::os::unix::fs::symlink(&real_root, &link_root).unwrap();
+
+    let sandbox = system().allow_write(&link_root);
+    let out = run(
+        &sandbox,
+        &format!(
+            "echo evil > {}/.git/config; test -e {}",
+            link_root.display(),
+            git.display()
+        ),
+    );
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("Read-only file system"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(
+        std::fs::read_to_string(git.join("config")).unwrap(),
+        "cfg\n"
+    );
+}
+
+#[test]
+fn non_utf8_nested_git_does_not_fail_startup() {
+    let (dir, _) = folder();
+    let bad = dir
+        .path()
+        .join(OsStr::from_bytes(b"bad\xffdir"))
+        .join(".git");
+    std::fs::create_dir_all(&bad).unwrap();
+
+    let sandbox = system().allow_write(dir.path());
+    let out = run(&sandbox, "echo ok");
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "ok\n");
 }
 
 #[test]

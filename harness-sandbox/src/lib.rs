@@ -201,11 +201,18 @@ impl Sandbox {
         let mut ro_paths = Vec::new();
         for root in &writable_roots {
             for git in collect_git(root, &all_writable) {
-                resolve_read_only(&canon_mounts, &git, &mut ro_paths)?;
+                // Skip `.git` entries that vanished or cannot be mounted
+                // (e.g. non-UTF-8 paths) instead of failing startup.
+                let mut found = Vec::new();
+                if resolve_read_only(&canon_mounts, &git, false, &mut found).is_ok() {
+                    for path in found {
+                        push_unique(&mut ro_paths, path);
+                    }
+                }
             }
         }
         for path in &self.read_only {
-            resolve_read_only(&canon_mounts, path, &mut ro_paths)?;
+            resolve_read_only(&canon_mounts, path, true, &mut ro_paths)?;
         }
 
         let mut effective = base_mounts.clone();
@@ -270,30 +277,30 @@ fn collect_git(root: &Path, writable: &[&PathBuf]) -> Vec<PathBuf> {
     found
 }
 
-/// Resolve `raw` while collecting its target and the parents of any
-/// symlinks inside writable folders (other than the writable roots
-/// themselves) into `ro_paths`.
+/// Resolve `raw` while collecting its target (when inside a writable mount
+/// or when `expose_target` is true) and the parents of any symlinks inside
+/// writable folders (other than the writable roots themselves) into `ro_paths`.
 fn resolve_read_only(
     canon_mounts: &[(PathBuf, PathBuf, bool)],
     raw: &Path,
+    expose_target: bool,
     ro_paths: &mut Vec<PathBuf>,
 ) -> Result<(), SandboxError> {
     let abs = checked(raw)?;
     let canonical = walk_symlinks(canon_mounts, &abs, ro_paths)?;
     let canonical = checked(&canonical)?;
-    // If a writable mount root sits behind a symlink on the host, also
-    // protect the path as seen inside that mount.
+    // Protect the path inside every writable mount covering it (mapping back
+    // through symlinked mount roots without exposing unmounted host paths).
     for (mount, canon, writable) in canon_mounts {
-        if *writable && mount != canon {
+        if *writable {
             if let Ok(rest) = canonical.strip_prefix(canon) {
-                let mapped = mount.join(rest);
-                if mapped != canonical {
-                    push_unique(ro_paths, mapped);
-                }
+                push_unique(ro_paths, mount.join(rest));
             }
         }
     }
-    push_unique(ro_paths, canonical);
+    if expose_target {
+        push_unique(ro_paths, canonical);
+    }
     Ok(())
 }
 
