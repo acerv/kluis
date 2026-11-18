@@ -24,7 +24,6 @@
 ## Core
 
 - [ ] Stream model text (`exec_chat_stream`, `Event::TextDelta`)
-- [ ] Cancel-safe `prompt`: dropping it keeps the history consistent
 - [ ] Events for token usage and turn start/end
 
 ## Tools

@@ -3,8 +3,9 @@
 
 //! The agent loop.
 
-use genai::chat::{ChatMessage, ChatRequest};
+use genai::chat::{ChatMessage, ChatRequest, ToolCall, ToolResponse};
 use genai::Client;
+use serde_json::json;
 
 use crate::tools::{self, ToolContext};
 use crate::Event;
@@ -66,6 +67,10 @@ impl Agent {
     /// the model's final answer.
     ///
     /// `on_event` is called as the work progresses.
+    ///
+    /// Dropping the future, e.g. to cancel, keeps the history valid for the
+    /// next prompt: the user message stays, tool results already made stay,
+    /// and the calls left get a result saying they were cancelled.
     pub async fn prompt(
         &mut self,
         text: &str,
@@ -80,8 +85,7 @@ impl Agent {
                 .await?;
 
             // Keep the whole assistant turn (text, tool calls, thought
-            // signatures) in the history, before any tool result, and work
-            // from there without copying it.
+            // signatures) in the history, before any tool result.
             self.req.messages.push(ChatMessage::assistant(res.content));
             let turn = &self.req.messages[self.req.messages.len() - 1].content;
 
@@ -90,21 +94,54 @@ impl Agent {
                 on_event(Event::Text(answer));
             }
 
-            let calls = turn.tool_calls();
+            // A copy, so results can join the history while calls run.
+            let calls: Vec<ToolCall> = turn.tool_calls().into_iter().cloned().collect();
             if calls.is_empty() {
                 return Ok(answer.to_owned());
             }
 
-            let mut results = Vec::with_capacity(calls.len());
-            for call in calls {
+            let mut pending = Pending {
+                messages: &mut self.req.messages,
+                calls: &calls,
+                answered: 0,
+            };
+            for call in &calls {
                 on_event(Event::ToolCall(call));
                 let resp = tools::run_with(call, &self.tools).await;
                 on_event(Event::ToolResult(&resp));
-                results.push(ChatMessage::from(resp));
+                pending.answer(resp);
             }
-            self.req.messages.extend(results);
         }
 
         Err(format!("stopped after {} turns", self.max_turns).into())
+    }
+}
+
+/// Result of a tool call the agent stopped waiting for.
+const CANCELLED: &str = "cancelled; the call may have partly run";
+
+/// The tool calls of a turn, answered in order. Dropping it answers the
+/// ones left as cancelled, so the history never holds a call without its
+/// result, which providers reject.
+struct Pending<'a> {
+    messages: &'a mut Vec<ChatMessage>,
+    calls: &'a [ToolCall],
+    answered: usize,
+}
+
+impl Pending<'_> {
+    fn answer(&mut self, resp: ToolResponse) {
+        self.messages.push(resp.into());
+        self.answered += 1;
+    }
+}
+
+impl Drop for Pending<'_> {
+    fn drop(&mut self) {
+        for call in &self.calls[self.answered..] {
+            let content = json!({ "error": CANCELLED }).to_string();
+            self.messages
+                .push(ToolResponse::from_tool_call(call, content).into());
+        }
     }
 }
