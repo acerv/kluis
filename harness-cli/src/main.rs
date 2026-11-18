@@ -114,7 +114,8 @@ fn apply_config(args: &mut Args) -> Result<(), Error> {
     args.allow_connect.extend(config.sandbox.connect);
     args.network |= config.sandbox.network;
     args.pass_env.extend(config.sandbox.env);
-    args.config = Some(path);
+    // The real path: the one shown in the container.
+    args.config = Some(std::fs::canonicalize(path)?);
     Ok(())
 }
 

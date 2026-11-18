@@ -194,3 +194,40 @@ fn ports_are_accepted() {
     let out = run_cli(home.path(), &[]);
     assert!(out.status.success(), "{}", stderr(&out));
 }
+
+#[test]
+fn file_in_current_folder_works() {
+    // Shown read-only on top of the writable current folder.
+    let home = tempdir();
+    let cwd = tempdir();
+    let sub = cwd.path().join("sub");
+    std::fs::create_dir(&sub).unwrap();
+    std::fs::write(sub.join("config.toml"), "[sandbox]\nenv = [\"CC\"]\n").unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_kl-cli"))
+        .args(["--config", "sub/config.toml"])
+        .current_dir(cwd.path())
+        .env("HOME", home.path())
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("HARNESS_CONFIG")
+        .env_remove("HARNESS_SANDBOXED")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("sandboxed"), "{}", stdout(&out));
+}
+
+#[test]
+fn file_behind_link_works() {
+    // The link is not shown in the container, only the file.
+    let home = tempdir();
+    let dir = tempdir();
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, "[sandbox]\nenv = [\"CC\"]\n").unwrap();
+    let link = home.path().join("link.toml");
+    std::os::unix::fs::symlink(&path, &link).unwrap();
+
+    let out = run_cli(home.path(), &["--config", link.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+}

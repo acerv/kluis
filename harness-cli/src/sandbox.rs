@@ -62,9 +62,11 @@ pub fn run(args: &Args) -> Result<ExitCode, Error> {
         network: args.network,
     })
     .allow_read(&exe);
-    // The copy inside reads the same config file, wherever it is.
+    // The copy inside reads the same config file, wherever it is. Commands
+    // must not change it, even in the current folder, as it could give
+    // them more next time.
     if let Some(config) = &args.config {
-        container = container.allow_read(config);
+        container = container.keep_read_only(config);
     }
     let container = container.container()?;
 
