@@ -1,10 +1,14 @@
 [package]
 name = "harness-cli"
-description = "Line-based command-line coding agent"
+description = "Line-based command-line coding agent with native sandboxing"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+
+[[bin]]
+name = "kl-cli"
+path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true

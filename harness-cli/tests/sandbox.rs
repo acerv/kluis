@@ -4,7 +4,7 @@
 use std::process::{Command, Output, Stdio};
 
 fn run_cli(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_harness-cli"))
+    Command::new(env!("CARGO_BIN_EXE_kl-cli"))
         .args(args)
         .env_remove("HARNESS_SANDBOXED")
         .stdin(Stdio::null())

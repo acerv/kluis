@@ -4,8 +4,8 @@
 //! Line-based command-line coding agent.
 //!
 //! ```sh
-//! harness-cli                      # interactive chat, Ctrl-D to quit
-//! harness-cli "fix the typo in README.md"   # single prompt
+//! kl-cli                           # interactive chat, Ctrl-D to quit
+//! kl-cli "fix the typo in README.md"   # single prompt
 //! ```
 //!
 //! genai picks the provider from the model name and reads the matching API
@@ -116,7 +116,7 @@ async fn run(args: Args, tools: ToolContext) -> Result<(), Error> {
     } else {
         "sandboxed"
     };
-    println!("harness-cli ({}, {sandbox}), Ctrl-D to quit", args.model);
+    println!("kluis ({}, {sandbox}), Ctrl-D to quit", args.model);
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     loop {
         print!("> ");
