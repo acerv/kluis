@@ -247,3 +247,20 @@ fn file_behind_unmounted_link_works() {
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(stdout(&out).contains("network"), "{}", stdout(&out));
 }
+
+#[test]
+fn no_sandbox_uses_given_config_even_if_marker_set() {
+    let home = tempdir();
+    let missing = home.path().join("explicit.toml");
+    let out = Command::new(env!("CARGO_BIN_EXE_kl-cli"))
+        .args(["--no-sandbox", "--config", missing.to_str().unwrap()])
+        .env("HOME", home.path())
+        .env("HARNESS_SANDBOXED", "1")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("HARNESS_CONFIG")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("explicit.toml"), "{}", stderr(&out));
+}

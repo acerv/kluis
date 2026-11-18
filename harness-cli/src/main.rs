@@ -99,7 +99,7 @@ fn launch(mut args: Args) -> Result<ExitCode, Error> {
 /// Add the settings of the config file to `args`, and leave in
 /// `args.config` the path of the file used, if any.
 fn apply_config(args: &mut Args) -> Result<(), Error> {
-    let (path, required) = if sandbox::inside() {
+    let (path, required) = if !args.no_sandbox && sandbox::inside() {
         match std::env::var_os(config::ENV) {
             Some(path) => (PathBuf::from(path), true),
             None => return Ok(()),
