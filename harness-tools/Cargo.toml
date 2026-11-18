@@ -9,6 +9,8 @@ authors.workspace = true
 [dependencies]
 genai.workspace = true
 globset.workspace = true
+grep-regex.workspace = true
+grep-searcher.workspace = true
 ignore.workspace = true
 serde.workspace = true
 serde_json.workspace = true

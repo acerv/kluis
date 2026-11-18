@@ -16,6 +16,8 @@ harness-tools = { path = "harness-tools" }
 genai = "0.7.5"
 clap = { version = "4", features = ["derive", "env"] }
 globset = "0.4"
+grep-regex = "0.1"
+grep-searcher = "0.1"
 hakoniwa = { version = "1.8", features = ["landlock"] }
 ignore = "0.4"
 libc = "0.2"

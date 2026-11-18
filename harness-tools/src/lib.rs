@@ -17,6 +17,7 @@ mod bash;
 mod edit;
 mod error;
 mod find;
+mod grep;
 mod ls;
 mod path;
 mod read;
@@ -30,6 +31,7 @@ pub use bash::{
 pub use edit::{Edit, EditOutput, EditTool};
 pub use error::ToolError;
 pub use find::{FindOutput, FindTool, DEFAULT_FIND_LIMIT, MAX_FIND_BYTES};
+pub use grep::{GrepOutput, GrepTool, DEFAULT_GREP_LIMIT, MAX_GREP_BYTES, MAX_GREP_LINE_CHARS};
 pub use ls::{LsOutput, LsTool, DEFAULT_LS_LIMIT, MAX_LS_BYTES};
 pub use read::{ReadOutput, ReadTool, DEFAULT_READ_LIMIT, MAX_READ_BYTES};
 pub use write::{WriteOutput, WriteTool};

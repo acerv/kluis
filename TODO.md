@@ -36,7 +36,6 @@ Same set as pi: `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`.
 - [ ] `edit`: return a diff for the TUI
 - [ ] `read`: images as attachments
 - [ ] `bash`: save the full output to a file when truncated
-- [ ] `grep`: regex or literal, glob filter, context, respects `.gitignore`
 - [ ] Move `path.rs` unit tests to `tests/`
 
 ## TUI

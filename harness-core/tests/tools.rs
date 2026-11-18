@@ -139,6 +139,8 @@ async fn tools_use_context_cwd() {
     assert_eq!(out["entries"], json!(["a.txt"]), "{out}");
     let out = run("find", json!({ "pattern": "*.txt" })).await;
     assert_eq!(out["paths"], json!(["a.txt"]), "{out}");
+    let out = run("grep", json!({ "pattern": "tw." })).await;
+    assert_eq!(out["output"], "a.txt:1: two", "{out}");
     let out = run("bash", json!({ "command": "cat a.txt" })).await;
     assert_eq!(out["output"], "two\n", "{out}");
 

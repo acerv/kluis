@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use genai::chat::{Tool, ToolCall, ToolResponse};
-use harness_tools::{BashTool, EditTool, FindTool, LsTool, ReadTool, WriteTool};
+use harness_tools::{BashTool, EditTool, FindTool, GrepTool, LsTool, ReadTool, WriteTool};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -40,6 +40,7 @@ pub fn definitions() -> Vec<Tool> {
         EditTool::definition(),
         LsTool::definition(),
         FindTool::definition(),
+        GrepTool::definition(),
         BashTool::definition(),
     ]
 }
@@ -71,6 +72,7 @@ async fn dispatch(call: &ToolCall, ctx: &ToolContext) -> Result<String, Error> {
         "edit" => serde_json::to_string(&EditTool::deserialize(args)?.run_in(cwd).await?)?,
         "ls" => serde_json::to_string(&LsTool::deserialize(args)?.run_in(cwd).await?)?,
         "find" => serde_json::to_string(&FindTool::deserialize(args)?.run_in(cwd).await?)?,
+        "grep" => serde_json::to_string(&GrepTool::deserialize(args)?.run_in(cwd).await?)?,
         "bash" => {
             let tool = BashTool::deserialize(args)?;
             serde_json::to_string(&tool.run_in(cwd, &ctx.bash).await?)?
