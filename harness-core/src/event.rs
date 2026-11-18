@@ -13,6 +13,9 @@ use genai::chat::{ToolCall, ToolResponse, Usage};
 pub enum Event<'a> {
     /// The agent is asking the model for its next turn.
     TurnStart,
+    /// A piece of the model's reasoning, as it arrives, from models that
+    /// think before they answer.
+    ReasoningDelta(&'a str),
     /// A piece of the text the model is writing, as it arrives.
     TextDelta(&'a str),
     /// The whole text the model wrote in a turn, once the turn is done.

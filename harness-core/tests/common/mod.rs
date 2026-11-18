@@ -24,8 +24,12 @@ pub const USAGE: (i32, i32) = (10, 5);
 
 /// What the server answers to a request.
 pub enum Reply {
-    /// A whole model turn: text, then tool calls, then usage.
-    Turn { text: String, calls: Vec<Value> },
+    /// A whole model turn: reasoning, text, then tool calls, then usage.
+    Turn {
+        reasoning: String,
+        text: String,
+        calls: Vec<Value>,
+    },
     /// The first pieces of some text, then nothing more.
     Partial(String),
     /// The first pieces of some text, then the connection closes.
@@ -37,8 +41,21 @@ pub enum Reply {
 /// A reply with only text.
 pub fn text(text: &str) -> Reply {
     Reply::Turn {
+        reasoning: String::new(),
         text: text.into(),
         calls: Vec::new(),
+    }
+}
+
+/// `reply`, with the model reasoning first.
+pub fn thinking(reasoning: &str, reply: Reply) -> Reply {
+    match reply {
+        Reply::Turn { text, calls, .. } => Reply::Turn {
+            reasoning: reasoning.into(),
+            text,
+            calls,
+        },
+        _ => panic!("only a whole turn has reasoning"),
     }
 }
 
@@ -57,6 +74,7 @@ pub fn tool_calls(calls: &[(&str, &str, Value)]) -> Reply {
         })
         .collect();
     Reply::Turn {
+        reasoning: String::new(),
         text: String::new(),
         calls,
     }
@@ -148,7 +166,14 @@ async fn serve(
     let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n";
     out.write_all(head.as_bytes()).await.unwrap();
     match reply {
-        Reply::Turn { text, calls } => {
+        Reply::Turn {
+            reasoning,
+            text,
+            calls,
+        } => {
+            for piece in pieces(&reasoning) {
+                send(out, delta(json!({ "reasoning_content": piece }), None)).await;
+            }
             for piece in pieces(&text) {
                 send(out, delta(json!({ "content": piece }), None)).await;
             }

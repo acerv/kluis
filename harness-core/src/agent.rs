@@ -141,6 +141,9 @@ impl Agent {
         while let Some(event) = stream.next().await {
             match event? {
                 ChatStreamEvent::Chunk(chunk) => on_event(Event::TextDelta(&chunk.content)),
+                ChatStreamEvent::ReasoningChunk(chunk) => {
+                    on_event(Event::ReasoningDelta(&chunk.content))
+                }
                 ChatStreamEvent::End(end) => {
                     let content = end.captured_content.unwrap_or_default();
                     return Ok((content, end.captured_usage));

@@ -6,7 +6,7 @@ mod common;
 use std::path::Path;
 use std::time::Duration;
 
-use common::{text, tool_calls, MockModel, Reply};
+use common::{text, thinking, tool_calls, MockModel, Reply};
 use genai::chat::{ChatMessage, ChatRole};
 use harness_core::tools::ToolContext;
 use harness_core::{Agent, Event};
@@ -104,6 +104,7 @@ async fn tool_call_round_trip() {
             events.push(match event {
                 Event::TurnStart => "start".to_owned(),
                 Event::TurnEnd(usage) => format!("end {:?}", usage.and_then(|u| u.total_tokens)),
+                Event::ReasoningDelta(text) => format!("reason {text}"),
                 Event::TextDelta(text) => format!("delta {text}"),
                 Event::Text(text) => format!("text {text}"),
                 Event::ToolCall(call) => format!("call {}", call.fn_name),
@@ -228,6 +229,35 @@ async fn cancel_while_waiting_keeps_the_user_message() {
     assert_eq!(roles(&agent), [ChatRole::User]);
     assert_eq!(prompt(&mut agent, "again").await.unwrap(), "second");
     assert_eq!(sent(&model.requests()[1], "user").len(), 2);
+}
+
+#[tokio::test]
+async fn reasoning_streams_before_text() {
+    let model = MockModel::start(vec![thinking("let me think", text("answer"))]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = agent(&model, dir.path());
+
+    let mut events = Vec::new();
+    agent
+        .prompt("hi", |event| match event {
+            Event::ReasoningDelta(text) => events.push(format!("reason {text}")),
+            Event::TextDelta(text) => events.push(format!("delta {text}")),
+            _ => {}
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        events,
+        [
+            "reason let",
+            "reason  me",
+            "reason  th",
+            "reason ink",
+            "delta ans",
+            "delta wer"
+        ]
+    );
 }
 
 #[tokio::test]
