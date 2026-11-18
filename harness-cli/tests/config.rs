@@ -290,3 +290,27 @@ fn deny_rejects_relative_paths() {
         stderr(&out)
     );
 }
+
+#[test]
+fn max_processes_is_accepted_and_validated() {
+    let home = tempdir();
+    write_default(home.path(), "[sandbox]\nmax_processes = 512\n");
+    let out = run_cli(home.path(), &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    let out = run_cli(home.path(), &["--max-processes", "256"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    write_default(home.path(), "[sandbox]\nmax_processes = 0\n");
+    let out = run_cli(home.path(), &["--no-sandbox"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("max_processes: must be at least 1"),
+        "{}",
+        stderr(&out)
+    );
+
+    let out = run_cli(home.path(), &["--no-sandbox", "--max-processes", "0"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("--max-processes"), "{}", stderr(&out));
+}

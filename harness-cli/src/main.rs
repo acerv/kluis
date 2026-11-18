@@ -65,6 +65,11 @@ pub struct Args {
     #[arg(long)]
     network: bool,
 
+    /// Processes and threads the harness and its commands may run at once
+    /// [default: 1024].
+    #[arg(long, value_name = "NUM", value_parser = clap::value_parser!(u64).range(1..))]
+    max_processes: Option<u64>,
+
     /// Also pass this environment variable to commands (repeatable).
     #[arg(long, value_name = "NAME")]
     pass_env: Vec<String>,
@@ -125,6 +130,7 @@ fn apply_config(args: &mut Args) -> Result<(), Error> {
     args.deny_read.extend(config.sandbox.deny);
     args.allow_connect.extend(config.sandbox.connect);
     args.network |= config.sandbox.network;
+    args.max_processes = args.max_processes.or(config.sandbox.max_processes);
     args.pass_env.extend(config.sandbox.env);
     args.config = Some(path);
     Ok(())

@@ -14,6 +14,8 @@
 //! connect = [11434]
 //! # Allow any network, to commands too.
 //! network = false
+//! # Processes and threads the harness and its commands may run at once.
+//! max_processes = 1024
 //! # Also pass these environment variables to commands.
 //! env = ["CC", "CFLAGS"]
 //! ```
@@ -58,6 +60,8 @@ pub struct SandboxConfig {
     /// Allow any network, like `--network`.
     #[serde(default)]
     pub network: bool,
+    /// Process and thread limit, like `--max-processes`.
+    pub max_processes: Option<u64>,
     /// Also passed to commands, like `--pass-env`.
     #[serde(default)]
     pub env: Vec<String>,
@@ -88,6 +92,9 @@ pub fn load(path: &Path, required: bool) -> Result<Option<Config>, Error> {
         for path in paths {
             *path = absolute(path).map_err(|e| error(&e))?;
         }
+    }
+    if sandbox.max_processes == Some(0) {
+        return Err(error(&"max_processes: must be at least 1").into());
     }
     Ok(Some(config))
 }
