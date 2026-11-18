@@ -9,7 +9,7 @@
 - [ ] Memory limit for commands
 - [ ] Process limit and `/tmp` size
 - [x] Environment variables passed to commands
-- [ ] TCP ports and network access
+- [x] TCP ports and network access
 
 ## Sandbox
 

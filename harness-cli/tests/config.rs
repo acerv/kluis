@@ -162,3 +162,35 @@ fn relative_paths_are_rejected() {
         stderr(&out)
     );
 }
+
+fn stdout(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn network_comes_from_file_or_flag() {
+    let home = tempdir();
+    for (text, args, network) in [
+        ("", &[][..], false),
+        ("[sandbox]\nnetwork = true\n", &[][..], true),
+        ("[sandbox]\nnetwork = false\n", &["--network"][..], true),
+    ] {
+        write_default(home.path(), text);
+        let out = run_cli(home.path(), args);
+        assert!(out.status.success(), "{}", stderr(&out));
+        assert_eq!(
+            stdout(&out).contains("network"),
+            network,
+            "{}",
+            stdout(&out)
+        );
+    }
+}
+
+#[test]
+fn ports_are_accepted() {
+    let home = tempdir();
+    write_default(home.path(), "[sandbox]\nconnect = [11434, 8080]\n");
+    let out = run_cli(home.path(), &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+}

@@ -111,6 +111,8 @@ fn apply_config(args: &mut Args) -> Result<(), Error> {
     };
     args.allow_read.extend(config.sandbox.read);
     args.allow_write.extend(config.sandbox.write);
+    args.allow_connect.extend(config.sandbox.connect);
+    args.network |= config.sandbox.network;
     args.pass_env.extend(config.sandbox.env);
     args.config = Some(path);
     Ok(())
@@ -146,7 +148,13 @@ async fn run(args: Args, tools: ToolContext) -> Result<(), Error> {
     } else {
         "sandboxed"
     };
-    println!("kluis ({}, {sandbox}), Ctrl-D to quit", args.model);
+    // Commands can reach the network: worth knowing.
+    let network = if args.network && !args.no_sandbox {
+        ", network"
+    } else {
+        ""
+    };
+    println!("kluis ({}, {sandbox}{network}), Ctrl-D to quit", args.model);
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     loop {
         print!("> ");

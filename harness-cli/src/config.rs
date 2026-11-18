@@ -8,11 +8,16 @@
 //! # Also allow reading, or changing, these paths; `~` is $HOME.
 //! read = ["/etc/ssl"]
 //! write = ["~/.cache/sccache"]
+//! # Also let the harness connect to these TCP ports, e.g. for a local model.
+//! connect = [11434]
+//! # Allow any network, to commands too.
+//! network = false
 //! # Also pass these environment variables to commands.
 //! env = ["CC", "CFLAGS"]
 //! ```
 //!
-//! Lists add up with the matching command-line options.
+//! Lists add up with the matching command-line options, and switches are on
+//! if either turns them on.
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -42,6 +47,12 @@ pub struct SandboxConfig {
     /// Also writable, like `--allow-write`.
     #[serde(default)]
     pub write: Vec<PathBuf>,
+    /// Also connectable TCP ports, like `--allow-connect`.
+    #[serde(default)]
+    pub connect: Vec<u16>,
+    /// Allow any network, like `--network`.
+    #[serde(default)]
+    pub network: bool,
     /// Also passed to commands, like `--pass-env`.
     #[serde(default)]
     pub env: Vec<String>,
