@@ -217,14 +217,19 @@ impl Sandbox {
         for path in &ro_paths {
             // The folders on the way from a writable mount become mount
             // points, which cannot be moved away to free the path.
-            if let Some(root) = writable_parent(&effective, path) {
+            if let Some((root, true)) = closest_ancestor(&effective, path) {
                 for dir in path.ancestors().skip(1).take_while(|d| *d != root) {
                     mounts.push((dir.to_path_buf(), true));
                 }
             }
         }
         for path in ro_paths {
-            mounts.push((path, false));
+            // Skip paths already covered by a read-only mount: bind-mounting
+            // inside an existing mount touches the target on the host, which
+            // fails on files owned by another user (e.g. under /usr).
+            if !matches!(closest_ancestor(&effective, &path), Some((_, false))) {
+                mounts.push((path, false));
+            }
         }
         Ok(mounts
             .into_iter()
@@ -276,10 +281,10 @@ fn resolve_read_only(
     let abs = checked(raw)?;
     let canonical = walk_symlinks(canon_mounts, &abs, ro_paths)?;
     let canonical = checked(&canonical)?;
-    // If a mount root itself sits behind a symlink on the host, also protect
-    // the path as seen inside that mount.
-    for (mount, canon, _) in canon_mounts {
-        if mount != canon {
+    // If a writable mount root sits behind a symlink on the host, also
+    // protect the path as seen inside that mount.
+    for (mount, canon, writable) in canon_mounts {
+        if *writable && mount != canon {
             if let Ok(rest) = canonical.strip_prefix(canon) {
                 let mapped = mount.join(rest);
                 if mapped != canonical {
@@ -389,14 +394,13 @@ fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
     }
 }
 
-/// The closest mount above `path`, if it is writable.
-fn writable_parent(mounts: &[(PathBuf, bool)], path: &Path) -> Option<PathBuf> {
+/// The closest mount strictly above `path` and whether it is writable.
+fn closest_ancestor(mounts: &[(PathBuf, bool)], path: &Path) -> Option<(PathBuf, bool)> {
     mounts
         .iter()
         .filter(|(mount, _)| mount != path && path.starts_with(mount))
         .max_by_key(|(mount, _)| mount.components().count())
-        .filter(|(_, writable)| *writable)
-        .map(|(mount, _)| mount.clone())
+        .cloned()
 }
 
 /// `path` made absolute, if it exists and is UTF-8.

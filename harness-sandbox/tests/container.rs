@@ -465,6 +465,16 @@ fn kept_read_only_parent_covers_child_pin() {
 }
 
 #[test]
+fn kept_read_only_inside_read_only_system_folder() {
+    // A root-owned file inside `/usr` (and reachable via `/bin` symlink)
+    // must not be bind-mounted again on top of `/usr`, which would fail
+    // trying to touch the host file.
+    let sandbox = system().keep_read_only("/bin/sh");
+    let out = run(&sandbox, "test -r /bin/sh");
+    assert!(out.status.success(), "{}", stderr(&out));
+}
+
+#[test]
 fn max_tmp_size_fills_up() {
     let sandbox = system().max_tmp_size(1 << 20);
 
