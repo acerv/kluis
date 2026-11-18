@@ -264,3 +264,29 @@ fn no_sandbox_uses_given_config_even_if_marker_set() {
     assert!(!out.status.success());
     assert!(stderr(&out).contains("explicit.toml"), "{}", stderr(&out));
 }
+
+#[test]
+fn deny_accepts_existing_and_missing_paths() {
+    let home = tempdir();
+    let ssh = home.path().join(".ssh");
+    std::fs::create_dir(&ssh).unwrap();
+    write_default(
+        home.path(),
+        "[sandbox]\ndeny = [\"~/.ssh\", \"~/.gnupg\"]\n",
+    );
+    let out = run_cli(home.path(), &["--deny-read", "/no/such/secret"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+}
+
+#[test]
+fn deny_rejects_relative_paths() {
+    let home = tempdir();
+    write_default(home.path(), "[sandbox]\ndeny = [\".ssh\"]\n");
+    let out = run_cli(home.path(), &["--no-sandbox"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains(".ssh: not an absolute path"),
+        "{}",
+        stderr(&out)
+    );
+}

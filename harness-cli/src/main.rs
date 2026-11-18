@@ -52,6 +52,10 @@ pub struct Args {
     #[arg(long, value_name = "PATH")]
     allow_write: Vec<PathBuf>,
 
+    /// Hide this path from the harness and its commands (repeatable).
+    #[arg(long, value_name = "PATH")]
+    deny_read: Vec<PathBuf>,
+
     /// Also let the harness connect to this TCP port, e.g. for a local
     /// model (repeatable).
     #[arg(long, value_name = "PORT")]
@@ -118,6 +122,7 @@ fn apply_config(args: &mut Args) -> Result<(), Error> {
     };
     args.allow_read.extend(config.sandbox.read);
     args.allow_write.extend(config.sandbox.write);
+    args.deny_read.extend(config.sandbox.deny);
     args.allow_connect.extend(config.sandbox.connect);
     args.network |= config.sandbox.network;
     args.pass_env.extend(config.sandbox.env);

@@ -4,7 +4,7 @@
 
 `[sandbox]` section in `~/.config/harness/config.toml`:
 
-- [ ] Paths to deny reading (`.ssh`, `.gnupg`, `.pi`, ...)
+- [x] Paths to deny reading (`.ssh`, `.gnupg`, `.pi`, ...)
 - [x] Extra mount points, read-only or writable (`/etc/ssl`, ...)
 - [ ] Memory limit for commands
 - [ ] Process limit and `/tmp` size

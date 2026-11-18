@@ -58,6 +58,7 @@ pub fn run(args: &Args) -> Result<ExitCode, Error> {
     let mut container = Sandbox::with_defaults(&Options {
         read,
         write,
+        deny: args.deny_read.clone(),
         connect: args.allow_connect.clone(),
         network: args.network,
     })
