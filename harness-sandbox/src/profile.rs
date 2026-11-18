@@ -51,6 +51,9 @@ pub struct Options {
     pub connect: Vec<u16>,
     /// Allow any network to the harness and its commands.
     pub network: bool,
+    /// Processes and threads the harness and its commands may run at once
+    /// (1024 by default).
+    pub max_processes: Option<u64>,
 }
 
 impl Sandbox {
@@ -62,10 +65,11 @@ impl Sandbox {
     /// `$HOME`, and change the [`Options::write`] paths. It may connect to
     /// port 443 to reach the model, and to [`Options::connect`], or anywhere
     /// with [`Options::network`]. It may run at most 1024 processes and
-    /// threads, and store in `/tmp` at most 10% of the memory.
+    /// threads (or [`Options::max_processes`]), and store in `/tmp` at most
+    /// 10% of the memory.
     pub fn with_defaults(options: &Options) -> Self {
         let mut sandbox = Sandbox::new()
-            .max_processes(MAX_PROCESSES)
+            .max_processes(options.max_processes.unwrap_or(MAX_PROCESSES))
             .max_tmp_size(total_memory() * TMP_MEMORY_PERCENT / 100);
         for path in DEFAULT_READ
             .iter()

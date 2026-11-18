@@ -194,6 +194,11 @@ impl Sandbox {
             }
         }
         if let Some(max) = self.max_processes {
+            if max == 0 {
+                return Err(SandboxError {
+                    message: "max_processes: must be at least 1".to_string(),
+                });
+            }
             container.setrlimit(Rlimit::Nproc, max, max);
         }
         if let Network::Ports(ports) = &self.network {

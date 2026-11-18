@@ -120,6 +120,13 @@ fn home_is_read_only() {
 fn processes_are_limited() {
     let out = run(&Options::default(), "ulimit -u");
     assert_eq!(out.stdout, b"1024\n");
+
+    let options = Options {
+        max_processes: Some(256),
+        ..Options::default()
+    };
+    let out = run(&options, "ulimit -u");
+    assert_eq!(out.stdout, b"256\n");
 }
 
 #[test]

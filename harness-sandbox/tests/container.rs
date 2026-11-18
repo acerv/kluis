@@ -732,6 +732,9 @@ fn max_processes_counts_container_only() {
     let started = command.status().unwrap().code;
     // Some start: the processes of the user outside do not count.
     assert!(started > 0 && started < 16, "{started}");
+
+    let err = Sandbox::new().max_processes(0).container().unwrap_err();
+    assert!(err.message.contains("max_processes"), "{err}");
 }
 
 #[test]
