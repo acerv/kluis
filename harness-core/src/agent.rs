@@ -4,9 +4,10 @@
 //! The agent loop.
 
 use futures_util::StreamExt;
+use genai::adapter::AdapterKind;
 use genai::chat::{
-    ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, MessageContent, ToolCall, ToolResponse,
-    Usage,
+    ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, ContentPart, MessageContent, ToolCall,
+    ToolResponse, Usage,
 };
 use genai::Client;
 use serde_json::json;
@@ -132,12 +133,14 @@ impl Agent {
         let options = ChatOptions::default()
             .with_capture_content(true)
             .with_capture_tool_calls(true)
+            .with_capture_reasoning_content(true)
             .with_capture_usage(true);
-        let mut stream = self
+        let res = self
             .client
             .exec_chat_stream(&self.model, self.req.clone(), Some(&options))
-            .await?
-            .stream;
+            .await?;
+        let reasoning_back = needs_reasoning_back(res.model_iden.adapter_kind);
+        let mut stream = res.stream;
         while let Some(event) = stream.next().await {
             match event? {
                 ChatStreamEvent::Chunk(chunk) => on_event(Event::TextDelta(&chunk.content)),
@@ -145,7 +148,18 @@ impl Agent {
                     on_event(Event::ReasoningDelta(&chunk.content))
                 }
                 ChatStreamEvent::End(end) => {
-                    let content = end.captured_content.unwrap_or_default();
+                    let mut content = end.captured_content.unwrap_or_default();
+                    // Unless the turn already carries its reasoning, e.g.
+                    // signed, which an extra part would break.
+                    let carried = content
+                        .parts()
+                        .iter()
+                        .any(|p| p.is_reasoning_content() || p.is_thought_signature());
+                    if let Some(reasoning) = end.captured_reasoning_content {
+                        if reasoning_back && !carried && !reasoning.is_empty() {
+                            content.prepend(ContentPart::ReasoningContent(reasoning));
+                        }
+                    }
                     return Ok((content, end.captured_usage));
                 }
                 _ => {}
@@ -153,6 +167,16 @@ impl Agent {
         }
         Err("the model's reply ended early".into())
     }
+}
+
+/// Whether the provider wants the reasoning of a turn back in the next
+/// requests, as DeepSeek and Kimi do for tool calls in thinking mode.
+/// Others may refuse it, so it stays out.
+fn needs_reasoning_back(kind: AdapterKind) -> bool {
+    matches!(
+        kind,
+        AdapterKind::DeepSeek | AdapterKind::Kimi | AdapterKind::Moonshot
+    )
 }
 
 /// Result of a tool call the agent stopped waiting for.

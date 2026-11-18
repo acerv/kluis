@@ -105,13 +105,19 @@ impl MockModel {
 
     /// A client sending every request to this server.
     pub fn client(&self) -> Client {
+        self.client_as(AdapterKind::OpenAI)
+    }
+
+    /// A client sending every request to this server, through the adapter
+    /// of `kind`, as when talking to that provider.
+    pub fn client_as(&self, kind: AdapterKind) -> Client {
         let url = self.url.clone();
         let resolver = ServiceTargetResolver::from_resolver_fn(
             move |target: ServiceTarget| -> Result<ServiceTarget, genai::resolver::Error> {
                 Ok(ServiceTarget {
                     endpoint: Endpoint::from_owned(url.clone()),
                     auth: AuthData::from_single("test"),
-                    model: ModelIden::new(AdapterKind::OpenAI, target.model.model_name),
+                    model: ModelIden::new(kind, target.model.model_name),
                 })
             },
         );

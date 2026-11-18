@@ -7,6 +7,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use common::{text, thinking, tool_calls, MockModel, Reply};
+use genai::adapter::AdapterKind;
 use genai::chat::{ChatMessage, ChatRole};
 use harness_core::tools::ToolContext;
 use harness_core::{Agent, Event};
@@ -328,4 +329,46 @@ async fn broken_stream_is_an_error() {
     assert!(!ended, "a cut turn must not end");
     assert_eq!(roles(&agent), [ChatRole::User]);
     assert_eq!(prompt(&mut agent, "next").await.unwrap(), "again");
+}
+
+/// Run a tool round trip where the model reasons first, talking to the
+/// fake server as `kind`, and return the assistant message sent back.
+async fn reasoning_sent_back(kind: AdapterKind) -> Value {
+    let call = ("call_1", "bash", json!({ "command": "true" }));
+    let replies = vec![thinking("plan it", tool_calls(&[call])), text("done")];
+    let model = MockModel::start(replies).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent =
+        Agent::with_client(model.client_as(kind), "test-model").with_tool_context(ToolContext {
+            cwd: dir.path().to_owned(),
+            ..ToolContext::default()
+        });
+
+    assert_eq!(prompt(&mut agent, "go").await.unwrap(), "done");
+    let mut sent = sent(&model.requests()[1], "assistant");
+    assert_eq!(sent.len(), 1);
+    sent.remove(0)
+}
+
+#[tokio::test]
+async fn reasoning_goes_back_to_providers_needing_it() {
+    for kind in [
+        AdapterKind::DeepSeek,
+        AdapterKind::Kimi,
+        AdapterKind::Moonshot,
+    ] {
+        let message = reasoning_sent_back(kind).await;
+        assert_eq!(
+            message["reasoning_content"], "plan it",
+            "{kind:?}: {message}"
+        );
+        // The reasoning is not part of the text.
+        assert_eq!(message["content"], "", "{kind:?}: {message}");
+    }
+}
+
+#[tokio::test]
+async fn reasoning_stays_out_for_other_providers() {
+    let message = reasoning_sent_back(AdapterKind::OpenAI).await;
+    assert!(message.get("reasoning_content").is_none(), "{message}");
 }

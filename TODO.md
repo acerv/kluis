@@ -21,11 +21,6 @@
 - [ ] Ubuntu 23.10+: AppArmor blocks unprivileged user namespaces
 - [ ] Linux < 6.7: no Landlock TCP rules without `--network`
 
-## Core
-
-- [ ] Send the model's reasoning back (`reasoning_content`), as
-      DeepSeek and Kimi need for tool calls in thinking mode
-
 ## Tools
 
 Same set as pi: `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`.
