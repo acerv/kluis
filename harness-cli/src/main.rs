@@ -109,6 +109,8 @@ fn apply_config(args: &mut Args) -> Result<(), Error> {
     let Some(config) = config::load(&path, required)? else {
         return Ok(());
     };
+    args.allow_read.extend(config.sandbox.read);
+    args.allow_write.extend(config.sandbox.write);
     args.pass_env.extend(config.sandbox.env);
     args.config = Some(path);
     Ok(())

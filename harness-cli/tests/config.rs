@@ -113,3 +113,52 @@ fn given_file_is_readable_in_the_sandbox() {
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(String::from_utf8_lossy(&out.stdout).contains("sandboxed"));
 }
+
+#[test]
+fn paths_reach_the_sandbox() {
+    let home = tempdir();
+    let dir = tempdir();
+    let dir = dir.path().to_str().unwrap();
+    let missing = format!("{dir}/missing");
+
+    for (key, path, ok) in [
+        ("read", dir, true),
+        ("write", dir, true),
+        ("read", missing.as_str(), false),
+        ("write", missing.as_str(), false),
+    ] {
+        write_default(home.path(), &format!("[sandbox]\n{key} = [\"{path}\"]\n"));
+        let out = run_cli(home.path(), &[]);
+        assert_eq!(out.status.success(), ok, "{key} {path}: {}", stderr(&out));
+        if !ok {
+            assert!(stderr(&out).contains(path), "{}", stderr(&out));
+        }
+    }
+}
+
+#[test]
+fn tilde_is_home() {
+    let home = tempdir();
+    write_default(home.path(), "[sandbox]\nread = [\"~/missing\"]\n");
+    let out = run_cli(home.path(), &[]);
+    assert!(!out.status.success());
+    let expected = home.path().join("missing");
+    assert!(
+        stderr(&out).contains(expected.to_str().unwrap()),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn relative_paths_are_rejected() {
+    let home = tempdir();
+    write_default(home.path(), "[sandbox]\nwrite = [\"src\"]\n");
+    let out = run_cli(home.path(), &["--no-sandbox"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("src: not an absolute path"),
+        "{}",
+        stderr(&out)
+    );
+}

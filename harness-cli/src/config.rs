@@ -5,6 +5,9 @@
 //!
 //! ```toml
 //! [sandbox]
+//! # Also allow reading, or changing, these paths; `~` is $HOME.
+//! read = ["/etc/ssl"]
+//! write = ["~/.cache/sccache"]
 //! # Also pass these environment variables to commands.
 //! env = ["CC", "CFLAGS"]
 //! ```
@@ -33,6 +36,12 @@ pub struct Config {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SandboxConfig {
+    /// Also readable, like `--allow-read`.
+    #[serde(default)]
+    pub read: Vec<PathBuf>,
+    /// Also writable, like `--allow-write`.
+    #[serde(default)]
+    pub write: Vec<PathBuf>,
     /// Also passed to commands, like `--pass-env`.
     #[serde(default)]
     pub env: Vec<String>,
@@ -44,17 +53,12 @@ pub fn default_path() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .filter(|p| p.is_absolute())
-                .map(|home| home.join(".config"))
-        })?;
+        .or_else(|| home().map(|home| home.join(".config")))?;
     Some(base.join("harness").join("config.toml"))
 }
 
 /// Read the config file at `path`, or `None` if it is missing and not
-/// `required`.
+/// `required`. Paths in it come back absolute.
 pub fn load(path: &Path, required: bool) -> Result<Option<Config>, Error> {
     let error = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
     let text = match std::fs::read_to_string(path) {
@@ -62,7 +66,31 @@ pub fn load(path: &Path, required: bool) -> Result<Option<Config>, Error> {
         Err(e) if e.kind() == ErrorKind::NotFound && !required => return Ok(None),
         Err(e) => return Err(error(&e).into()),
     };
-    toml::from_str(&text)
-        .map(Some)
-        .map_err(|e| error(&e).into())
+    let mut config: Config = toml::from_str(&text).map_err(|e| error(&e))?;
+    let sandbox = &mut config.sandbox;
+    for paths in [&mut sandbox.read, &mut sandbox.write] {
+        for path in paths {
+            *path = absolute(path).map_err(|e| error(&e))?;
+        }
+    }
+    Ok(Some(config))
+}
+
+/// `path` with a leading `~` replaced by `$HOME`. Relative paths are
+/// refused: there is no obvious folder to resolve them from.
+fn absolute(path: &Path) -> Result<PathBuf, String> {
+    let path = match path.strip_prefix("~") {
+        Ok(rest) => home().ok_or("~: HOME is not set")?.join(rest),
+        Err(_) => path.to_path_buf(),
+    };
+    if !path.is_absolute() {
+        return Err(format!("{}: not an absolute path", path.display()));
+    }
+    Ok(path)
+}
+
+fn home() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
 }
