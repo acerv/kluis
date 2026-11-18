@@ -50,6 +50,12 @@ impl Agent {
         self
     }
 
+    /// The conversation so far: user messages, model turns and tool
+    /// results, oldest first.
+    pub fn history(&self) -> &[ChatMessage] {
+        &self.req.messages
+    }
+
     /// Send a user message, run the tool calls the model makes, and return
     /// the model's final answer.
     ///

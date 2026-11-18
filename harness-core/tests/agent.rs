@@ -11,3 +11,9 @@ fn prompt_future_is_send() {
     let mut agent = Agent::new("deepseek-chat").unwrap();
     assert_send(agent.prompt("hi", |_| {}));
 }
+
+#[test]
+fn history_starts_empty() {
+    let agent = Agent::new("deepseek-chat").unwrap();
+    assert!(agent.history().is_empty());
+}
