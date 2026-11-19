@@ -3,13 +3,17 @@
 
 //! The agent loop.
 
+use std::fmt;
+use std::str::FromStr;
+
 use futures_util::StreamExt;
 use genai::adapter::AdapterKind;
 use genai::chat::{
     ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, ContentPart, MessageContent,
-    StopReason, ToolCall, ToolResponse, Usage,
+    ReasoningEffort, StopReason, ToolCall, ToolResponse, Usage,
 };
 use genai::Client;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::tools::{self, ToolContext};
@@ -18,12 +22,83 @@ use crate::Event;
 /// Error returned by the agent.
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
+/// Thinking / reasoning effort sent to models that support it.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Thinking {
+    /// Leave the provider's default reasoning behavior untouched.
+    #[default]
+    Default,
+    Low,
+    Medium,
+    High,
+}
+
+impl Thinking {
+    /// Lowercase effort name (`"default"`, `"low"`, `"medium"`, `"high"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+
+    /// Next effort level in the cycle `default -> low -> medium -> high -> default`.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Default => Self::Low,
+            Self::Low => Self::Medium,
+            Self::Medium => Self::High,
+            Self::High => Self::Default,
+        }
+    }
+
+    fn reasoning_effort(self) -> Option<ReasoningEffort> {
+        match self {
+            Self::Default => None,
+            Self::Low => Some(ReasoningEffort::Low),
+            Self::Medium => Some(ReasoningEffort::Medium),
+            Self::High => Some(ReasoningEffort::High),
+        }
+    }
+}
+
+impl fmt::Display for Thinking {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for Thinking {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let trimmed = s.trim();
+        if trimmed.eq_ignore_ascii_case("default") {
+            Ok(Self::Default)
+        } else if trimmed.eq_ignore_ascii_case("low") {
+            Ok(Self::Low)
+        } else if trimmed.eq_ignore_ascii_case("medium") {
+            Ok(Self::Medium)
+        } else if trimmed.eq_ignore_ascii_case("high") {
+            Ok(Self::High)
+        } else {
+            Err(format!(
+                "invalid thinking effort '{s}' (expected default, low, medium, or high)"
+            ))
+        }
+    }
+}
+
 /// A conversation with a model that can use the tools.
 ///
 /// The history is kept across [`Agent::prompt`] calls.
 pub struct Agent {
     client: Client,
     model: String,
+    thinking: Thinking,
     req: ChatRequest,
     tools: ToolContext,
 }
@@ -40,9 +115,26 @@ impl Agent {
         Self {
             client,
             model: model.into(),
+            thinking: Thinking::Default,
             req: ChatRequest::default().with_tools(tools::definitions()),
             tools: ToolContext::default(),
         }
+    }
+
+    /// Set the thinking effort sent with requests.
+    pub fn with_thinking(mut self, thinking: Thinking) -> Self {
+        self.thinking = thinking;
+        self
+    }
+
+    /// The thinking effort currently configured.
+    pub fn thinking(&self) -> Thinking {
+        self.thinking
+    }
+
+    /// Switch the thinking effort used for subsequent prompts.
+    pub fn set_thinking(&mut self, thinking: Thinking) {
+        self.thinking = thinking;
     }
 
     /// Set how tools run, e.g. a sandbox for commands.
@@ -159,11 +251,14 @@ impl Agent {
     /// The turn joins the history only once complete: a cut stream, like
     /// pi does, is never sent back to the model.
     async fn next_turn(&self, on_event: &mut impl FnMut(Event<'_>)) -> Result<Turn, Error> {
-        let options = ChatOptions::default()
+        let mut options = ChatOptions::default()
             .with_capture_content(true)
             .with_capture_tool_calls(true)
             .with_capture_reasoning_content(true)
             .with_capture_usage(true);
+        if let Some(effort) = self.thinking.reasoning_effort() {
+            options = options.with_reasoning_effort(effort);
+        }
         let res = self
             .client
             .exec_chat_stream(&self.model, self.req.clone(), Some(&options))

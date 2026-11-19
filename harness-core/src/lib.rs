@@ -13,7 +13,7 @@ mod prompt;
 mod session;
 pub mod tools;
 
-pub use agent::{Agent, Error};
+pub use agent::{Agent, Error, Thinking};
 pub use event::Event;
 pub use prompt::{find_agents_files, system_prompt, AGENTS_FILE, MAX_AGENTS_BYTES};
 pub use session::{

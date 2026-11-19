@@ -11,7 +11,8 @@ use genai::adapter::AdapterKind;
 use genai::chat::{ChatMessage, ChatRole};
 use harness_core::tools::ToolContext;
 use harness_core::{
-    find_agents_files, system_prompt, Agent, Event, ToolDetails, AGENTS_FILE, MAX_AGENTS_BYTES,
+    find_agents_files, system_prompt, Agent, Event, Thinking, ToolDetails, AGENTS_FILE,
+    MAX_AGENTS_BYTES,
 };
 use serde_json::{json, Value};
 use tokio::sync::Notify;
@@ -105,6 +106,35 @@ async fn set_model_and_clear_history() {
     // Only the fresh user message was sent after clear().
     assert_eq!(sent(&reqs[1], "user").len(), 1);
     assert_eq!(sent(&reqs[1], "assistant").len(), 0);
+}
+
+#[tokio::test]
+async fn thinking_effort_is_sent_in_requests() {
+    let model = MockModel::start(vec![text("a"), text("b"), text("c")]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = agent(&model, dir.path());
+
+    // `Default` omits `reasoning_effort`.
+    assert_eq!(agent.thinking(), Thinking::Default);
+    prompt(&mut agent, "first").await.unwrap();
+    assert!(model.requests()[0].get("reasoning_effort").is_none());
+
+    // Setting `High` forwards the reasoning effort keyword; `Default` omits it again.
+    agent.set_thinking(Thinking::High);
+    assert_eq!(agent.thinking(), Thinking::High);
+    prompt(&mut agent, "second").await.unwrap();
+    assert_eq!(model.requests()[1]["reasoning_effort"], "high");
+
+    agent.set_thinking(Thinking::Default);
+    prompt(&mut agent, "third").await.unwrap();
+    assert!(model.requests()[2].get("reasoning_effort").is_none());
+
+    // Parsing and cycling helpers.
+    assert_eq!("MEDIUM".parse::<Thinking>(), Ok(Thinking::Medium));
+    assert_eq!("default".parse::<Thinking>(), Ok(Thinking::Default));
+    assert!("turbo".parse::<Thinking>().is_err());
+    assert_eq!(Thinking::Default.next(), Thinking::Low);
+    assert_eq!(Thinking::High.next(), Thinking::Default);
 }
 
 #[tokio::test]
