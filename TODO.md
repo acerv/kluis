@@ -3,11 +3,13 @@
 ## Sandbox
 
 - [ ] Protect `.git` of new `git init`
+- [ ] Deny more secrets by default (`~/.aws`, `~/.netrc`, `~/.git-credentials`, `~/.docker`, `~/.config/gh`, `~/.kube`, `~/.password-store`)
+- [ ] Count processes per container (cgroups pids) instead of `RLIMIT_NPROC`, which counts the whole user
 
 ## Compatibility
 
 - [ ] Ubuntu 23.10+: AppArmor blocks unprivileged user namespaces
-- [ ] Linux < 6.7: no Landlock TCP rules without `--network`
+- [x] Linux < 6.7: no Landlock TCP rules without `--network` (tool container uses `CLONE_NEWNET` by default)
 
 ## Tools
 
@@ -39,7 +41,3 @@
 - [ ] Context window usage (`<tokens>/<limit>`) for known models in the status bar
 - [ ] Update terminal title with activity state and ring bell on long turns
 - [ ] Restore the terminal on `SIGTERM`/`SIGHUP`
-
-## Nice to have
-
-- [ ] Check the terminal works inside the container

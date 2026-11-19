@@ -38,8 +38,7 @@ use std::path::{Path, PathBuf};
 use harness_core::{Error, Thinking};
 use serde::{Deserialize, Deserializer, Serialize};
 
-/// Environment variable naming the config file, like `--config`. Also how
-/// the harness tells its copy in the container which file it uses.
+/// Environment variable naming the config file, like `--config`.
 pub const ENV: &str = "HARNESS_CONFIG";
 
 /// Settings read from the config file.
@@ -98,26 +97,31 @@ impl Default for SandboxConfig {
     }
 }
 
+/// Harness state directory (`~/.kluis`).
+pub fn kluis_dir() -> Option<PathBuf> {
+    Some(home()?.join(".kluis"))
+}
+
 /// Where the config file is looked for when not given:
 /// `~/.kluis/config.toml`.
 pub fn default_path() -> Option<PathBuf> {
-    Some(home()?.join(".kluis").join("config.toml"))
+    Some(kluis_dir()?.join("config.toml"))
 }
 
 /// Where global agent instructions are looked for:
 /// `~/.kluis/AGENTS.md`.
 pub fn agents_path() -> Option<PathBuf> {
-    Some(home()?.join(".kluis").join(harness_core::AGENTS_FILE))
+    Some(kluis_dir()?.join(harness_core::AGENTS_FILE))
 }
 
 /// Where conversation sessions are stored: `~/.kluis/sessions`.
 pub fn sessions_dir() -> Option<PathBuf> {
-    Some(home()?.join(".kluis").join("sessions"))
+    Some(kluis_dir()?.join("sessions"))
 }
 
 /// Where persistent prompt history is stored: `~/.kluis/history`.
 pub fn history_path() -> Option<PathBuf> {
-    Some(home()?.join(".kluis").join("history"))
+    Some(kluis_dir()?.join("history"))
 }
 
 /// Read the config file at `path`, creating it with the default template

@@ -9,7 +9,6 @@ fn run_cli(args: &[&str]) -> Output {
         .args(args)
         .env("HOME", home.path())
         .env_remove("HARNESS_CONFIG")
-        .env_remove("HARNESS_SANDBOXED")
         .stdin(Stdio::null())
         .output()
         .unwrap()

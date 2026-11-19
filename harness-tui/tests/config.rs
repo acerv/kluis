@@ -18,7 +18,6 @@ fn run_cli(home: &Path, args: &[&str]) -> Output {
         .args(args)
         .env("HOME", home)
         .env_remove("HARNESS_CONFIG")
-        .env_remove("HARNESS_SANDBOXED")
         .stdin(Stdio::null())
         .output()
         .unwrap()
@@ -203,7 +202,6 @@ fn file_in_current_folder_works() {
         .current_dir(cwd.path())
         .env("HOME", home.path())
         .env_remove("HARNESS_CONFIG")
-        .env_remove("HARNESS_SANDBOXED")
         .stdin(Stdio::null())
         .output()
         .unwrap();
@@ -242,13 +240,12 @@ fn file_behind_unmounted_link_works() {
 }
 
 #[test]
-fn no_sandbox_uses_given_config_even_if_marker_set() {
+fn no_sandbox_uses_given_config() {
     let home = tempdir();
     let missing = home.path().join("explicit.toml");
     let out = Command::new(env!("CARGO_BIN_EXE_kl"))
         .args(["--no-sandbox", "--config", missing.to_str().unwrap()])
         .env("HOME", home.path())
-        .env("HARNESS_SANDBOXED", "1")
         .env_remove("HARNESS_CONFIG")
         .stdin(Stdio::null())
         .output()

@@ -73,6 +73,18 @@ fn cannot_write_elsewhere() {
 }
 
 #[test]
+fn default_isolates_all_network() {
+    let (_server, port) = server();
+    let out = run(&Options::default(), &connect(port));
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("Network is unreachable"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
 fn connect_to_listed_ports_only() {
     let (_server, port) = server();
     let (_other, other) = server();

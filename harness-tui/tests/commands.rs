@@ -102,25 +102,18 @@ fn run_bash_in(
     let (llm_port, server) = start_mock_llm(make_cmd);
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_kl"));
-    cmd.args([
-        "--model",
-        "genai_1::test-model",
-        "--allow-connect",
-        &llm_port.to_string(),
-    ])
-    .args(extra_args)
-    .arg("run")
-    .current_dir(cwd)
-    .env("HOME", home)
-    .env(
-        "GENAI_1_ENDPOINT",
-        format!("http://127.0.0.1:{llm_port}/v1/"),
-    )
-    .env("GENAI_1_API_KEY", "secret-genai-key-12345")
-    .env_remove("HARNESS_CONFIG")
-    .env_remove("HARNESS_AGENTS")
-    .env_remove("HARNESS_SANDBOXED")
-    .stdin(Stdio::null());
+    cmd.args(["--model", "genai_1::test-model"])
+        .args(extra_args)
+        .arg("run")
+        .current_dir(cwd)
+        .env("HOME", home)
+        .env(
+            "GENAI_1_ENDPOINT",
+            format!("http://127.0.0.1:{llm_port}/v1/"),
+        )
+        .env("GENAI_1_API_KEY", "secret-genai-key-12345")
+        .env_remove("HARNESS_CONFIG")
+        .stdin(Stdio::null());
     for &(k, v) in extra_env {
         cmd.env(k, v);
     }
@@ -239,14 +232,10 @@ fn commands_get_no_api_keys() {
     assert!(!output.contains("secret-deepseek-key-67890"), "{output}");
     assert!(!output.contains("GENAI_1_API_KEY"), "{output}");
     assert!(!output.contains("DEEPSEEK_API_KEY"), "{output}");
-    assert!(
-        output.contains("/proc/1/environ: Permission denied"),
-        "{output}"
-    );
 }
 
 #[test]
-fn default_config_hides_ssh_and_stays_read_only() {
+fn default_config_hides_ssh_and_kluis_dir() {
     let home = tempdir();
     let ssh = home.path().join(".ssh");
     std::fs::create_dir(&ssh).unwrap();
@@ -255,7 +244,8 @@ fn default_config_hides_ssh_and_stays_read_only() {
     let output = run_bash(home.path(), &[], &[], |_| {
         format!(
             "echo SSH=$(cat {}/id_ed25519 2>&1 || true); \
-             echo CFG=$( (echo evil >> {}/.kluis/config.toml) 2>&1 || true )",
+             echo CFG_R=$(cat {1}/.kluis/config.toml 2>&1 || true); \
+             echo CFG_W=$( (echo evil >> {1}/.kluis/config.toml) 2>&1 || true )",
             ssh.display(),
             home.path().display()
         )
@@ -264,8 +254,10 @@ fn default_config_hides_ssh_and_stays_read_only() {
     assert!(!output.contains("ssh-private-secret"), "{output}");
     let ssh_line = output.lines().find(|l| l.starts_with("SSH=")).unwrap();
     assert!(ssh_line.contains("Permission denied"), "{ssh_line}");
-    let cfg_line = output.lines().find(|l| l.starts_with("CFG=")).unwrap();
-    assert!(cfg_line.contains("Read-only file system"), "{cfg_line}");
+    let cfg_r = output.lines().find(|l| l.starts_with("CFG_R=")).unwrap();
+    assert!(cfg_r.contains("Permission denied"), "{cfg_r}");
+    let cfg_w = output.lines().find(|l| l.starts_with("CFG_W=")).unwrap();
+    assert!(cfg_w.contains("Permission denied"), "{cfg_w}");
 }
 
 #[test]
@@ -342,16 +334,16 @@ fn agents_md_loaded_and_protected_in_sandbox() {
         .lines()
         .find(|l| l.starts_with("GLOBAL="))
         .unwrap();
-    assert!(
-        global_line.contains("Read-only file system"),
-        "{global_line}"
-    );
+    assert!(global_line.contains("Permission denied"), "{global_line}");
     let repo_line = result
         .output
         .lines()
         .find(|l| l.starts_with("REPO="))
         .unwrap();
-    assert!(repo_line.contains("Read-only file system"), "{repo_line}");
+    assert!(
+        repo_line.contains("No such file") || repo_line.contains("Read-only file system"),
+        "{repo_line}"
+    );
 }
 
 #[test]
@@ -416,8 +408,6 @@ fn session_persists_continues_and_isolates_projects_in_sandbox() {
         .current_dir(proj_c.path())
         .env("HOME", home.path())
         .env_remove("HARNESS_CONFIG")
-        .env_remove("HARNESS_AGENTS")
-        .env_remove("HARNESS_SANDBOXED")
         .stdin(Stdio::null())
         .output()
         .unwrap();
@@ -468,8 +458,6 @@ fn session_persists_continues_and_isolates_projects_in_sandbox() {
         .current_dir(proj_a.path())
         .env("HOME", home.path())
         .env_remove("HARNESS_CONFIG")
-        .env_remove("HARNESS_AGENTS")
-        .env_remove("HARNESS_SANDBOXED")
         .stdin(Stdio::null())
         .output()
         .unwrap();

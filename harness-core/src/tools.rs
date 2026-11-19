@@ -4,7 +4,7 @@
 //! The tools offered to the model and the dispatch of its calls.
 
 pub use harness_exec::{
-    definitions, execute, execute_streaming, is_read_only, run, run_with, BashContext, Diff,
-    DiffHunk, DiffLine, ExecError, Executor, PreExec, SandboxConfig, SandboxExecutor, ToolContext,
-    ToolDetails,
+    definitions, execute, execute_streaming, is_read_only, run, run_with, run_worker, BashContext,
+    Diff, DiffHunk, DiffLine, ExecError, Executor, PreExec, SandboxConfig, SandboxExecutor,
+    ToolContext, ToolDetails,
 };

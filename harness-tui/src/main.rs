@@ -18,12 +18,12 @@ mod config;
 mod sandbox;
 
 use std::io::{self, IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
 use genai::chat::ChatMessage;
-use harness_core::tools::ToolContext;
+use harness_core::tools::{run_worker, Executor, ToolContext};
 use harness_core::{Agent, Error, Event, SessionData, SessionStore, Thinking, TokenUsage};
 use harness_tui::{summary, History, RunOptions, Session, Status};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -111,6 +111,10 @@ pub struct Args {
     #[arg(long, env = config::ENV, value_name = "PATH")]
     config: Option<PathBuf>,
 
+    /// Internal mode: run the NDJSON tool worker inside the sandbox container.
+    #[arg(long, hide = true)]
+    tool_executor: bool,
+
     /// Prompt to run once; starts an interactive chat when absent.
     prompt: Vec<String>,
 }
@@ -126,15 +130,20 @@ fn main() -> ExitCode {
 }
 
 fn launch(mut args: Args) -> Result<ExitCode, Error> {
-    let config_model = apply_config(&mut args)?;
-    if args.no_sandbox {
-        start(args, config_model, ToolContext::default())?;
-    } else if sandbox::inside() {
-        let tools = sandbox::tools(&args);
-        start(args, config_model, tools)?;
-    } else {
-        return sandbox::run(&args);
+    if args.tool_executor {
+        let cwd = std::env::current_dir()?;
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?
+            .block_on(run_worker(cwd, args.max_memory))?;
+        return Ok(ExitCode::SUCCESS);
     }
+
+    let config_model = apply_config(&mut args)?;
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run(args, config_model))?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -142,19 +151,12 @@ fn launch(mut args: Args) -> Result<ExitCode, Error> {
 /// path of the file used (if any), and return the config's default model so
 /// resumed sessions keep their own model unless `--model` was explicitly set.
 fn apply_config(args: &mut Args) -> Result<Option<String>, Error> {
-    let (path, required) = if !args.no_sandbox && sandbox::inside() {
-        match std::env::var_os(config::ENV) {
-            Some(path) => (PathBuf::from(path), true),
+    let (path, required) = match args.config.take() {
+        Some(path) => (std::path::absolute(path)?, true),
+        None => match config::default_path() {
+            Some(path) => (path, false),
             None => return Ok(None),
-        }
-    } else {
-        match args.config.take() {
-            Some(path) => (std::path::absolute(path)?, true),
-            None => match config::default_path() {
-                Some(path) => (path, false),
-                None => return Ok(None),
-            },
-        }
+        },
     };
     let config = config::load(&path, required)?;
     args.thinking = args.thinking.or(config.thinking);
@@ -171,24 +173,12 @@ fn apply_config(args: &mut Args) -> Result<Option<String>, Error> {
     Ok(config.model)
 }
 
-fn start(args: Args, config_model: Option<String>, mut tools: ToolContext) -> Result<(), Error> {
-    // Commands run as the same user: keep them away from the API keys in
-    // our memory and environment.
-    harness_sandbox::protect_self()?;
-    tools.bash.env = Some(harness_sandbox::command_env(
-        std::env::vars_os(),
-        &args.pass_env,
-    ));
-
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?
-        .block_on(run(args, config_model, tools))
-}
-
-async fn run(args: Args, config_model: Option<String>, tools: ToolContext) -> Result<(), Error> {
+async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
     let cwd = std::env::current_dir()?;
-    let system = harness_core::system_prompt(&cwd, &agents_files(&args, &cwd));
+    let system = harness_core::system_prompt(
+        &cwd,
+        &harness_core::find_agents_files(&cwd, config::agents_path().as_deref()),
+    );
     let store = (!args.no_session)
         .then(config::sessions_dir)
         .flatten()
@@ -241,11 +231,25 @@ async fn run(args: Args, config_model: Option<String>, tools: ToolContext) -> Re
         (model, Vec::new(), session)
     };
 
+    let executor = if args.no_sandbox {
+        // Even without the container, keep local bash commands away from API
+        // keys in our memory and environment.
+        harness_sandbox::protect_self()?;
+        let mut tools = ToolContext::default();
+        tools.bash.env = Some(harness_sandbox::command_env(
+            std::env::vars_os(),
+            &args.pass_env,
+        ));
+        Executor::Local(tools)
+    } else {
+        sandbox::executor(&args, &cwd)?
+    };
+
     let mut agent = Agent::new(&model)?
         .with_thinking(args.thinking.unwrap_or_default())
         .with_system(system)
         .with_history(history)
-        .with_tool_context(tools);
+        .with_executor(executor);
 
     if !args.prompt.is_empty() {
         prompt_and_persist(&mut agent, session.as_mut(), &args.prompt.join(" ")).await?;
@@ -333,17 +337,6 @@ async fn prompt_and_persist(
         }
     }
     res.map(|_| ())
-}
-
-fn agents_files(args: &Args, cwd: &Path) -> Vec<PathBuf> {
-    if !args.no_sandbox && sandbox::inside() {
-        if let Ok(raw) = std::env::var(sandbox::AGENTS_ENV) {
-            if let Ok(paths) = serde_json::from_str::<Vec<PathBuf>>(&raw) {
-                return paths;
-            }
-        }
-    }
-    harness_core::find_agents_files(cwd, config::agents_path().as_deref())
 }
 
 fn sandbox_label(args: &Args) -> String {
