@@ -224,10 +224,17 @@ impl App {
         self.theme
     }
 
-    /// Push an informational muted line into scrollback (e.g. slash output).
-    pub fn push_info(&mut self, msg: impl Into<String>) {
-        self.scrollback
-            .push(Line::styled(msg.into(), self.theme.muted));
+    /// Push informational muted text into scrollback (one line per `\n`).
+    pub fn push_info(&mut self, msg: impl AsRef<str>) {
+        let text = msg.as_ref();
+        if text.is_empty() {
+            self.scrollback.push(Line::raw(String::new()));
+            return;
+        }
+        for line in text.lines() {
+            self.scrollback
+                .push(Line::styled(line.to_owned(), self.theme.muted));
+        }
     }
 
     /// Reset displayed token counters (e.g. after `/clear`).
