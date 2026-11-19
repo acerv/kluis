@@ -6,7 +6,7 @@ mod common;
 use std::path::Path;
 
 use common::p;
-use harness_tools::{Edit, EditTool};
+use harness_tools::{Edit, EditTool, MAX_EDIT_BYTES};
 
 fn edit(old: &str, new: &str) -> Edit {
     Edit {
@@ -248,4 +248,20 @@ async fn preserves_mode_and_replaces_atomically() {
     assert_ne!(meta.ino(), old_ino);
     assert_eq!(read(&f), "new\n");
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+#[tokio::test]
+async fn rejects_file_over_max_edit_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("huge.txt");
+
+    // A sparse file over the cap is rejected before reading (even though its
+    // contents are NUL bytes).
+    let file = std::fs::File::create(&f).unwrap();
+    file.set_len(MAX_EDIT_BYTES + 1).unwrap();
+    drop(file);
+
+    let err = call(&f, vec![edit("a", "b")]).run().await.unwrap_err();
+    assert!(err.message.contains("larger than"), "{err}");
+    assert!(err.message.contains("MB"), "{err}");
 }

@@ -28,7 +28,7 @@ pub use bash::{
     BashContext, BashOutput, BashTool, PreExec, DEFAULT_BASH_TIMEOUT, MAX_BASH_LINES,
     MAX_BASH_OUTPUT,
 };
-pub use edit::{Edit, EditOutput, EditTool};
+pub use edit::{Edit, EditOutput, EditTool, MAX_EDIT_BYTES};
 pub use error::ToolError;
 pub use find::{FindOutput, FindTool, DEFAULT_FIND_LIMIT, MAX_FIND_BYTES};
 pub use grep::{GrepOutput, GrepTool, DEFAULT_GREP_LIMIT, MAX_GREP_BYTES, MAX_GREP_LINE_CHARS};

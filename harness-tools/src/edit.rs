@@ -8,10 +8,14 @@ use std::path::Path;
 use genai::chat::Tool;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tokio::io::AsyncReadExt;
 
 use crate::error::ToolError;
 use crate::path::resolve;
 use crate::write::atomic_write;
+
+/// Maximum size of a file accepted by [`EditTool::run`].
+pub const MAX_EDIT_BYTES: u64 = 10 * 1024 * 1024;
 
 const BOM: &str = "\u{feff}";
 
@@ -84,6 +88,7 @@ impl EditTool {
     /// at the current directory. Text is matched with `\r\n` and `\r` read
     /// as `\n`; lines keep their original endings and a leading byte order
     /// mark is preserved. Nothing is written unless every edit matches.
+    /// Files larger than [`MAX_EDIT_BYTES`] are rejected.
     pub async fn run(self) -> Result<EditOutput, ToolError> {
         self.run_in(Path::new(".")).await
     }
@@ -101,10 +106,24 @@ impl EditTool {
         if !meta.is_file() {
             return Err(ToolError::new(format!("{}: not a regular file", self.path)));
         }
+        if meta.len() > MAX_EDIT_BYTES {
+            return Err(file_too_large(&self.path));
+        }
 
-        let bytes = tokio::fs::read(&path)
+        // Cap the read as well, in case the file grows after `metadata` or
+        // reports a zero length (e.g. under `/proc`). Leave a small margin so
+        // `read_to_end` does not double the buffer just to probe for EOF.
+        let file = tokio::fs::File::open(&path)
             .await
             .map_err(|e| ToolError::io(&self.path, e))?;
+        let mut bytes = Vec::with_capacity(meta.len() as usize + 64);
+        file.take(MAX_EDIT_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(|e| ToolError::io(&self.path, e))?;
+        if bytes.len() as u64 > MAX_EDIT_BYTES {
+            return Err(file_too_large(&self.path));
+        }
         if bytes.contains(&0) {
             return Err(ToolError::new(format!("{}: binary file", self.path)));
         }
@@ -117,6 +136,7 @@ impl EditTool {
             None => ("", raw.as_str()),
         };
         let edited = apply(&self.path, bom, text, &self.edits)?;
+        drop(raw);
 
         let replacements = self.edits.len();
         atomic_write(path, edited, Some(meta.permissions().mode()))
@@ -125,6 +145,13 @@ impl EditTool {
 
         Ok(EditOutput { replacements })
     }
+}
+
+fn file_too_large(path: &str) -> ToolError {
+    ToolError::new(format!(
+        "{path}: file is larger than {} MB",
+        MAX_EDIT_BYTES / (1024 * 1024)
+    ))
 }
 
 /// Apply `edits` to `text` and return the new content, starting with `bom`.

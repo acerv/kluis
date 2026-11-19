@@ -340,3 +340,84 @@ async fn absolute_path_ignores_cwd() {
     let out = call(&f, None, None).run_in(other.path()).await.unwrap();
     assert_eq!(out.content, "here\n");
 }
+
+#[tokio::test]
+async fn multibyte_utf8_across_chunk_boundary() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("utf8.txt");
+
+    // Put a 3-byte UTF-8 character (`€`) right across the 64 KiB boundary.
+    let mut data = vec![b'a'; 64 * 1024 - 2];
+    data.push(b'\n');
+    data.extend_from_slice("€tail".as_bytes());
+    std::fs::write(&f, &data).unwrap();
+
+    let out = call(&f, Some(2), None).run().await.unwrap();
+    assert_eq!(out.content, "€tail");
+    assert_eq!(out.total_lines, 2);
+    assert!(!out.truncated);
+}
+
+#[tokio::test]
+async fn invalid_utf8_expansion_hits_byte_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("bad.txt");
+
+    // 20 KiB of invalid UTF-8 bytes fits raw, but expands to 60 KiB of U+FFFD.
+    let mut data = b"ok\n".to_vec();
+    data.extend(std::iter::repeat_n(0xff, 20 * 1024));
+    data.push(b'\n');
+    std::fs::write(&f, &data).unwrap();
+
+    let out = call(&f, None, None).run().await.unwrap();
+    assert_eq!(out.content, "ok\n");
+    assert_eq!(out.total_lines, 2);
+    assert!(out.truncated);
+    assert_eq!(out.next_offset, Some(2));
+
+    let err = call(&f, Some(2), None).run().await.unwrap_err();
+    assert!(err.message.contains("line 2"), "{err}");
+    assert!(err.message.contains("larger than"), "{err}");
+}
+
+#[tokio::test]
+async fn streams_large_file_across_chunks() {
+    use std::io::Write;
+
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("large.txt");
+
+    // ~2 MiB across many 64 KiB chunks, with no trailing newline.
+    let total = 20_000usize;
+    let mut file = std::fs::File::create(&f).unwrap();
+    let pad = "x".repeat(90);
+    for i in 1..=total {
+        if i < total {
+            writeln!(file, "{i:06}:{pad}").unwrap();
+        } else {
+            write!(file, "{i:06}:{pad}").unwrap();
+        }
+    }
+    drop(file);
+
+    let out = call(&f, Some(15_000), Some(3)).run().await.unwrap();
+    assert_eq!(
+        out.content,
+        format!("015000:{pad}\n015001:{pad}\n015002:{pad}\n")
+    );
+    assert_eq!(out.total_lines, total);
+    assert!(out.truncated);
+    assert_eq!(out.next_offset, Some(15_003));
+
+    let out = call(&f, Some(total), Some(5)).run().await.unwrap();
+    assert_eq!(out.content, format!("{total:06}:{pad}"));
+    assert_eq!(out.total_lines, total);
+    assert!(!out.truncated);
+    assert_eq!(out.next_offset, None);
+
+    // A single huge line without newlines is rejected without buffering it all.
+    std::fs::write(&f, vec![b'z'; 256 * 1024]).unwrap();
+    let err = call(&f, None, None).run().await.unwrap_err();
+    assert!(err.message.contains("line 1"), "{err}");
+    assert!(err.message.contains("larger than"), "{err}");
+}
