@@ -55,4 +55,4 @@ keeping the scrollback. `harness-cli` builds the `Agent` and passes it to
 
 ## Tests
 
-- [ ] End-to-end CLI test: commands get no network and no API keys
+- [x] End-to-end CLI test: commands get no network and no API keys

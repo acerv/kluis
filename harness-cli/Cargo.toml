@@ -19,4 +19,5 @@ toml.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "io-std", "io-util"] }
 
 [dev-dependencies]
+serde_json.workspace = true
 tempfile.workspace = true
