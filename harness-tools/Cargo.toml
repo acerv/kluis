@@ -14,6 +14,7 @@ grep-searcher.workspace = true
 ignore.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+similar.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt", "time"] }
 libc.workspace = true
 

@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::AsyncReadExt;
 
+use crate::diff::{self, Diff};
 use crate::error::ToolError;
 use crate::path::resolve;
 use crate::write::atomic_write;
@@ -38,14 +39,17 @@ pub struct Edit {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EditOutput {
     pub replacements: usize,
+    /// Structured diff for UI display; skipped when serializing for the model.
+    #[serde(skip)]
+    pub diff: Diff,
 }
 
 /// A matched edit, in line-feed-normalized offsets.
-struct Match<'a> {
-    index: usize,
-    start: usize,
-    end: usize,
-    new_text: &'a str,
+pub(crate) struct Match<'a> {
+    pub(crate) index: usize,
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) new_text: &'a str,
 }
 
 impl EditTool {
@@ -135,7 +139,7 @@ impl EditTool {
             Some(text) => (BOM, text),
             None => ("", raw.as_str()),
         };
-        let edited = apply(&self.path, bom, text, &self.edits)?;
+        let (edited, diff) = apply(&self.path, bom, text, &self.edits)?;
         drop(raw);
 
         let replacements = self.edits.len();
@@ -143,7 +147,7 @@ impl EditTool {
             .await
             .map_err(|e| ToolError::io(&self.path, e))?;
 
-        Ok(EditOutput { replacements })
+        Ok(EditOutput { replacements, diff })
     }
 }
 
@@ -154,8 +158,9 @@ fn file_too_large(path: &str) -> ToolError {
     ))
 }
 
-/// Apply `edits` to `text` and return the new content, starting with `bom`.
-fn apply(path: &str, bom: &str, text: &str, edits: &[Edit]) -> Result<String, ToolError> {
+/// Apply `edits` to `text` and return the new content (starting with `bom`)
+/// along with a structured diff of the changes.
+fn apply(path: &str, bom: &str, text: &str, edits: &[Edit]) -> Result<(String, Diff), ToolError> {
     let err = |msg: String| ToolError::new(format!("{path}: {msg}"));
     let which = |i: usize| match edits.len() {
         1 => "the text".to_owned(),
@@ -219,7 +224,8 @@ fn apply(path: &str, bom: &str, text: &str, edits: &[Edit]) -> Result<String, To
         }
     }
 
-    Ok(splice(bom, text, &matches))
+    let diff = diff::from_matches(&lf, &matches);
+    Ok((splice(bom, text, &matches), diff))
 }
 
 /// `s` with `\r\n` and lone `\r` turned into `\n`, copied only if needed.
