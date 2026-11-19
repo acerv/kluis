@@ -29,6 +29,7 @@ pub enum Reply {
         reasoning: String,
         text: String,
         calls: Vec<Value>,
+        finish_reason: Option<String>,
     },
     /// The first pieces of some text, then nothing more.
     Partial(String),
@@ -44,16 +45,23 @@ pub fn text(text: &str) -> Reply {
         reasoning: String::new(),
         text: text.into(),
         calls: Vec::new(),
+        finish_reason: None,
     }
 }
 
 /// `reply`, with the model reasoning first.
 pub fn thinking(reasoning: &str, reply: Reply) -> Reply {
     match reply {
-        Reply::Turn { text, calls, .. } => Reply::Turn {
+        Reply::Turn {
+            text,
+            calls,
+            finish_reason,
+            ..
+        } => Reply::Turn {
             reasoning: reasoning.into(),
             text,
             calls,
+            finish_reason,
         },
         _ => panic!("only a whole turn has reasoning"),
     }
@@ -61,6 +69,24 @@ pub fn thinking(reasoning: &str, reply: Reply) -> Reply {
 
 /// A reply calling tools, given as `(id, name, arguments)`.
 pub fn tool_calls(calls: &[(&str, &str, Value)]) -> Reply {
+    let raw: Vec<_> = calls
+        .iter()
+        .map(|(id, name, args)| (*id, *name, args.to_string()))
+        .collect();
+    tool_calls_turn(&raw, None)
+}
+
+/// A truncated (`finish_reason = "length"`) reply with raw argument strings,
+/// allowing incomplete JSON to be streamed just like a `max_tokens` cut.
+pub fn truncated_tool_calls(calls: &[(&str, &str, &str)]) -> Reply {
+    let raw: Vec<_> = calls
+        .iter()
+        .map(|(id, name, args)| (*id, *name, (*args).to_owned()))
+        .collect();
+    tool_calls_turn(&raw, Some("length".into()))
+}
+
+fn tool_calls_turn(calls: &[(&str, &str, String)], finish_reason: Option<String>) -> Reply {
     let calls = calls
         .iter()
         .enumerate()
@@ -69,7 +95,7 @@ pub fn tool_calls(calls: &[(&str, &str, Value)]) -> Reply {
                 "index": index,
                 "id": id,
                 "type": "function",
-                "function": { "name": name, "arguments": args.to_string() }
+                "function": { "name": name, "arguments": args }
             })
         })
         .collect();
@@ -77,6 +103,7 @@ pub fn tool_calls(calls: &[(&str, &str, Value)]) -> Reply {
         reasoning: String::new(),
         text: String::new(),
         calls,
+        finish_reason,
     }
 }
 
@@ -176,6 +203,7 @@ async fn serve(
             reasoning,
             text,
             calls,
+            finish_reason,
         } => {
             for piece in pieces(&reasoning) {
                 send(out, delta(json!({ "reasoning_content": piece }), None)).await;
@@ -186,11 +214,11 @@ async fn serve(
             for call in &calls {
                 send(out, delta(json!({ "tool_calls": [call] }), None)).await;
             }
-            let reason = if calls.is_empty() {
+            let reason = finish_reason.as_deref().unwrap_or(if calls.is_empty() {
                 "stop"
             } else {
                 "tool_calls"
-            };
+            });
             send(out, delta(json!({}), Some(reason))).await;
             let (prompt, completion) = USAGE;
             let usage = json!({

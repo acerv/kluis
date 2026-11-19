@@ -19,7 +19,7 @@
 - [x] Session persistence (`~/.kluis/sessions/`) with `--continue` / `-c`
 - [x] Session picker with `/resume` and `--resume`
 - [ ] Auto-compaction when `input_tokens` approaches the model's context limit
-- [ ] Fail tool calls of a truncated response, telling the model to re-issue them, instead of running incomplete arguments
+- [x] Fail tool calls of a truncated response, telling the model to re-issue them, instead of running incomplete arguments
 - [ ] Model and thinking defaults in `~/.kluis/config.toml`
 
 ## TUI

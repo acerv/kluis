@@ -6,8 +6,8 @@
 use futures_util::StreamExt;
 use genai::adapter::AdapterKind;
 use genai::chat::{
-    ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, ContentPart, MessageContent, ToolCall,
-    ToolResponse, Usage,
+    ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, ContentPart, MessageContent,
+    StopReason, ToolCall, ToolResponse, Usage,
 };
 use genai::Client;
 use serde_json::json;
@@ -116,21 +116,21 @@ impl Agent {
 
         loop {
             on_event(Event::TurnStart);
-            let (content, usage) = self.next_turn(&mut on_event).await?;
+            let turn = self.next_turn(&mut on_event).await?;
 
             // Keep the whole assistant turn (text, tool calls, thought
             // signatures) in the history, before any tool result.
-            self.req.messages.push(ChatMessage::assistant(content));
-            let turn = &self.req.messages[self.req.messages.len() - 1].content;
+            self.req.messages.push(ChatMessage::assistant(turn.content));
+            let content = &self.req.messages[self.req.messages.len() - 1].content;
 
-            let answer = turn.first_text().unwrap_or_default();
+            let answer = content.first_text().unwrap_or_default();
             if !answer.is_empty() {
                 on_event(Event::Text(answer));
             }
-            on_event(Event::TurnEnd(usage.as_ref()));
+            on_event(Event::TurnEnd(turn.usage.as_ref()));
 
             // A copy, so results can join the history while calls run.
-            let calls: Vec<ToolCall> = turn.tool_calls().into_iter().cloned().collect();
+            let calls: Vec<ToolCall> = content.tool_calls().into_iter().cloned().collect();
             if calls.is_empty() {
                 return Ok(answer.to_owned());
             }
@@ -142,7 +142,11 @@ impl Agent {
             };
             for call in &calls {
                 on_event(Event::ToolCall(call));
-                let (resp, details) = tools::execute(call, &self.tools).await;
+                let (resp, details) = if turn.truncated {
+                    (error_response(call, TRUNCATED), None)
+                } else {
+                    tools::execute(call, &self.tools).await
+                };
                 on_event(Event::ToolResult(&resp, details.as_ref()));
                 pending.answer(resp);
             }
@@ -154,10 +158,7 @@ impl Agent {
     ///
     /// The turn joins the history only once complete: a cut stream, like
     /// pi does, is never sent back to the model.
-    async fn next_turn(
-        &self,
-        on_event: &mut impl FnMut(Event<'_>),
-    ) -> Result<(MessageContent, Option<Usage>), Error> {
+    async fn next_turn(&self, on_event: &mut impl FnMut(Event<'_>)) -> Result<Turn, Error> {
         let options = ChatOptions::default()
             .with_capture_content(true)
             .with_capture_tool_calls(true)
@@ -177,6 +178,21 @@ impl Agent {
                 }
                 ChatStreamEvent::End(end) => {
                     let mut content = end.captured_content.unwrap_or_default();
+                    let truncated = end
+                        .captured_stop_reason
+                        .as_ref()
+                        .is_some_and(StopReason::is_max_tokens);
+                    if truncated {
+                        // Replace incomplete/unparsed arguments with `{}` so
+                        // providers requiring an object accept the next turn.
+                        for part in content.iter_mut() {
+                            if let ContentPart::ToolCall(call) = part {
+                                if !call.fn_arguments.is_object() {
+                                    call.fn_arguments = json!({});
+                                }
+                            }
+                        }
+                    }
                     // Unless the turn already carries its reasoning, e.g.
                     // signed, which an extra part would break.
                     let carried = content
@@ -188,13 +204,23 @@ impl Agent {
                             content.prepend(ContentPart::ReasoningContent(reasoning));
                         }
                     }
-                    return Ok((content, end.captured_usage));
+                    return Ok(Turn {
+                        content,
+                        usage: end.captured_usage,
+                        truncated,
+                    });
                 }
                 _ => {}
             }
         }
         Err("the model's reply ended early".into())
     }
+}
+
+struct Turn {
+    content: MessageContent,
+    usage: Option<Usage>,
+    truncated: bool,
 }
 
 /// Whether the provider wants the reasoning of a turn back in the next
@@ -209,6 +235,13 @@ fn needs_reasoning_back(kind: AdapterKind) -> bool {
 
 /// Result of a tool call the agent stopped waiting for.
 const CANCELLED: &str = "cancelled; the call may have partly run";
+
+/// Result of a tool call from a response truncated by the token limit.
+const TRUNCATED: &str = "response was truncated at max_tokens; tool call was not executed — please re-issue it (split into smaller calls if needed)";
+
+fn error_response(call: &ToolCall, message: &str) -> ToolResponse {
+    ToolResponse::from_tool_call(call, json!({ "error": message }).to_string())
+}
 
 /// The tool calls of a turn, answered in order. Dropping it answers the
 /// ones left as cancelled, so the history never holds a call without its
@@ -229,9 +262,7 @@ impl Pending<'_> {
 impl Drop for Pending<'_> {
     fn drop(&mut self) {
         for call in &self.calls[self.answered..] {
-            let content = json!({ "error": CANCELLED }).to_string();
-            self.messages
-                .push(ToolResponse::from_tool_call(call, content).into());
+            self.messages.push(error_response(call, CANCELLED).into());
         }
     }
 }

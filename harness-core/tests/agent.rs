@@ -6,7 +6,7 @@ mod common;
 use std::path::Path;
 use std::time::Duration;
 
-use common::{text, thinking, tool_calls, MockModel, Reply};
+use common::{text, thinking, tool_calls, truncated_tool_calls, MockModel, Reply};
 use genai::adapter::AdapterKind;
 use genai::chat::{ChatMessage, ChatRole};
 use harness_core::tools::ToolContext;
@@ -169,6 +169,75 @@ async fn tool_call_round_trip() {
     assert_eq!(results[0]["tool_call_id"], "call_1");
     let output: Value = serde_json::from_str(results[0]["content"].as_str().unwrap()).unwrap();
     assert_eq!(output["output"], "hi\n");
+}
+
+#[tokio::test]
+async fn truncated_tool_calls_fail_without_running_and_ask_model_to_reissue() {
+    let dir = tempfile::tempdir().unwrap();
+    let truncated = truncated_tool_calls(&[
+        (
+            "call_1",
+            "write",
+            r#"{"path":"first.txt","content":"nope"}"#,
+        ),
+        ("call_2", "write", r#"{"path":"second.txt","content":"cut"#),
+    ]);
+    let reissue = tool_calls(&[(
+        "call_3",
+        "write",
+        json!({ "path": "final.txt", "content": "ok" }),
+    )]);
+    let model = MockModel::start(vec![truncated, reissue, text("done")]).await;
+    let mut agent = agent(&model, dir.path());
+
+    let mut tool_errors = Vec::new();
+    let answer = agent
+        .prompt("write files", |event| {
+            if let Event::ToolResult(resp, _) = event {
+                let v: Value = serde_json::from_str(&resp.content).unwrap();
+                if let Some(err) = v["error"].as_str() {
+                    tool_errors.push((resp.call_id.clone(), err.to_owned()));
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(answer, "done");
+    // Neither the complete nor the partial call from the truncated turn ran.
+    assert!(!dir.path().join("first.txt").exists());
+    assert!(!dir.path().join("second.txt").exists());
+    // The re-issued call on the following turn succeeded.
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("final.txt")).unwrap(),
+        "ok"
+    );
+
+    assert_eq!(tool_errors.len(), 2);
+    assert_eq!(tool_errors[0].0, "call_1");
+    assert_eq!(tool_errors[1].0, "call_2");
+    for (_, err) in &tool_errors {
+        assert!(err.contains("truncated"), "{err}");
+        assert!(err.contains("re-issue"), "{err}");
+    }
+
+    // Both failed calls were sent back with valid object arguments and matching tool results.
+    let reqs = model.requests();
+    assert_eq!(reqs.len(), 3);
+    let assistant_calls = sent(&reqs[1], "assistant")[0]["tool_calls"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(assistant_calls.len(), 2);
+    for tc in &assistant_calls {
+        let parsed: Value =
+            serde_json::from_str(tc["function"]["arguments"].as_str().unwrap()).unwrap();
+        assert!(parsed.is_object(), "expected JSON object args: {parsed}");
+    }
+    let results = sent(&reqs[1], "tool");
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0]["tool_call_id"], "call_1");
+    assert_eq!(results[1]["tool_call_id"], "call_2");
 }
 
 #[tokio::test]
