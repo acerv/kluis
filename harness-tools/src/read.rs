@@ -153,19 +153,19 @@ fn read_window(
         let chunk = &buf[..n];
         // Text files do not contain NUL bytes; binary content would only
         // reach the model as replacement characters.
-        if chunk.contains(&0) {
+        if memchr::memchr(0, chunk).is_some() {
             return Err(ToolError::new(format!("{display}: binary file")));
         }
 
         let mut slice = chunk;
         while !slice.is_empty() {
             if line_idx >= end || cut_at.is_some() {
-                line_idx += slice.iter().filter(|&&b| b == b'\n').count();
+                line_idx += memchr::memchr_iter(b'\n', slice).count();
                 in_line = *slice.last().unwrap() != b'\n';
                 break;
             }
 
-            let (segment, ended) = match slice.iter().position(|&b| b == b'\n') {
+            let (segment, ended) = match memchr::memchr(b'\n', slice) {
                 Some(pos) => (&slice[..=pos], true),
                 None => (slice, false),
             };

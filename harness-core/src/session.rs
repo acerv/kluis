@@ -414,7 +414,7 @@ fn split_byte_lines(raw: &[u8]) -> impl Iterator<Item = (&[u8], usize)> {
     std::iter::from_fn(move || {
         while pos < raw.len() {
             let start = pos;
-            let end = match raw[pos..].iter().position(|&b| b == b'\n') {
+            let end = match memchr::memchr(b'\n', &raw[pos..]) {
                 Some(rel) => {
                     pos += rel + 1;
                     start + rel

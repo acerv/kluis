@@ -128,7 +128,7 @@ impl EditTool {
         if bytes.len() as u64 > MAX_EDIT_BYTES {
             return Err(file_too_large(&self.path));
         }
-        if bytes.contains(&0) {
+        if memchr::memchr(0, &bytes).is_some() {
             return Err(ToolError::new(format!("{}: binary file", self.path)));
         }
         // Replacing text in lossily decoded content would corrupt the file.

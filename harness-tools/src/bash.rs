@@ -343,12 +343,7 @@ impl Tail {
 
     fn trim_lines(&mut self) {
         let last = self.buf.len().saturating_sub(1);
-        let mut breaks = self.buf[..last]
-            .iter()
-            .enumerate()
-            .rev()
-            .filter(|&(_, &b)| b == b'\n');
-        if let Some((i, _)) = breaks.nth(MAX_BASH_LINES - 1) {
+        if let Some(i) = memchr::memrchr_iter(b'\n', &self.buf[..last]).nth(MAX_BASH_LINES - 1) {
             self.spill.write(&self.buf[..=i]);
             self.buf.drain(..=i);
             self.cut = true;

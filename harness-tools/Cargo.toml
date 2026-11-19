@@ -13,6 +13,7 @@ globset.workspace = true
 grep-regex.workspace = true
 grep-searcher.workspace = true
 ignore.workspace = true
+memchr.workspace = true
 nix.workspace = true
 scopeguard.workspace = true
 serde.workspace = true
