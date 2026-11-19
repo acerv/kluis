@@ -10,7 +10,10 @@ use std::time::Duration;
 use crossterm::cursor::{MoveTo, Show};
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste, Event};
 use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, BeginSynchronizedUpdate, Clear, ClearType,
+    EndSynchronizedUpdate,
+};
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
@@ -70,6 +73,10 @@ impl EventReader {
     pub async fn next(&mut self) -> Option<io::Result<Event>> {
         self.rx.recv().await
     }
+
+    pub fn try_next(&mut self) -> Option<io::Result<Event>> {
+        self.rx.try_recv().ok()
+    }
 }
 
 impl Drop for EventReader {
@@ -86,7 +93,6 @@ impl Drop for EventReader {
 pub struct InlineTerminal {
     terminal: Terminal<CrosstermBackend<Stdout>>,
     height: u16,
-    last_top: u16,
 }
 
 impl InlineTerminal {
@@ -103,11 +109,10 @@ impl InlineTerminal {
             viewport: Viewport::Inline(height),
         };
         match Terminal::with_options(backend, options) {
-            Ok(terminal) => Ok(Self {
-                terminal,
-                height,
-                last_top: 0,
-            }),
+            Ok(mut terminal) => {
+                let height = terminal.get_frame().area().height;
+                Ok(Self { terminal, height })
+            }
             Err(err) => {
                 restore_terminal();
                 Err(err)
@@ -115,29 +120,63 @@ impl InlineTerminal {
         }
     }
 
-    /// Resize the inline viewport if the editor grew or shrank, flush pending
-    /// scrollback lines above it, and redraw `app`.
+    /// Sync terminal dimensions, resize the inline viewport if needed, flush
+    /// pending scrollback lines above it, and redraw `app` inside a single
+    /// synchronized terminal update.
     pub fn draw_app(&mut self, app: &mut App) -> io::Result<()> {
-        let size = self.terminal.size()?;
-        let desired = app.viewport_height(size.width).min(size.height.max(1));
-        if desired != self.height {
-            let top = self.last_top.min(size.height.saturating_sub(1));
-            let mut stdout = io::stdout();
-            execute!(stdout, MoveTo(0, top), Clear(ClearType::FromCursorDown))?;
-            let backend = CrosstermBackend::new(stdout);
-            let options = TerminalOptions {
-                viewport: Viewport::Inline(desired),
-            };
-            self.terminal = Terminal::with_options(backend, options)?;
-            self.height = desired;
+        let sync = SyncUpdateGuard::begin()?;
+        let res = (|| -> io::Result<()> {
+            // Sync ratatui's viewport before querying its top row or calling
+            // `insert_before` (ratatui otherwise only autoresizes inside `draw`).
+            self.terminal.autoresize()?;
+
+            let size = self.terminal.size()?;
+            let desired = app.viewport_height(size.width).min(size.height.max(1));
+            if desired != self.height {
+                let top = self.terminal.get_frame().area().y;
+                let mut stdout = io::stdout();
+                execute!(stdout, MoveTo(0, top), Clear(ClearType::FromCursorDown))?;
+                let backend = CrosstermBackend::new(stdout);
+                let options = TerminalOptions {
+                    viewport: Viewport::Inline(desired),
+                };
+                self.terminal = Terminal::with_options(backend, options)?;
+                self.height = self.terminal.get_frame().area().height;
+            }
+
+            let lines = app.take_scrollback();
+            flush_scrollback(&mut self.terminal, lines)?;
+            self.terminal.draw(|frame| app.render(frame))?;
+            Ok(())
+        })();
+        let end_res = sync.finish();
+        res.and(end_res)
+    }
+}
+
+/// Ensures `EndSynchronizedUpdate` is always emitted once `BeginSynchronizedUpdate`
+/// has been written, even if rendering returns early or panics.
+struct SyncUpdateGuard {
+    active: bool,
+}
+
+impl SyncUpdateGuard {
+    fn begin() -> io::Result<Self> {
+        execute!(io::stdout(), BeginSynchronizedUpdate)?;
+        Ok(Self { active: true })
+    }
+
+    fn finish(mut self) -> io::Result<()> {
+        self.active = false;
+        execute!(io::stdout(), EndSynchronizedUpdate)
+    }
+}
+
+impl Drop for SyncUpdateGuard {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = execute!(io::stdout(), EndSynchronizedUpdate);
         }
-        let lines = app.take_scrollback();
-        flush_scrollback(&mut self.terminal, lines)?;
-        self.terminal.draw(|frame| {
-            self.last_top = frame.area().y;
-            app.render(frame);
-        })?;
-        Ok(())
     }
 }
 
@@ -156,7 +195,7 @@ pub fn flush_scrollback<B: Backend>(
     if lines.is_empty() {
         return Ok(());
     }
-    let width = terminal.size()?.width as usize;
+    let width = terminal.get_frame().area().width as usize;
     if width == 0 {
         return Ok(());
     }
@@ -253,7 +292,7 @@ fn install_panic_hook() {
 
 fn restore_terminal() {
     let mut stdout = io::stdout();
-    let _ = execute!(stdout, DisableBracketedPaste, Show);
+    let _ = execute!(stdout, EndSynchronizedUpdate, DisableBracketedPaste, Show);
     let _ = disable_raw_mode();
     let _ = writeln!(stdout);
     let _ = stdout.flush();

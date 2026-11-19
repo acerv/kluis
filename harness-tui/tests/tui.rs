@@ -31,14 +31,26 @@ fn ctrl(c: char) -> Event {
 }
 
 fn inline_terminal(width: u16, height: u16) -> Terminal<TestBackend> {
+    inline_terminal_with(width, height, VIEWPORT_HEIGHT)
+}
+
+fn inline_terminal_with(width: u16, height: u16, viewport: u16) -> Terminal<TestBackend> {
     let backend = TestBackend::new(width, height);
     Terminal::with_options(
         backend,
         TerminalOptions {
-            viewport: Viewport::Inline(VIEWPORT_HEIGHT),
+            viewport: Viewport::Inline(viewport),
         },
     )
     .unwrap()
+}
+
+/// Row index of the activity spinner, i.e. the line just above the editor.
+fn spinner_row(terminal: &Terminal<TestBackend>) -> usize {
+    render_text(terminal)
+        .lines()
+        .position(|line| line.contains("esc to cancel"))
+        .expect("spinner line")
 }
 
 fn render_text(terminal: &Terminal<TestBackend>) -> String {
@@ -106,8 +118,11 @@ fn viewport_height_grows_with_newlines_and_wrapping() {
     app.handle_event(Event::Paste("a".repeat(40)));
     assert_eq!(app.viewport_height(20), VIEWPORT_HEIGHT + 4);
 
-    // Submitting shrinks back to 1 editor row.
+    // Submitting shrinks the editor back to one row, and starting a prompt
+    // keeps the compact viewport height until live text actually wraps.
     app.handle_event(key(KeyCode::Enter));
+    assert_eq!(app.viewport_height(20), VIEWPORT_HEIGHT);
+    app.start_prompt("line 1\nline 2");
     assert_eq!(app.viewport_height(20), VIEWPORT_HEIGHT);
 }
 
@@ -246,13 +261,45 @@ fn realtime_multiline_thinking_and_ctrl_o_toggle() {
     assert_eq!(revealed, vec!["cleanly right now"]);
 
     // Multi-line live Markdown preview grows viewport_height while streaming a
-    // long paragraph before '\n' arrives.
+    // long paragraph before '\n' arrives, then shrinks back when finished.
     app.apply_update(AgentUpdate::TextDelta(
         "A long streaming markdown paragraph that wraps across multiple rows".into(),
     ));
     assert!(app.viewport_height(20) > VIEWPORT_HEIGHT);
     app.finish_prompt(Ok(()));
     assert_eq!(app.viewport_height(20), VIEWPORT_HEIGHT);
+}
+
+#[test]
+fn streaming_preview_aligns_directly_below_scrollback() {
+    let width = 50;
+    let mut app = App::new("model", status(), Theme::new(true));
+    app.start_prompt("go");
+    let _ = app.take_scrollback();
+
+    app.apply_update(AgentUpdate::TurnStart);
+    app.apply_update(AgentUpdate::TextDelta(
+        "streaming text that wraps cleanly across multiple preview rows in the viewport".into(),
+    ));
+    let height = app.viewport_height(width);
+    assert!(height > VIEWPORT_HEIGHT);
+
+    let mut term = inline_terminal_with(width, 24, height);
+    term.draw(|f| app.render(f)).unwrap();
+    let spinner = spinner_row(&term);
+
+    // Live preview rows start at row 0 of the viewport (directly below
+    // scrollback) and fill every row down to the spinner without blank gaps.
+    let rows: Vec<String> = render_text(&term).lines().map(str::to_owned).collect();
+    let preview: Vec<usize> = rows[..spinner]
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| !row.trim().is_empty())
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(preview.first().copied(), Some(0), "{rows:#?}");
+    assert_eq!(preview.last().copied(), Some(spinner - 1), "{rows:#?}");
+    assert_eq!(preview.len(), spinner, "{rows:#?}");
 }
 
 #[test]

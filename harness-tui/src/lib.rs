@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use harness_core::{Agent, Error};
 use tokio::sync::mpsc;
-use tokio::time::interval;
+use tokio::time::{interval_at, Instant, MissedTickBehavior};
 
 pub use app::{summary, Action, AgentUpdate, App, SlashCommand, VIEWPORT_HEIGHT};
 pub use style::Theme;
@@ -50,8 +50,7 @@ pub async fn run(mut agent: Agent, status: Status) -> Result<(), Error> {
         let Some(next) = events.next().await else {
             break;
         };
-        let ev = next?;
-        match app.handle_event(ev) {
+        match handle_event_batch(next?, &mut events, &mut app)? {
             Action::None | Action::Cancel => {}
             Action::Redraw => draw(&mut term, &mut app)?,
             Action::Quit => break,
@@ -124,14 +123,15 @@ async fn run_turn(
         });
         tokio::pin!(prompt_fut);
 
-        let mut ticker = interval(SPINNER_TICK);
+        let mut ticker = interval_at(Instant::now() + SPINNER_TICK, SPINNER_TICK);
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {
                 biased;
                 maybe_ev = events.next() => {
                     match maybe_ev {
-                        Some(Ok(ev)) => match app.handle_event(ev) {
+                        Some(Ok(ev)) => match handle_event_batch(ev, events, app)? {
                             Action::Cancel => {
                                 cancelled = true;
                                 break;
@@ -151,7 +151,7 @@ async fn run_turn(
                     }
                 }
                 Some(update) = rx.recv() => {
-                    app.apply_update(update);
+                    drain_updates(update, &mut rx, app);
                     draw(term, app)?;
                 }
                 res = &mut prompt_fut => {
@@ -166,8 +166,8 @@ async fn run_turn(
         }
     }
 
-    while let Ok(update) = rx.try_recv() {
-        app.apply_update(update);
+    if let Ok(first) = rx.try_recv() {
+        drain_updates(first, &mut rx, app);
     }
 
     if quit {
@@ -180,6 +180,49 @@ async fn run_turn(
     }
     draw(term, app)?;
     Ok(false)
+}
+
+/// Process `first` and any immediately queued terminal events, coalescing
+/// consecutive redraws (e.g. window resize drags or fast typing) into a single
+/// draw while stopping immediately on control actions.
+fn handle_event_batch(
+    first: crossterm::event::Event,
+    events: &mut EventReader,
+    app: &mut App,
+) -> Result<Action, Error> {
+    let action = app.handle_event(first);
+    if !matches!(action, Action::None | Action::Redraw) {
+        return Ok(action);
+    }
+    let mut dirty = matches!(action, Action::Redraw);
+    while let Some(queued) = events.try_next() {
+        match app.handle_event(queued?) {
+            Action::None => {}
+            Action::Redraw => dirty = true,
+            other => return Ok(other),
+        }
+    }
+    Ok(if dirty { Action::Redraw } else { Action::None })
+}
+
+/// Apply `first` and any immediately queued updates from `rx`, coalescing
+/// consecutive `TextDelta` or `ReasoningDelta` chunks so Markdown parsing
+/// and terminal redraws run once per batch instead of once per token.
+fn drain_updates(first: AgentUpdate, rx: &mut mpsc::UnboundedReceiver<AgentUpdate>, app: &mut App) {
+    let mut pending = first;
+    while let Ok(next) = rx.try_recv() {
+        match (&mut pending, next) {
+            (AgentUpdate::TextDelta(acc), AgentUpdate::TextDelta(more))
+            | (AgentUpdate::ReasoningDelta(acc), AgentUpdate::ReasoningDelta(more)) => {
+                acc.push_str(&more);
+            }
+            (_, next) => {
+                app.apply_update(pending);
+                pending = next;
+            }
+        }
+    }
+    app.apply_update(pending);
 }
 
 fn draw(term: &mut InlineTerminal, app: &mut App) -> Result<(), Error> {
