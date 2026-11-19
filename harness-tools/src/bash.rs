@@ -14,6 +14,7 @@ use anstyle_parse::{Parser, Perform};
 use genai::chat::Tool;
 use nix::sys::signal::{killpg, Signal};
 use nix::unistd::{setsid, Pid};
+use scopeguard::ScopeGuard;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tempfile::{Builder, NamedTempFile, TempPath};
@@ -159,7 +160,7 @@ impl BashTool {
         ));
 
         let (mut child, pipe) = spawn(&self.command, cwd, ctx).map_err(bash_error)?;
-        let mut group = GroupGuard(child.id());
+        let group = scopeguard::guard(child.id(), kill_group);
         let mut pipe = Some(pipe);
         let mut filter = Filter::default();
         let mut tail = Tail::default();
@@ -196,14 +197,14 @@ impl BashTool {
         };
 
         if timed_out {
-            group.kill();
+            drop(group);
             if status.is_none() {
                 // The group kill already hit the shell; reap it.
                 let _ = child.kill().await;
             }
         } else {
             // Finished normally: background jobs may keep running.
-            group.disarm();
+            ScopeGuard::into_inner(group);
         }
 
         let (output, truncated, output_file) = tail.finish();
@@ -273,24 +274,10 @@ fn exit_code(status: ExitStatus) -> i32 {
     }
 }
 
-/// Kills the command's process group when dropped, unless disarmed.
-struct GroupGuard(Option<u32>);
-
-impl GroupGuard {
-    fn kill(&mut self) {
-        if let Some(pid) = self.0.take().and_then(|p| i32::try_from(p).ok()) {
-            let _ = killpg(Pid::from_raw(pid), Signal::SIGKILL);
-        }
-    }
-
-    fn disarm(&mut self) {
-        self.0 = None;
-    }
-}
-
-impl Drop for GroupGuard {
-    fn drop(&mut self) {
-        self.kill();
+/// Kills the command's process group if a pid was recorded.
+fn kill_group(pid: Option<u32>) {
+    if let Some(pid) = pid.and_then(|p| i32::try_from(p).ok()) {
+        let _ = killpg(Pid::from_raw(pid), Signal::SIGKILL);
     }
 }
 

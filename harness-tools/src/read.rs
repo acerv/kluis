@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 
 use crate::error::ToolError;
 use crate::path::resolve;
-use crate::walk::StopOnDrop;
+use crate::walk::stop_on_drop;
 
 /// Default maximum number of lines returned by [`ReadTool::run`].
 pub const DEFAULT_READ_LIMIT: usize = 2000;
@@ -111,8 +111,7 @@ impl ReadTool {
         // Stream in fixed chunks on a blocking thread so large files are
         // never loaded whole into memory, and stop if this future is dropped.
         let display = self.path;
-        let stop = StopOnDrop::default();
-        let flag = stop.0.clone();
+        let (flag, stop) = stop_on_drop();
         let out =
             tokio::task::spawn_blocking(move || read_window(&path, &display, offset, limit, &flag))
                 .await

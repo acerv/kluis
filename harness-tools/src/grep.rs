@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 
 use crate::error::ToolError;
 use crate::path::resolve;
-use crate::walk::{self, StopOnDrop};
+use crate::walk::{self, stop_on_drop};
 
 /// Default maximum number of matching lines returned by [`GrepTool::run`].
 pub const DEFAULT_GREP_LIMIT: usize = 100;
@@ -151,8 +151,7 @@ impl GrepTool {
         let given = given.to_owned();
 
         // The search blocks; stop it when the caller drops this future.
-        let stop = StopOnDrop::default();
-        let flag = stop.0.clone();
+        let (flag, stop) = stop_on_drop();
         let out = tokio::task::spawn_blocking(move || {
             if only_file {
                 let mut merge = Merge::new(limit, context);

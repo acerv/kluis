@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 
 use crate::error::ToolError;
 use crate::path::resolve;
-use crate::walk::{self, StopOnDrop};
+use crate::walk::{self, stop_on_drop};
 
 /// Default maximum number of paths returned by [`FindTool::run`].
 pub const DEFAULT_FIND_LIMIT: usize = 1000;
@@ -120,8 +120,7 @@ impl FindTool {
         }
 
         // The walk blocks; stop it when the caller drops this future.
-        let stop = StopOnDrop::default();
-        let flag = stop.0.clone();
+        let (flag, stop) = stop_on_drop();
         let mut paths = tokio::task::spawn_blocking(move || walk(&root, &glob, by_path, &flag))
             .await
             .map_err(|e| ToolError::new(format!("find: {e}")))?;

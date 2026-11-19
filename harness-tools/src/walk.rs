@@ -32,13 +32,10 @@ fn in_git_repo(dir: &Path) -> bool {
     dir.ancestors().any(|d| d.join(".git").exists())
 }
 
-/// Raises its flag when dropped, so blocking work started by a future stops
-/// when the future is dropped.
-#[derive(Default)]
-pub(crate) struct StopOnDrop(pub(crate) Arc<AtomicBool>);
-
-impl Drop for StopOnDrop {
-    fn drop(&mut self) {
-        self.0.store(true, Ordering::Relaxed);
-    }
+/// Returns a cancellation flag and a guard that raises it when dropped, so
+/// blocking work started by a future stops when the future is dropped.
+pub(crate) fn stop_on_drop() -> (Arc<AtomicBool>, impl Drop + Send) {
+    let flag = Arc::new(AtomicBool::new(false));
+    let guard = scopeguard::guard(Arc::clone(&flag), |f| f.store(true, Ordering::Relaxed));
+    (flag, guard)
 }

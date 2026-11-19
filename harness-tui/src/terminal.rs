@@ -18,6 +18,7 @@ use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 use ratatui::{Terminal, TerminalOptions, Viewport};
+use scopeguard::ScopeGuard;
 use tokio::sync::mpsc;
 use unicode_width::UnicodeWidthChar;
 
@@ -125,7 +126,10 @@ impl InlineTerminal {
     /// pending scrollback lines above it, and redraw `app` inside a single
     /// synchronized terminal update.
     pub fn draw_app(&mut self, app: &mut App) -> io::Result<()> {
-        let sync = SyncUpdateGuard::begin()?;
+        execute!(io::stdout(), BeginSynchronizedUpdate)?;
+        let sync = scopeguard::guard((), |()| {
+            let _ = execute!(io::stdout(), EndSynchronizedUpdate);
+        });
         let res = (|| -> io::Result<()> {
             // Sync ratatui's viewport before querying its top row or calling
             // `insert_before` (ratatui otherwise only autoresizes inside `draw`).
@@ -150,34 +154,9 @@ impl InlineTerminal {
             self.terminal.draw(|frame| app.render(frame))?;
             Ok(())
         })();
-        let end_res = sync.finish();
+        ScopeGuard::into_inner(sync);
+        let end_res = execute!(io::stdout(), EndSynchronizedUpdate);
         res.and(end_res)
-    }
-}
-
-/// Ensures `EndSynchronizedUpdate` is always emitted once `BeginSynchronizedUpdate`
-/// has been written, even if rendering returns early or panics.
-struct SyncUpdateGuard {
-    active: bool,
-}
-
-impl SyncUpdateGuard {
-    fn begin() -> io::Result<Self> {
-        execute!(io::stdout(), BeginSynchronizedUpdate)?;
-        Ok(Self { active: true })
-    }
-
-    fn finish(mut self) -> io::Result<()> {
-        self.active = false;
-        execute!(io::stdout(), EndSynchronizedUpdate)
-    }
-}
-
-impl Drop for SyncUpdateGuard {
-    fn drop(&mut self) {
-        if self.active {
-            let _ = execute!(io::stdout(), EndSynchronizedUpdate);
-        }
     }
 }
 
