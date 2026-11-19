@@ -15,6 +15,7 @@ compile_error!("harness-exec only supports Linux");
 
 mod bash;
 mod diff;
+mod dispatch;
 mod edit;
 mod error;
 mod find;
@@ -30,6 +31,10 @@ pub use bash::{
     MAX_BASH_LOG_BYTES, MAX_BASH_OUTPUT,
 };
 pub use diff::{Diff, DiffHunk, DiffLine, DIFF_CONTEXT_LINES, MAX_DIFF_BYTES};
+pub use dispatch::{
+    definitions, dispatch_raw, execute, execute_streaming, is_read_only, run, run_with,
+    ToolContext, ToolDetails,
+};
 pub use edit::{Edit, EditOutput, EditTool, MAX_EDIT_BYTES};
 pub use error::ToolError;
 pub use find::{FindOutput, FindTool, DEFAULT_FIND_LIMIT, MAX_FIND_BYTES};
