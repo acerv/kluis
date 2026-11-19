@@ -12,6 +12,8 @@ genai.workspace = true
 globset.workspace = true
 grep-regex.workspace = true
 grep-searcher.workspace = true
+hakoniwa.workspace = true
+harness-sandbox.workspace = true
 ignore.workspace = true
 memchr.workspace = true
 nix.workspace = true
@@ -19,7 +21,7 @@ scopeguard.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 similar.workspace = true
-tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt", "time"] }
+tokio = { workspace = true, features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt", "sync", "time"] }
 tempfile.workspace = true
 thiserror.workspace = true
 

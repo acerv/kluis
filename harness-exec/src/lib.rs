@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
-//! Minimal tools for LLM harnesses.
+//! Tools and async sandboxed tool executor for LLM harnesses.
 //!
 //! Each tool is a type holding the input of one call. Its `definition()`
-//! describes the tool to the model (a `genai` tool). The host
-//! deserializes the model's tool-call arguments into the type, calls
-//! `run()`, and sends back the output or [`ToolError`].
+//! describes the tool to the model (a `genai` tool). [`Executor`] runs tool
+//! calls either directly in-process ([`Executor::Local`]) or inside a
+//! persistent `hakoniwa` container ([`Executor::Sandbox`]) over an async
+//! NDJSON stdio protocol supporting parallel calls and per-call cancellation.
 //!
 //! Only Linux is supported.
 
@@ -22,9 +23,14 @@ mod find;
 mod grep;
 mod ls;
 mod path;
+mod protocol;
 mod read;
+mod sandbox;
 mod walk;
+mod worker;
 mod write;
+
+use genai::chat::{ToolCall, ToolResponse};
 
 pub use bash::{
     BashContext, BashOutput, BashTool, PreExec, DEFAULT_BASH_TIMEOUT, MAX_BASH_LINES,
@@ -40,5 +46,42 @@ pub use error::ToolError;
 pub use find::{FindOutput, FindTool, DEFAULT_FIND_LIMIT, MAX_FIND_BYTES};
 pub use grep::{GrepOutput, GrepTool, DEFAULT_GREP_LIMIT, MAX_GREP_BYTES, MAX_GREP_LINE_CHARS};
 pub use ls::{LsOutput, LsTool, DEFAULT_LS_LIMIT, MAX_LS_BYTES};
+pub use protocol::{Request, Response, MAX_FRAME_BYTES};
 pub use read::{ReadOutput, ReadTool, DEFAULT_READ_LIMIT, MAX_READ_BYTES};
+pub use sandbox::{ExecError, SandboxConfig, SandboxExecutor};
+pub use worker::{run_worker, run_worker_io};
 pub use write::{WriteOutput, WriteTool};
+
+/// Executes tool calls either directly in-process or inside a sandboxed worker
+/// container.
+#[derive(Debug)]
+pub enum Executor {
+    Local(ToolContext),
+    Sandbox(Box<SandboxExecutor>),
+}
+
+impl Default for Executor {
+    fn default() -> Self {
+        Self::Local(ToolContext::default())
+    }
+}
+
+impl Executor {
+    /// Spawn a sandboxed [`Executor`].
+    pub fn sandbox(config: SandboxConfig) -> Result<Self, ExecError> {
+        Ok(Self::Sandbox(Box::new(SandboxExecutor::new(config)?)))
+    }
+
+    /// Execute one tool call, streaming cleaned live output chunks via
+    /// `on_output`. Safe to call concurrently from multiple futures.
+    pub async fn execute(
+        &self,
+        call: &ToolCall,
+        on_output: impl FnMut(&str),
+    ) -> (ToolResponse, Option<ToolDetails>) {
+        match self {
+            Self::Local(ctx) => execute_streaming(call, ctx, on_output).await,
+            Self::Sandbox(sandbox) => sandbox.execute(call, on_output).await,
+        }
+    }
+}

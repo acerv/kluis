@@ -1,0 +1,337 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+use genai::chat::ToolCall;
+use harness_exec::{
+    run_worker_io, Executor, Request, Response, SandboxConfig, SandboxExecutor, ToolContext,
+    ToolDetails,
+};
+use harness_sandbox::{Options, Sandbox};
+use serde_json::json;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+fn call(id: &str, name: &str, args: serde_json::Value) -> ToolCall {
+    ToolCall {
+        call_id: id.into(),
+        fn_name: name.into(),
+        fn_arguments: args,
+        thought_signatures: None,
+    }
+}
+
+#[tokio::test]
+async fn local_executor_runs_parallel_calls_and_returns_edit_diff() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "hello world\n").unwrap();
+    std::fs::write(dir.path().join("b.txt"), "old line\n").unwrap();
+
+    let exec = Executor::Local(ToolContext {
+        cwd: dir.path().to_path_buf(),
+        ..ToolContext::default()
+    });
+
+    let c1 = call("c1", "read", json!({ "path": "a.txt" }));
+    let c2 = call(
+        "c2",
+        "edit",
+        json!({ "path": "b.txt", "edits": [{ "oldText": "old line", "newText": "new line" }] }),
+    );
+    let c3 = call("c3", "bash", json!({ "command": "echo streamed" }));
+
+    let mut streamed = String::new();
+    let ((r1, d1), (r2, d2), (r3, d3)) = tokio::join!(
+        exec.execute(&c1, |_| {}),
+        exec.execute(&c2, |_| {}),
+        exec.execute(&c3, |chunk| streamed.push_str(chunk)),
+    );
+
+    assert!(r1.content.contains("hello world"), "{}", r1.content);
+    assert!(d1.is_none());
+    assert!(matches!(d2, Some(ToolDetails::Edit(_))), "{d2:?}");
+    assert!(r2.content.contains("\"replacements\":1"), "{}", r2.content);
+    assert!(streamed.contains("streamed"), "{streamed:?}");
+    assert!(r3.content.contains("streamed"), "{}", r3.content);
+    assert!(d3.is_none());
+}
+
+#[tokio::test]
+async fn worker_runs_parallel_calls_streams_and_cancels_individually() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("note.txt"), "alpha\n").unwrap();
+    std::fs::write(dir.path().join("edit.txt"), "before\n").unwrap();
+
+    let (mut host_write, worker_read) = tokio::io::duplex(64 * 1024);
+    let (worker_write, host_read) = tokio::io::duplex(64 * 1024);
+    let ctx = ToolContext {
+        cwd: dir.path().to_path_buf(),
+        ..ToolContext::default()
+    };
+
+    let worker = tokio::spawn(async move { run_worker_io(worker_read, worker_write, ctx).await });
+    let mut lines = BufReader::new(host_read).lines();
+
+    // First message is Ready.
+    let first = lines.next_line().await.unwrap().unwrap();
+    assert_eq!(
+        serde_json::from_str::<Response>(&first).unwrap(),
+        Response::Ready
+    );
+
+    // Send a slow bash call (id=1), plus fast read (id=2) and edit (id=3) concurrently.
+    for req in [
+        Request::Call {
+            id: 1,
+            name: "bash".into(),
+            args: json!({ "command": "echo started; sleep 30" }),
+        },
+        Request::Call {
+            id: 2,
+            name: "read".into(),
+            args: json!({ "path": "note.txt" }),
+        },
+        Request::Call {
+            id: 3,
+            name: "edit".into(),
+            args: json!({
+                "path": "edit.txt",
+                "edits": [{ "oldText": "before", "newText": "after" }]
+            }),
+        },
+    ] {
+        let mut raw = serde_json::to_vec(&req).unwrap();
+        raw.push(b'\n');
+        host_write.write_all(&raw).await.unwrap();
+    }
+    host_write.flush().await.unwrap();
+
+    // id=2 and id=3 must complete quickly even while id=1 is sleeping, and id=1 streams output.
+    let start = Instant::now();
+    let mut results: HashMap<u64, (String, Option<ToolDetails>)> = HashMap::new();
+    let mut saw_stream = false;
+    while results.len() < 2 || !saw_stream {
+        let line = tokio::time::timeout(Duration::from_secs(5), lines.next_line())
+            .await
+            .expect("timed out waiting for parallel responses")
+            .unwrap()
+            .unwrap();
+        match serde_json::from_str::<Response>(&line).unwrap() {
+            Response::Output { id: 1, chunk } if chunk.contains("started") => saw_stream = true,
+            Response::Result {
+                id,
+                content,
+                details,
+            } => {
+                results.insert(id, (content, details));
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "fast calls were blocked by slow bash call"
+    );
+    assert!(results[&2].0.contains("alpha"), "{}", results[&2].0);
+    assert!(matches!(results[&3].1, Some(ToolDetails::Edit(_))));
+
+    // Cancel id=1; worker cancels only id=1 and stays alive for id=4.
+    let mut cancel = serde_json::to_vec(&Request::Cancel { id: 1 }).unwrap();
+    cancel.push(b'\n');
+    host_write.write_all(&cancel).await.unwrap();
+    host_write.flush().await.unwrap();
+
+    loop {
+        let line = tokio::time::timeout(Duration::from_secs(5), lines.next_line())
+            .await
+            .expect("timed out waiting for cancel result")
+            .unwrap()
+            .unwrap();
+        if let Response::Result { id: 1, content, .. } = serde_json::from_str(&line).unwrap() {
+            assert!(content.contains("cancelled"), "{content}");
+            break;
+        }
+    }
+
+    // Worker still handles new calls after cancel.
+    let mut req4 = serde_json::to_vec(&Request::Call {
+        id: 4,
+        name: "read".into(),
+        args: json!({ "path": "edit.txt" }),
+    })
+    .unwrap();
+    req4.push(b'\n');
+    host_write.write_all(&req4).await.unwrap();
+    host_write.flush().await.unwrap();
+
+    let line = tokio::time::timeout(Duration::from_secs(5), lines.next_line())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    match serde_json::from_str::<Response>(&line).unwrap() {
+        Response::Result { id: 4, content, .. } => assert!(content.contains("after"), "{content}"),
+        other => panic!("unexpected response: {other:?}"),
+    }
+
+    // Closing stdin cleanly exits the worker.
+    drop(host_write);
+    tokio::time::timeout(Duration::from_secs(5), worker)
+        .await
+        .expect("worker did not exit on EOF")
+        .unwrap()
+        .unwrap();
+}
+
+/// Minimal bash NDJSON mock worker script used to exercise `SandboxExecutor`
+/// inside a real `hakoniwa` container without requiring the `kl` binary.
+const MOCK_WORKER_SCRIPT: &str = r#"
+printf '{"op":"ready"}\n'
+while IFS= read -r line; do
+  case "$line" in
+    *'"op":"cancel"'*)
+      # Record cancel marker in container /tmp to verify cancel delivery & /tmp persistence.
+      echo cancelled >> /tmp/cancels
+      ;;
+    *'"name":"stream"'*)
+      id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+      printf '{"op":"output","id":%s,"chunk":"part1\\n"}\n' "$id"
+      printf '{"op":"output","id":%s,"chunk":"part2\\n"}\n' "$id"
+      printf '{"op":"result","id":%s,"content":"{\\"ok\\":true}"}\n' "$id"
+      ;;
+    *'"name":"parallel"'*)
+      id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+      val=$(printf '%s' "$line" | sed -n 's/.*"val":"\([^"]*\)".*/\1/p')
+      ( sleep 0.05; printf '{"op":"result","id":%s,"content":"{\\"val\\":\\"%s\\"}"}\n' "$id" "$val" ) &
+      ;;
+    *'"name":"hang"'*)
+      # Never responds until cancelled.
+      ;;
+    *'"name":"cancels"'*)
+      id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+      count=$(wc -l < /tmp/cancels 2>/dev/null || echo 0)
+      printf '{"op":"result","id":%s,"content":"{\\"cancels\\":%s}"}\n' "$id" "$(echo "$count" | tr -d ' ')"
+      ;;
+    *'"name":"check_isolation"'*)
+      id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+      secret=$(printf '%s' "$line" | sed -n 's/.*"secret":"\([^"]*\)".*/\1/p')
+      has_key="${SECRET_API_KEY:-none}"
+      secret_data=$(cat "$secret" 2>/dev/null || echo blocked)
+      net_ok=$( (exec 3<>/dev/tcp/127.0.0.1/1) 2>&1 || true )
+      printf '{"op":"result","id":%s,"content":"{\\"key\\":\\"%s\\",\\"secret\\":\\"%s\\",\\"net\\":\\"%s\\"}"}\n' \
+        "$id" "$has_key" "${secret_data:-empty}" "$(printf '%s' "$net_ok" | tr -d '"\n')"
+      ;;
+    *'"name":"crash"'*)
+      exit 1
+      ;;
+    *'"name":"ping"'*)
+      id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+      printf '{"op":"result","id":%s,"content":"{\\"pong\\":true}"}\n' "$id"
+      ;;
+  esac
+done
+"#;
+
+#[tokio::test]
+async fn sandbox_executor_streams_multiplexes_isolates_and_respawns() {
+    let dir = tempfile::tempdir().unwrap();
+    let secret = dir.path().join("secret.txt");
+    std::fs::write(&secret, "top-secret").unwrap();
+
+    let sandbox = Sandbox::with_defaults(&Options {
+        write: vec![dir.path().to_path_buf()],
+        deny: vec![secret.clone()],
+        ..Options::default()
+    })
+    .no_network();
+
+    let exec = Executor::sandbox(SandboxConfig {
+        sandbox,
+        program: PathBuf::from("/bin/bash"),
+        args: vec!["-c".into(), MOCK_WORKER_SCRIPT.into()],
+        cwd: dir.path().to_path_buf(),
+        env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+    })
+    .expect("sandbox executor should start");
+
+    // 1. Streaming output + result.
+    let mut chunks = String::new();
+    let (resp, _) = exec
+        .execute(&call("s1", "stream", json!({})), |c| chunks.push_str(c))
+        .await;
+    assert_eq!(chunks, "part1\npart2\n");
+    assert_eq!(resp.content, r#"{"ok":true}"#);
+
+    // 2. Concurrent multiplexed calls route by id.
+    let c1 = call("p1", "parallel", json!({ "val": "one" }));
+    let c2 = call("p2", "parallel", json!({ "val": "two" }));
+    let ((r1, _), (r2, _)) = tokio::join!(exec.execute(&c1, |_| {}), exec.execute(&c2, |_| {}));
+    assert_eq!(r1.content, r#"{"val":"one"}"#);
+    assert_eq!(r2.content, r#"{"val":"two"}"#);
+
+    // 3. Isolation: no API key, denied secret is masked, network is unreachable.
+    let (iso, _) = exec
+        .execute(
+            &call(
+                "i1",
+                "check_isolation",
+                json!({ "secret": secret.to_string_lossy() }),
+            ),
+            |_| {},
+        )
+        .await;
+    assert!(iso.content.contains(r#""key":"none""#), "{}", iso.content);
+    assert!(
+        !iso.content.contains("top-secret"),
+        "secret leaked: {}",
+        iso.content
+    );
+    assert!(
+        iso.content.contains("Network is unreachable"),
+        "{}",
+        iso.content
+    );
+
+    // 4. Dropping an in-flight execute future sends Cancel while keeping /tmp alive.
+    let hang = call("h1", "hang", json!({}));
+    let timed_out = tokio::time::timeout(Duration::from_millis(50), exec.execute(&hang, |_| {}))
+        .await
+        .is_err();
+    assert!(timed_out);
+    let (cancels, _) = exec
+        .execute(&call("cn", "cancels", json!({})), |_| {})
+        .await;
+    assert_eq!(cancels.content, r#"{"cancels":1}"#);
+
+    // 5. Crash recovery: mid-call worker death fails cleanly and next call respawns.
+    let (crashed, _) = exec.execute(&call("cr", "crash", json!({})), |_| {}).await;
+    assert!(
+        crashed.content.contains("exited unexpectedly"),
+        "{}",
+        crashed.content
+    );
+    let (recovered, _) = exec.execute(&call("ok", "ping", json!({})), |_| {}).await;
+    assert_eq!(recovered.content, r#"{"pong":true}"#);
+}
+
+#[test]
+fn sandbox_executor_fails_fast_when_worker_exits_before_ready() {
+    let dir = tempfile::tempdir().unwrap();
+    let sandbox = Sandbox::with_defaults(&Options {
+        write: vec![dir.path().to_path_buf()],
+        ..Options::default()
+    })
+    .no_network();
+
+    let err = SandboxExecutor::new(SandboxConfig {
+        sandbox,
+        program: PathBuf::from("/bin/bash"),
+        args: vec!["-c".into(), "exit 42".into()],
+        cwd: dir.path().to_path_buf(),
+        env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+    })
+    .unwrap_err();
+    assert!(err.to_string().contains("42"), "{err}");
+}

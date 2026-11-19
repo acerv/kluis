@@ -1012,6 +1012,8 @@ dependencies = [
  "globset",
  "grep-regex",
  "grep-searcher",
+ "hakoniwa",
+ "harness-sandbox",
  "ignore",
  "memchr",
  "nix",
