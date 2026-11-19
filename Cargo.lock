@@ -1045,6 +1045,7 @@ dependencies = [
  "tokio",
  "toml",
  "tui-markdown",
+ "unicode-width",
 ]
 
 [[package]]

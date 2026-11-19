@@ -19,6 +19,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 use tokio::sync::mpsc;
+use unicode_width::UnicodeWidthChar;
 
 use crate::app::App;
 
@@ -212,8 +213,7 @@ pub fn flush_scrollback<B: Backend>(
 
 /// Display width of a single Unicode character in terminal cells.
 pub(crate) fn char_width(ch: char) -> usize {
-    let mut tmp = [0u8; 4];
-    Span::raw(&*ch.encode_utf8(&mut tmp)).width()
+    ch.width().unwrap_or(0)
 }
 
 /// Count how many rows `lines` occupy when soft-wrapped to `width` cells,

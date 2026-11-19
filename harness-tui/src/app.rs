@@ -14,6 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use serde_json::Value;
+use unicode_width::UnicodeWidthStr;
 
 use crate::input::Input;
 use crate::markdown::{render_markdown, MarkdownStream};
@@ -722,10 +723,8 @@ impl App {
         let tokens = format_tokens(self.input_tokens.saturating_add(self.output_tokens));
         let dot = " · ";
         let right = format!("{} · {}", self.status.sandbox, self.status.folder);
-        let left_w = Span::raw(self.model.as_str()).width()
-            + Span::raw(dot).width()
-            + Span::raw(tokens.as_str()).width();
-        let right_w = Span::raw(right.as_str()).width();
+        let left_w = self.model.width() + dot.width() + tokens.width();
+        let right_w = right.width();
         let gap = width.saturating_sub(left_w + right_w).max(2);
 
         let line = Line::from(vec![

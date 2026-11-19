@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::text::Span;
+use unicode_width::UnicodeWidthStr;
 
 const MAX_HISTORY: usize = 200;
 
@@ -35,7 +35,7 @@ impl Input {
         let before = &self.buf[..self.cursor];
         let row = before.bytes().filter(|&b| b == b'\n').count();
         let line_start = before.rfind('\n').map_or(0, |i| i + 1);
-        let col = Span::raw(&before[line_start..]).width();
+        let col = before[line_start..].width();
         (row, col)
     }
 
