@@ -40,9 +40,9 @@ const COMMANDS: &[CommandSpec] = &[
         description: "pick or resume a saved session",
     },
     CommandSpec {
-        name: "/clear",
+        name: "/new",
         arg: None,
-        description: "start a fresh conversation",
+        description: "clear screen and start a new session",
     },
     CommandSpec {
         name: "/help",

@@ -181,7 +181,7 @@ fn slash_commands() {
             "/model gpt-4o",
             Action::Slash(SlashCommand::Model(Some("gpt-4o".into()))),
         ),
-        ("/clear", Action::Slash(SlashCommand::Clear)),
+        ("/new", Action::Slash(SlashCommand::New)),
         ("/quit", Action::Slash(SlashCommand::Quit)),
         ("/help", Action::Slash(SlashCommand::Help)),
     ] {
@@ -753,7 +753,7 @@ fn slash_command_autocomplete_popup_and_tab_completion() {
     assert!(screen.contains("❯ /model [name]"), "{screen}");
     assert!(screen.contains("/thinking [level]"), "{screen}");
     assert!(screen.contains("/resume [id]"), "{screen}");
-    assert!(screen.contains("/clear"), "{screen}");
+    assert!(screen.contains("/new"), "{screen}");
     assert!(screen.contains("/quit"), "{screen}");
     for cell in term.backend().buffer().content() {
         assert_eq!(cell.fg, Color::Reset, "fg set under NO_COLOR: {cell:?}");
@@ -777,20 +777,28 @@ fn slash_command_autocomplete_popup_and_tab_completion() {
     );
     assert!(!app.is_completion_open());
 
-    // Partial no-arg command `/c` and uppercase `/CLEAR` both resolve to `/clear`.
+    // Partial no-arg command `/n` and uppercase `/NEW` both resolve to `/new`.
     app.handle_event(key(KeyCode::Char('/')));
-    app.handle_event(key(KeyCode::Char('c')));
+    app.handle_event(key(KeyCode::Char('n')));
     assert_eq!(
         app.handle_event(key(KeyCode::Enter)),
-        Action::Slash(SlashCommand::Clear)
+        Action::Slash(SlashCommand::New)
     );
     assert!(!app.is_completion_open());
 
-    app.handle_event(Event::Paste("/CLEAR".into()));
+    app.handle_event(Event::Paste("/NEW".into()));
     assert_eq!(
         app.handle_event(key(KeyCode::Enter)),
-        Action::Slash(SlashCommand::Clear)
+        Action::Slash(SlashCommand::New)
     );
+
+    // `/clear` is no longer a valid command.
+    app.handle_event(Event::Paste("/clear".into()));
+    assert_eq!(app.handle_event(key(KeyCode::Enter)), Action::Redraw);
+    assert!(app
+        .take_scrollback()
+        .iter()
+        .any(|l| l.to_string().contains("unknown command: /clear")));
 
     // Esc dismisses popup; cursor movement keeps it dismissed until text changes.
     app.handle_event(key(KeyCode::Char('/')));

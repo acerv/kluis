@@ -108,7 +108,7 @@ pub enum SlashCommand {
     Model(Option<String>),
     Thinking(Option<String>),
     Resume(Option<String>),
-    Clear,
+    New,
     Quit,
     Help,
 }
@@ -245,9 +245,12 @@ impl App {
         }
     }
 
-    /// Reset displayed token counters (e.g. after `/clear`).
-    pub fn reset_tokens(&mut self) {
+    /// Reset displayed token counters and drop pending scrollback (e.g. on `/new`).
+    pub fn reset_session(&mut self) {
         self.set_tokens(0, 0);
+        self.clear_live();
+        self.scrollback.clear();
+        self.notice = None;
     }
 
     /// Set displayed token counters (e.g. when restoring a persisted session).
@@ -1006,7 +1009,7 @@ fn parse_slash(input: &str) -> Option<Result<SlashCommand, String>> {
         "/model" => Ok(SlashCommand::Model(arg)),
         "/thinking" => Ok(SlashCommand::Thinking(arg)),
         "/resume" => Ok(SlashCommand::Resume(arg)),
-        "/clear" => Ok(SlashCommand::Clear),
+        "/new" => Ok(SlashCommand::New),
         "/quit" | "/exit" => Ok(SlashCommand::Quit),
         "/help" => Ok(SlashCommand::Help),
         _ => Err(cmd.to_owned()),

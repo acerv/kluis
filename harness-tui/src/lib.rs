@@ -104,7 +104,7 @@ impl Session {
         self.initial_tokens = (data.input_tokens, data.output_tokens);
     }
 
-    /// Start a fresh lazy session file (e.g. after `/clear`), leaving the
+    /// Start a fresh lazy session file (e.g. after `/new`), leaving the
     /// previous session file intact on disk.
     pub fn rotate(&mut self, model: &str) {
         self.writer = self.store.create(model);
@@ -158,7 +158,7 @@ pub async fn run(mut agent: Agent, status: Status, opts: RunOptions) -> Result<(
             Action::Redraw => draw(&mut term, &mut app)?,
             Action::Quit => break,
             Action::Slash(cmd) => {
-                if handle_slash(cmd, &mut agent, &mut app, session.as_mut()) {
+                if handle_slash(cmd, &mut term, &mut agent, &mut app, session.as_mut()) {
                     break;
                 }
                 draw(&mut term, &mut app)?;
@@ -199,19 +199,21 @@ pub async fn run(mut agent: Agent, status: Status, opts: RunOptions) -> Result<(
 /// Execute a slash command. Returns `true` when the user requested to quit.
 fn handle_slash(
     cmd: SlashCommand,
+    term: &mut InlineTerminal,
     agent: &mut Agent,
     app: &mut App,
     session: Option<&mut Session>,
 ) -> bool {
     match cmd {
         SlashCommand::Quit => return true,
-        SlashCommand::Clear => {
+        SlashCommand::New => {
             agent.clear();
-            app.reset_tokens();
+            app.reset_session();
             if let Some(session) = session {
                 session.rotate(agent.model());
             }
-            app.push_info("[conversation cleared]");
+            term.request_clear();
+            app.push_info("[new session]");
         }
         SlashCommand::Model(Some(name)) => {
             agent.set_model(&name);

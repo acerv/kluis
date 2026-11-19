@@ -95,6 +95,7 @@ impl Drop for EventReader {
 pub struct InlineTerminal {
     terminal: Terminal<CrosstermBackend<Stdout>>,
     height: u16,
+    pending_clear: bool,
 }
 
 impl InlineTerminal {
@@ -113,13 +114,23 @@ impl InlineTerminal {
         match Terminal::with_options(backend, options) {
             Ok(mut terminal) => {
                 let height = terminal.get_frame().area().height;
-                Ok(Self { terminal, height })
+                Ok(Self {
+                    terminal,
+                    height,
+                    pending_clear: false,
+                })
             }
             Err(err) => {
                 restore_terminal();
                 Err(err)
             }
         }
+    }
+
+    /// Schedule a full screen and scrollback clear on the next [`draw_app`](Self::draw_app),
+    /// executed atomically inside its synchronized update.
+    pub fn request_clear(&mut self) {
+        self.pending_clear = true;
     }
 
     /// Sync terminal dimensions, resize the inline viewport if needed, flush
@@ -137,16 +148,23 @@ impl InlineTerminal {
 
             let size = self.terminal.size()?;
             let desired = app.viewport_height(size.width).min(size.height.max(1));
-            if desired != self.height {
+            if self.pending_clear {
+                self.pending_clear = false;
+                execute!(
+                    io::stdout(),
+                    Clear(ClearType::Purge),
+                    Clear(ClearType::All),
+                    MoveTo(0, 0),
+                )?;
+                self.recreate_viewport(desired)?;
+            } else if desired != self.height {
                 let top = self.terminal.get_frame().area().y;
-                let mut stdout = io::stdout();
-                execute!(stdout, MoveTo(0, top), Clear(ClearType::FromCursorDown))?;
-                let backend = CrosstermBackend::new(stdout);
-                let options = TerminalOptions {
-                    viewport: Viewport::Inline(desired),
-                };
-                self.terminal = Terminal::with_options(backend, options)?;
-                self.height = self.terminal.get_frame().area().height;
+                execute!(
+                    io::stdout(),
+                    MoveTo(0, top),
+                    Clear(ClearType::FromCursorDown)
+                )?;
+                self.recreate_viewport(desired)?;
             }
 
             let lines = app.take_scrollback();
@@ -157,6 +175,16 @@ impl InlineTerminal {
         ScopeGuard::into_inner(sync);
         let end_res = execute!(io::stdout(), EndSynchronizedUpdate);
         res.and(end_res)
+    }
+
+    fn recreate_viewport(&mut self, height: u16) -> io::Result<()> {
+        let backend = CrosstermBackend::new(io::stdout());
+        let options = TerminalOptions {
+            viewport: Viewport::Inline(height),
+        };
+        self.terminal = Terminal::with_options(backend, options)?;
+        self.height = self.terminal.get_frame().area().height;
+        Ok(())
     }
 }
 
