@@ -75,7 +75,7 @@ pub fn run(args: &Args) -> Result<ExitCode, Error> {
             deny.push(root);
         } else {
             let store = harness_core::SessionStore::new(&root, &cwd);
-            if !args.continue_session {
+            if !args.continue_session && args.resume_session.is_none() {
                 store.ensure_dir()?;
             }
             let project_dir = store.project_dir().to_path_buf();

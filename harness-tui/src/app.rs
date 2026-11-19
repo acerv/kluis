@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use genai::chat::{ChatMessage, ChatRole, ContentPart};
 use harness_core::tools::{Diff, DiffLine};
-use harness_core::{Event as AgentEvent, ToolDetails};
+use harness_core::{Event as AgentEvent, SessionSummary, ToolDetails};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -18,6 +18,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::input::Input;
 use crate::markdown::{render_markdown, MarkdownStream};
+use crate::picker::{PickerOutcome, SessionPicker};
 use crate::style::Theme;
 use crate::terminal::{char_width, wrap_lines, wrapped_line_count};
 use crate::Status;
@@ -104,6 +105,7 @@ impl AgentUpdate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlashCommand {
     Model(Option<String>),
+    Resume(Option<String>),
     Clear,
     Quit,
     Help,
@@ -116,6 +118,7 @@ pub enum Action {
     Redraw,
     Submit(String),
     Slash(SlashCommand),
+    ResumeSession(String),
     Cancel,
     Quit,
 }
@@ -145,6 +148,7 @@ pub struct App {
     input_tokens: u64,
     output_tokens: u64,
     notice: Option<String>,
+    picker: Option<SessionPicker>,
     scrollback: Vec<Line<'static>>,
 }
 
@@ -168,8 +172,19 @@ impl App {
             input_tokens: 0,
             output_tokens: 0,
             notice: None,
+            picker: None,
             scrollback: Vec::new(),
         }
+    }
+
+    /// Open the inline session picker with `entries`.
+    pub fn open_picker(&mut self, entries: Vec<SessionSummary>, current_id: Option<String>) {
+        self.notice = None;
+        self.picker = Some(SessionPicker::new(entries, current_id));
+    }
+
+    pub fn is_picker_open(&self) -> bool {
+        self.picker.is_some()
     }
 
     pub fn is_busy(&self) -> bool {
@@ -405,6 +420,13 @@ impl App {
                 Action::Redraw
             }
             TermEvent::Paste(text) if !self.busy => {
+                if let Some(picker) = &mut self.picker {
+                    return if picker.paste(&text) {
+                        Action::Redraw
+                    } else {
+                        Action::None
+                    };
+                }
                 self.notice = None;
                 if self.input.paste(&text) {
                     Action::Redraw
@@ -418,6 +440,25 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Action {
+        if let Some(picker) = &mut self.picker {
+            return match picker.handle_key(key) {
+                PickerOutcome::None => Action::None,
+                PickerOutcome::Redraw => Action::Redraw,
+                PickerOutcome::Select(id) => {
+                    self.picker = None;
+                    Action::ResumeSession(id)
+                }
+                PickerOutcome::Cancel => {
+                    self.picker = None;
+                    Action::Redraw
+                }
+                PickerOutcome::Quit => {
+                    self.picker = None;
+                    Action::Quit
+                }
+            };
+        }
+
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match (key.code, ctrl) {
             (KeyCode::Char('o'), true) => {
@@ -542,6 +583,9 @@ impl App {
         if width > 0 {
             self.width.set(width);
         }
+        if let Some(picker) = &self.picker {
+            return FIXED_CHROME_ROWS + picker.visible_rows();
+        }
         FIXED_CHROME_ROWS + self.live_rows(width) + self.editor_rows(width)
     }
 
@@ -579,6 +623,23 @@ impl App {
         let area = frame.area();
         if area.width > 0 {
             self.width.set(area.width);
+        }
+        if let Some(picker) = &self.picker {
+            let list_h = area.height.saturating_sub(FIXED_CHROME_ROWS).max(1);
+            let [header_area, top_rule, list_area, bottom_rule, footer_area] = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(list_h),
+                Constraint::Length(1),
+                Constraint::Fill(1),
+            ])
+            .areas(area);
+            frame.render_widget(Paragraph::new(picker.header_line(self.theme)), header_area);
+            self.render_rule(frame, top_rule);
+            picker.render(frame, list_area, self.theme);
+            self.render_rule(frame, bottom_rule);
+            self.render_footer(frame, footer_area);
+            return;
         }
         let live_lines = self.wrapped_live_lines(area.width as usize);
         let max_live = area
@@ -844,6 +905,7 @@ fn parse_slash(input: &str) -> Option<Result<SlashCommand, String>> {
         .map(str::to_owned);
     Some(match cmd {
         "/model" => Ok(SlashCommand::Model(arg)),
+        "/resume" => Ok(SlashCommand::Resume(arg)),
         "/clear" => Ok(SlashCommand::Clear),
         "/quit" | "/exit" => Ok(SlashCommand::Quit),
         "/help" => Ok(SlashCommand::Help),

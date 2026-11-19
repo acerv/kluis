@@ -22,8 +22,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser;
+use genai::chat::ChatMessage;
 use harness_core::tools::ToolContext;
-use harness_core::{Agent, Error, Event, SessionStore};
+use harness_core::{Agent, Error, Event, SessionData, SessionStore};
 use harness_tui::{summary, Session, Status};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -40,6 +41,17 @@ pub struct Args {
     /// Continue the most recent session for the current folder.
     #[arg(short = 'c', long = "continue", conflicts_with = "no_session")]
     continue_session: bool,
+
+    /// Resume a previous session (opens a picker when no ID is given).
+    #[arg(
+        short = 'r',
+        long = "resume",
+        value_name = "ID",
+        num_args = 0..=1,
+        default_missing_value = "",
+        conflicts_with_all = ["continue_session", "no_session"]
+    )]
+    resume_session: Option<String>,
 
     /// Do not read or write session files.
     #[arg(long)]
@@ -176,18 +188,35 @@ async fn run(args: Args, tools: ToolContext) -> Result<(), Error> {
         .flatten()
         .map(|root| SessionStore::new(root, &cwd));
 
+    let mut picker_entries = Vec::new();
     let (model, history, mut session) = if args.continue_session {
         let store = store.ok_or("cannot continue session: HOME is not set")?;
         let Some(data) = store.latest()? else {
             return Err(format!("no session to continue for {}", cwd.display()).into());
         };
-        let model = args.model.as_deref().unwrap_or(&data.meta.model).to_owned();
-        let mut writer = store.open(&data);
-        if args.model.is_some() && model != data.meta.model {
-            writer.append_model(&model)?;
+        open_loaded_session(store, data, args.model.as_deref())?
+    } else if let Some(ref query) = args.resume_session {
+        let store = store.ok_or("cannot resume session: HOME is not set")?;
+        if query.is_empty() {
+            if !args.prompt.is_empty() || !io::stdin().is_terminal() || !io::stdout().is_terminal()
+            {
+                return Err(
+                    "--resume without an ID requires an interactive terminal (pass --resume <id> or --continue)"
+                        .into(),
+                );
+            }
+            let entries = store.list()?;
+            if entries.is_empty() {
+                return Err(format!("no sessions to resume for {}", cwd.display()).into());
+            }
+            picker_entries = entries;
+            let model = args.model.as_deref().unwrap_or(DEFAULT_MODEL).to_owned();
+            let writer = store.create(&model);
+            (model, Vec::new(), Some(Session::new(store, writer, 0, 0)))
+        } else {
+            let data = store.load(query)?;
+            open_loaded_session(store, data, args.model.as_deref())?
         }
-        let session = Session::new(store, writer, data.input_tokens, data.output_tokens);
-        (model, data.messages, Some(session))
     } else {
         let model = args.model.as_deref().unwrap_or(DEFAULT_MODEL).to_owned();
         let session = store.map(|store| {
@@ -213,7 +242,7 @@ async fn run(args: Args, tools: ToolContext) -> Result<(), Error> {
             sandbox,
             folder: current_folder(),
         };
-        return harness_tui::run(agent, status, session).await;
+        return harness_tui::run_with_picker(agent, status, session, picker_entries).await;
     }
 
     println!("kluis ({}, {sandbox}), Ctrl-D to quit", agent.model());
@@ -236,6 +265,20 @@ async fn run(args: Args, tools: ToolContext) -> Result<(), Error> {
             eprintln!("error: {err}");
         }
     }
+}
+
+fn open_loaded_session(
+    store: SessionStore,
+    data: SessionData,
+    model_override: Option<&str>,
+) -> Result<(String, Vec<ChatMessage>, Option<Session>), Error> {
+    let model = model_override.unwrap_or(&data.meta.model).to_owned();
+    let mut writer = store.open(&data);
+    if model_override.is_some() && model != data.meta.model {
+        writer.append_model(&model)?;
+    }
+    let session = Session::new(store, writer, data.input_tokens, data.output_tokens);
+    Ok((model, data.messages, Some(session)))
 }
 
 async fn prompt_and_persist(

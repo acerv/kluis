@@ -424,4 +424,59 @@ fn session_persists_continues_and_isolates_projects_in_sandbox() {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("no session to continue"), "{stderr}");
+
+    // `--resume <prefix>` selects a specific earlier session inside the sandbox.
+    let store_a =
+        harness_core::SessionStore::new(home.path().join(".kluis").join("sessions"), proj_a.path());
+    let mut old_writer = store_a.create("model-old");
+    old_writer
+        .append_messages(&[
+            genai::chat::ChatMessage::user("remember-target-session"),
+            genai::chat::ChatMessage::assistant("noted-target"),
+        ])
+        .unwrap();
+    let target_prefix = old_writer.id()[..20].to_owned();
+
+    let mut newer_writer = store_a.create("model-new");
+    newer_writer
+        .append_messages(&[genai::chat::ChatMessage::user("different-newer-session")])
+        .unwrap();
+
+    let resumed = run_bash_in(
+        proj_a.path(),
+        home.path(),
+        &["--resume", &target_prefix],
+        &[],
+        |_| "echo resumed".to_string(),
+    );
+    let resumed_users: Vec<&str> = resumed
+        .messages
+        .iter()
+        .filter(|m| m["role"] == "user")
+        .filter_map(|m| m["content"].as_str())
+        .collect();
+    assert_eq!(
+        resumed_users,
+        vec!["remember-target-session", "run"],
+        "{:?}",
+        resumed.messages
+    );
+
+    // Bare `--resume` without a TTY fails with a clear message.
+    let no_tty = Command::new(env!("CARGO_BIN_EXE_kl"))
+        .args(["--resume"])
+        .current_dir(proj_a.path())
+        .env("HOME", home.path())
+        .env_remove("HARNESS_CONFIG")
+        .env_remove("HARNESS_AGENTS")
+        .env_remove("HARNESS_SANDBOXED")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!no_tty.status.success());
+    let stderr = String::from_utf8_lossy(&no_tty.stderr);
+    assert!(
+        stderr.contains("requires an interactive terminal"),
+        "{stderr}"
+    );
 }

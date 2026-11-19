@@ -15,9 +15,11 @@
 
 ## Agent & Session
 
-- [ ] Default system prompt with cwd/OS context and `AGENTS.md` loading (`~/.kluis/AGENTS.md` + workspace)
-- [ ] Session persistence (`~/.kluis/sessions/`) with `--continue` / `-c` and `/resume`
+- [x] Default system prompt with cwd/OS context and `AGENTS.md` loading (`~/.kluis/AGENTS.md` + workspace)
+- [x] Session persistence (`~/.kluis/sessions/`) with `--continue` / `-c`
+- [x] Session picker with `/resume` and `--resume`
 - [ ] Auto-compaction when `input_tokens` approaches the model's context limit
+- [ ] Fail tool calls of a truncated response, telling the model to re-issue them, instead of running incomplete arguments
 - [ ] Model and thinking defaults in `~/.kluis/config.toml`
 
 ## TUI
@@ -32,7 +34,7 @@
 - [x] Real-time multi-line thinking and text streaming, toggled with `Ctrl-O`
 - [ ] Show hunk line numbers in `edit` diffs and expand full tool output
 - [ ] Thinking effort (`off`, `low`, `medium`, `high`) via `/thinking`, keybinding and CLI/config
-- [ ] Session commands: `/compact`, `/undo`, `/retry`, `/diff`, `/copy`, `/status`, `/export`, `/resume`
+- [ ] Session commands: `/compact`, `/undo`, `/retry`, `/diff`, `/copy`, `/status`, `/export`
 - [ ] Context window usage (`<tokens>/<limit>`) for known models in the status bar
 - [ ] Update terminal title with activity state and ring bell on long turns
 - [ ] Restore the terminal on `SIGTERM`/`SIGHUP`

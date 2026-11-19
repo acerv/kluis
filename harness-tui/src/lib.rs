@@ -12,6 +12,7 @@ compile_error!("harness-tui only supports Linux");
 mod app;
 mod input;
 mod markdown;
+mod picker;
 mod style;
 mod terminal;
 
@@ -19,7 +20,7 @@ use std::io;
 use std::time::Duration;
 
 use genai::chat::ChatMessage;
-use harness_core::{Agent, Error, SessionStore, SessionWriter};
+use harness_core::{Agent, Error, SessionData, SessionStore, SessionSummary, SessionWriter};
 use tokio::sync::mpsc;
 use tokio::time::{interval_at, Instant, MissedTickBehavior};
 
@@ -77,6 +78,27 @@ impl Session {
         self.writer.append_model(model)
     }
 
+    pub fn current_id(&self) -> &str {
+        self.writer.id()
+    }
+
+    /// List persisted sessions for the current workspace, newest first.
+    pub fn list(&self) -> Result<Vec<SessionSummary>, Error> {
+        self.store.list()
+    }
+
+    /// Load a persisted session by exact ID or unique prefix.
+    pub fn load(&self, id: &str) -> Result<SessionData, Error> {
+        self.store.load(id)
+    }
+
+    /// Switch the active writer to an already-loaded session so further turns
+    /// append to it.
+    pub fn activate(&mut self, data: &SessionData) {
+        self.writer = self.store.open(data);
+        self.initial_tokens = (data.input_tokens, data.output_tokens);
+    }
+
     /// Start a fresh lazy session file (e.g. after `/clear`), leaving the
     /// previous session file intact on disk.
     pub fn rotate(&mut self, model: &str) {
@@ -86,10 +108,17 @@ impl Session {
 }
 
 /// Run the interactive inline TUI until the user quits (`Ctrl-D` or `/quit`).
-pub async fn run(
+pub async fn run(agent: Agent, status: Status, session: Option<Session>) -> Result<(), Error> {
+    run_with_picker(agent, status, session, Vec::new()).await
+}
+
+/// Like [`run`], opening the session picker immediately when `picker_entries`
+/// is non-empty and the agent has no loaded history yet (used by `--resume`).
+pub async fn run_with_picker(
     mut agent: Agent,
     status: Status,
     mut session: Option<Session>,
+    picker_entries: Vec<SessionSummary>,
 ) -> Result<(), Error> {
     let mut term = InlineTerminal::enter(VIEWPORT_HEIGHT)?;
     let mut app = App::new(agent.model().to_owned(), status, Theme::from_env());
@@ -102,6 +131,8 @@ pub async fn run(
             agent.history().len()
         ));
         app.replay_history(agent.history());
+    } else if !picker_entries.is_empty() {
+        app.open_picker(picker_entries, None);
     }
     let mut events = EventReader::spawn();
 
@@ -119,6 +150,10 @@ pub async fn run(
                 if handle_slash(cmd, &mut agent, &mut app, session.as_mut()) {
                     break;
                 }
+                draw(&mut term, &mut app)?;
+            }
+            Action::ResumeSession(id) => {
+                resume_session(&id, &mut agent, &mut app, session.as_mut());
                 draw(&mut term, &mut app)?;
             }
             Action::Submit(prompt) => {
@@ -173,13 +208,59 @@ fn handle_slash(
         SlashCommand::Model(None) => {
             app.push_info(format!("model: {}", agent.model()));
         }
+        SlashCommand::Resume(Some(id)) => {
+            resume_session(&id, agent, app, session);
+        }
+        SlashCommand::Resume(None) => match session {
+            None => app.push_info("[sessions disabled (--no-session)]"),
+            Some(session) => match session.list() {
+                Ok(entries) if entries.is_empty() => {
+                    app.push_info("[no saved sessions for this folder]");
+                }
+                Ok(entries) => {
+                    let current =
+                        (!agent.history().is_empty()).then(|| session.current_id().to_owned());
+                    app.open_picker(entries, current);
+                }
+                Err(err) => app.push_info(format!("[resume error: {err}]")),
+            },
+        },
         SlashCommand::Help => {
             app.push_info(
-                "commands: /model [name], /clear, /quit · keys: Enter send, Shift/Alt+Enter newline, Up/Down history, Ctrl-O toggle thinking, Esc/Ctrl-C cancel, Ctrl-D quit",
+                "commands: /model [name], /resume [id], /clear, /quit · keys: Enter send, Shift/Alt+Enter newline, Up/Down history, Ctrl-O toggle thinking, Esc/Ctrl-C cancel, Ctrl-D quit",
             );
         }
     }
     false
+}
+
+fn resume_session(id: &str, agent: &mut Agent, app: &mut App, session: Option<&mut Session>) {
+    let Some(session) = session else {
+        app.push_info("[sessions disabled (--no-session)]");
+        return;
+    };
+    let data = match session.load(id) {
+        Ok(data) => data,
+        Err(err) => {
+            app.push_info(format!("[resume error: {err}]"));
+            return;
+        }
+    };
+    if data.meta.id == session.current_id() && !agent.history().is_empty() {
+        app.push_info("[already in this session]");
+        return;
+    }
+    session.activate(&data);
+    agent.set_model(&data.meta.model);
+    app.set_model(&data.meta.model);
+    app.set_tokens(data.input_tokens, data.output_tokens);
+    agent.set_history(data.messages);
+    let short = data.meta.id.get(..15).unwrap_or(&data.meta.id);
+    app.push_info(format!(
+        "[resumed session {short} · {} messages]",
+        agent.history().len()
+    ));
+    app.replay_history(agent.history());
 }
 
 /// Run one agent prompt while keeping the UI responsive to keys, resize and
@@ -227,7 +308,10 @@ async fn run_turn(
                                 break;
                             }
                             Action::Redraw => draw(term, app)?,
-                            Action::None | Action::Submit(_) | Action::Slash(_) => {}
+                            Action::None
+                            | Action::Submit(_)
+                            | Action::Slash(_)
+                            | Action::ResumeSession(_) => {}
                         },
                         Some(Err(err)) => return Err(err.into()),
                         None => {

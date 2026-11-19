@@ -495,3 +495,92 @@ fn replay_history_and_restore_tokens() {
     let screen = render_text(&term);
     assert!(screen.contains("deepseek-chat · 1.5K"), "{screen}");
 }
+
+#[test]
+fn session_picker_navigation_filtering_and_resume_slash() {
+    use harness_core::SessionSummary;
+    use std::path::PathBuf;
+
+    let type_str = |app: &mut App, s: &str| {
+        for ch in s.chars() {
+            app.handle_event(key(KeyCode::Char(ch)));
+        }
+    };
+
+    let mut term = inline_terminal(90, 14);
+    let mut app = App::new("deepseek-chat", status(), Theme::new(false));
+
+    // `/resume` and `/resume <id>` parse into `SlashCommand::Resume`.
+    type_str(&mut app, "/resume");
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Slash(SlashCommand::Resume(None))
+    );
+    type_str(&mut app, "/resume 20261119");
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Slash(SlashCommand::Resume(Some("20261119".into())))
+    );
+
+    let entries = vec![
+        SessionSummary {
+            id: "20261119-120000-aaaa".into(),
+            path: PathBuf::from("/tmp/a.jsonl"),
+            model: "deepseek-chat".into(),
+            created_at: 100,
+            updated_at: 100,
+            message_count: 4,
+            first_prompt: Some("fix build error".into()),
+        },
+        SessionSummary {
+            id: "20261119-110000-bbbb".into(),
+            path: PathBuf::from("/tmp/b.jsonl"),
+            model: "claude-sonnet".into(),
+            created_at: 50,
+            updated_at: 50,
+            message_count: 1,
+            first_prompt: Some("refactor parser".into()),
+        },
+    ];
+    app.open_picker(entries.clone(), Some("20261119-120000-aaaa".into()));
+    assert!(app.is_picker_open());
+    assert_eq!(app.viewport_height(90), 6);
+
+    term.draw(|f| app.render(f)).unwrap();
+    let screen = render_text(&term);
+    assert!(screen.contains("Resume session"), "{screen}");
+    assert!(screen.contains("❯ fix build error"), "{screen}");
+    assert!(screen.contains("(current)"), "{screen}");
+    assert!(screen.contains("refactor parser"), "{screen}");
+    // NO_COLOR theme keeps all picker cells unstyled.
+    for cell in term.backend().buffer().content() {
+        assert_eq!(cell.fg, Color::Reset, "fg set: {cell:?}");
+        assert!(cell.modifier.is_empty(), "modifier set: {cell:?}");
+    }
+
+    // Move selection down and pick second session.
+    assert_eq!(app.handle_event(key(KeyCode::Down)), Action::Redraw);
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::ResumeSession("20261119-110000-bbbb".into())
+    );
+    assert!(!app.is_picker_open());
+
+    // Live substring filtering + Esc cancel.
+    app.open_picker(entries, None);
+    type_str(&mut app, "claude");
+    term.draw(|f| app.render(f)).unwrap();
+    let filtered = render_text(&term);
+    assert!(filtered.contains("filter: claude"), "{filtered}");
+    assert!(filtered.contains("refactor parser"), "{filtered}");
+    assert!(!filtered.contains("fix build error"), "{filtered}");
+
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::ResumeSession("20261119-110000-bbbb".into())
+    );
+
+    app.open_picker(vec![], None);
+    assert_eq!(app.handle_event(key(KeyCode::Esc)), Action::Redraw);
+    assert!(!app.is_picker_open());
+}
