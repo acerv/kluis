@@ -126,15 +126,38 @@ async fn tilde_expands_to_home() {
     let out = call(Path::new("~/t.txt"), None, None).run().await.unwrap();
     assert_eq!(out.content, "home\n");
 
-    let err = call(Path::new("~"), None, None).run().await.unwrap_err();
-    assert!(err.message.contains("directory"));
+    for dir in ["~", "~/"] {
+        let err = call(Path::new(dir), None, None).run().await.unwrap_err();
+        assert!(err.message.contains("directory"), "{dir}: {err}");
+    }
 
-    // `~user` is not expanded.
-    let err = call(Path::new("~nobody/t.txt"), None, None)
-        .run()
+    // `~user` and a `~` past the start are not expanded.
+    for literal in ["~nobody/t.txt", "a/~/b"] {
+        let err = call(Path::new(literal), None, None)
+            .run()
+            .await
+            .unwrap_err();
+        assert!(err.message.contains(literal), "{literal}: {err}");
+    }
+
+    // Without $HOME (or when empty), `~/...` is left untouched.
+    let cwd = tempfile::tempdir().unwrap();
+    std::fs::create_dir(cwd.path().join("~")).unwrap();
+    std::fs::write(cwd.path().join("~/t.txt"), "local\n").unwrap();
+
+    std::env::set_var("HOME", "");
+    let out = call(Path::new("~/t.txt"), None, None)
+        .run_in(cwd.path())
         .await
-        .unwrap_err();
-    assert!(err.message.contains("~nobody/t.txt"));
+        .unwrap();
+    assert_eq!(out.content, "local\n");
+
+    std::env::remove_var("HOME");
+    let out = call(Path::new("~/t.txt"), None, None)
+        .run_in(cwd.path())
+        .await
+        .unwrap();
+    assert_eq!(out.content, "local\n");
 }
 
 #[tokio::test]

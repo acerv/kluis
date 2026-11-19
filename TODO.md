@@ -30,7 +30,7 @@ Same set as pi: `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`.
 - [ ] `edit`: return a diff for the TUI
 - [ ] `read`: images as attachments
 - [ ] `bash`: save the full output to a file when truncated
-- [ ] Move `path.rs` unit tests to `tests/`
+- [x] Move `path.rs` unit tests to `tests/`
 
 ## TUI
 
