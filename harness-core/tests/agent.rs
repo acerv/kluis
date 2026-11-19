@@ -170,18 +170,22 @@ async fn tool_call_round_trip() {
 }
 
 #[tokio::test]
-async fn too_many_turns_keeps_history_valid() {
+async fn runs_tool_turns_until_the_model_answers() {
+    // There is no turn budget: the agent runs every round the model asks for.
+    let rounds = 12;
     let call = ("call_1", "bash", json!({ "command": "true" }));
-    let model = MockModel::start(vec![tool_calls(&[call])]).await;
+    let mut replies: Vec<Reply> = (0..rounds)
+        .map(|_| tool_calls(std::slice::from_ref(&call)))
+        .collect();
+    replies.push(text("done"));
+    let model = MockModel::start(replies).await;
     let dir = tempfile::tempdir().unwrap();
-    let mut agent = agent(&model, dir.path()).with_max_turns(1);
+    let mut agent = agent(&model, dir.path());
 
-    let err = prompt(&mut agent, "loop").await.unwrap_err();
-    assert!(err.to_string().contains("stopped after 1 turns"), "{err}");
-    assert_eq!(
-        roles(&agent),
-        [ChatRole::User, ChatRole::Assistant, ChatRole::Tool]
-    );
+    assert_eq!(prompt(&mut agent, "loop").await.unwrap(), "done");
+    assert_eq!(model.requests().len(), rounds + 1);
+    assert_eq!(agent.history().len(), 1 + rounds * 2 + 1);
+    assert_eq!(agent.history().last().unwrap().role, ChatRole::Assistant);
 }
 
 #[tokio::test]

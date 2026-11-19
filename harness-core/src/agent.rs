@@ -18,9 +18,6 @@ use crate::Event;
 /// Error returned by the agent.
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
-/// Default maximum number of model calls for a single prompt.
-pub const DEFAULT_MAX_TURNS: usize = 10;
-
 /// A conversation with a model that can use the tools.
 ///
 /// The history is kept across [`Agent::prompt`] calls.
@@ -28,7 +25,6 @@ pub struct Agent {
     client: Client,
     model: String,
     req: ChatRequest,
-    max_turns: usize,
     tools: ToolContext,
 }
 
@@ -45,15 +41,8 @@ impl Agent {
             client,
             model: model.into(),
             req: ChatRequest::default().with_tools(tools::definitions()),
-            max_turns: DEFAULT_MAX_TURNS,
             tools: ToolContext::default(),
         }
-    }
-
-    /// Set the maximum number of model calls for a single prompt.
-    pub fn with_max_turns(mut self, max_turns: usize) -> Self {
-        self.max_turns = max_turns;
-        self
     }
 
     /// Set how tools run, e.g. a sandbox for commands.
@@ -99,7 +88,7 @@ impl Agent {
     ) -> Result<String, Error> {
         self.req.messages.push(ChatMessage::user(text));
 
-        for _ in 0..self.max_turns {
+        loop {
             on_event(Event::TurnStart);
             let (content, usage) = self.next_turn(&mut on_event).await?;
 
@@ -132,8 +121,6 @@ impl Agent {
                 pending.answer(resp);
             }
         }
-
-        Err(format!("stopped after {} turns", self.max_turns).into())
     }
 
     /// Ask the model for its next turn, reporting its text as it streams,
