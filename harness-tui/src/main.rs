@@ -18,7 +18,7 @@ mod config;
 mod sandbox;
 
 use std::io::{self, IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser;
@@ -159,7 +159,11 @@ fn start(args: Args, mut tools: ToolContext) -> Result<(), Error> {
 }
 
 async fn run(args: Args, tools: ToolContext) -> Result<(), Error> {
-    let mut agent = Agent::new(&args.model)?.with_tool_context(tools);
+    let cwd = std::env::current_dir()?;
+    let system = harness_core::system_prompt(&cwd, &agents_files(&args, &cwd));
+    let mut agent = Agent::new(&args.model)?
+        .with_system(system)
+        .with_tool_context(tools);
 
     if !args.prompt.is_empty() {
         agent.prompt(&args.prompt.join(" "), print_event).await?;
@@ -195,6 +199,17 @@ async fn run(args: Args, tools: ToolContext) -> Result<(), Error> {
             eprintln!("error: {err}");
         }
     }
+}
+
+fn agents_files(args: &Args, cwd: &Path) -> Vec<PathBuf> {
+    if !args.no_sandbox && sandbox::inside() {
+        if let Ok(raw) = std::env::var(sandbox::AGENTS_ENV) {
+            if let Ok(paths) = serde_json::from_str::<Vec<PathBuf>>(&raw) {
+                return paths;
+            }
+        }
+    }
+    harness_core::find_agents_files(cwd, config::agents_path().as_deref())
 }
 
 fn sandbox_label(args: &Args) -> String {

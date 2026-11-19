@@ -19,6 +19,9 @@ use crate::Args;
 /// Set in the environment of the harness running inside the container.
 const MARKER: &str = "HARNESS_SANDBOXED";
 
+/// Resolved `AGENTS.md` paths passed to the inner harness process (JSON array).
+pub const AGENTS_ENV: &str = "HARNESS_AGENTS";
+
 /// Exit code of a container that failed to start.
 const CONTAINER_FAILURE: i32 = 125;
 
@@ -80,6 +83,24 @@ pub fn run(args: &Args) -> Result<ExitCode, Error> {
     if let Some(config) = &args.config {
         container = container.keep_read_only(config);
     }
+    let global_agents = crate::config::agents_path();
+    let agents = harness_core::find_agents_files(&cwd, global_agents.as_deref());
+    let canonical_cwd = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
+    let canonical_global = global_agents
+        .as_deref()
+        .and_then(|p| std::fs::canonicalize(p).ok());
+    let mut mounted_agents = Vec::with_capacity(agents.len());
+    for path in &agents {
+        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+        let is_global = canonical_global.as_deref() == Some(canonical.as_path());
+        if is_global || !canonical.starts_with(&canonical_cwd) {
+            // Keep global and parent-repo AGENTS.md readable inside the
+            // container, and read-only so sandboxed commands cannot tamper
+            // with them.
+            container = container.keep_read_only(&canonical);
+        }
+        mounted_agents.push(canonical);
+    }
     let container = container.container()?;
 
     let argv = std::env::args_os()
@@ -88,13 +109,14 @@ pub fn run(args: &Args) -> Result<ExitCode, Error> {
         .collect::<Result<Vec<_>, _>>()?;
     // Variables that are not UTF-8 cannot be passed on.
     let env = std::env::vars_os()
-        .filter(|(k, _)| k != crate::config::ENV)
+        .filter(|(k, _)| k != crate::config::ENV && k != AGENTS_ENV)
         .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)));
     let mut command = container.command(&utf8(exe.into_os_string())?);
     command
         .args(argv)
         .envs(env)
         .env(MARKER, "1")
+        .env(AGENTS_ENV, &serde_json::to_string(&mounted_agents)?)
         .current_dir(cwd);
     if let Some(config) = &args.config {
         let canonical = std::fs::canonicalize(config)?;

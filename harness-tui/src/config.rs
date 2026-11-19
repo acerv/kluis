@@ -93,6 +93,12 @@ pub fn default_path() -> Option<PathBuf> {
     Some(home()?.join(".kluis").join("config.toml"))
 }
 
+/// Where global agent instructions are looked for:
+/// `~/.kluis/AGENTS.md`.
+pub fn agents_path() -> Option<PathBuf> {
+    Some(home()?.join(".kluis").join(harness_core::AGENTS_FILE))
+}
+
 /// Read the config file at `path`, creating it with the default template
 /// first if `!required` and it does not exist yet. Paths in it come back
 /// absolute.

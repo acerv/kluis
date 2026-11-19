@@ -18,17 +18,31 @@ fn tempdir() -> TempDir {
     tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap()
 }
 
+struct RunResult {
+    system: String,
+    output: String,
+}
+
 /// Start a mock OpenAI SSE server that answers the first request with a
-/// `bash` tool call built from its listening port, captures the second
-/// request carrying the tool result, and replies `"done"`.
-fn start_mock_llm(make_cmd: impl FnOnce(u16) -> String) -> (u16, JoinHandle<String>) {
+/// `bash` tool call built from its listening port, captures the first
+/// request's system prompt and the second request's tool output, and replies
+/// `"done"`.
+fn start_mock_llm(make_cmd: impl FnOnce(u16) -> String) -> (u16, JoinHandle<RunResult>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let bash_cmd = make_cmd(port);
 
     let handle = thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
-        let _req1 = read_request(&stream);
+        let req1 = read_request(&stream);
+        let system = req1["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == "system")
+            .and_then(|m| m["content"].as_str())
+            .unwrap_or_default()
+            .to_owned();
         let call = json!({
             "index": 0,
             "id": "call_1",
@@ -55,7 +69,7 @@ fn start_mock_llm(make_cmd: impl FnOnce(u16) -> String) -> (u16, JoinHandle<Stri
             .find(|m| m["role"] == "tool")
             .and_then(|m| m["content"].as_str())
             .unwrap();
-        let tool_output = serde_json::from_str::<Value>(content).unwrap()["output"]
+        let output = serde_json::from_str::<Value>(content).unwrap()["output"]
             .as_str()
             .unwrap()
             .to_owned();
@@ -66,20 +80,21 @@ fn start_mock_llm(make_cmd: impl FnOnce(u16) -> String) -> (u16, JoinHandle<Stri
                 delta(json!({}), Some("stop")),
             ],
         );
-        tool_output
+        RunResult { system, output }
     });
 
     (port, handle)
 }
 
-/// Run `kl` with a single `bash` tool call and return the command output.
-fn run_bash(
+/// Run `kl` in `cwd` with a single `bash` tool call and return the captured
+/// system prompt and command output.
+fn run_bash_in(
+    cwd: &Path,
     home: &Path,
     extra_args: &[&str],
     extra_env: &[(&str, &str)],
     make_cmd: impl FnOnce(u16) -> String,
-) -> String {
-    let cwd = tempdir();
+) -> RunResult {
     let (llm_port, server) = start_mock_llm(make_cmd);
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_kl"));
@@ -91,7 +106,7 @@ fn run_bash(
     ])
     .args(extra_args)
     .arg("run")
-    .current_dir(cwd.path())
+    .current_dir(cwd)
     .env("HOME", home)
     .env(
         "GENAI_1_ENDPOINT",
@@ -99,6 +114,7 @@ fn run_bash(
     )
     .env("GENAI_1_API_KEY", "secret-genai-key-12345")
     .env_remove("HARNESS_CONFIG")
+    .env_remove("HARNESS_AGENTS")
     .env_remove("HARNESS_SANDBOXED")
     .stdin(Stdio::null());
     for &(k, v) in extra_env {
@@ -113,6 +129,18 @@ fn run_bash(
         String::from_utf8_lossy(&out.stderr)
     );
     server.join().unwrap()
+}
+
+/// Run `kl` with a single `bash` tool call in a fresh folder and return the
+/// command output.
+fn run_bash(
+    home: &Path,
+    extra_args: &[&str],
+    extra_env: &[(&str, &str)],
+    make_cmd: impl FnOnce(u16) -> String,
+) -> String {
+    let cwd = tempdir();
+    run_bash_in(cwd.path(), home, extra_args, extra_env, make_cmd).output
 }
 
 fn read_request(stream: &TcpStream) -> Value {
@@ -254,4 +282,70 @@ fn config_max_memory_caps_commands() {
 
     let output = run_bash(home.path(), &[], &[], |_| "ulimit -v".to_string());
     assert_eq!(output.trim(), (256 << 10).to_string());
+}
+
+#[test]
+fn agents_md_loaded_and_protected_in_sandbox() {
+    let home = tempdir();
+    let kluis_dir = home.path().join(".kluis");
+    std::fs::create_dir_all(&kluis_dir).unwrap();
+    let global_agents = kluis_dir.join("AGENTS.md");
+    std::fs::write(&global_agents, "global-agent-rule\n").unwrap();
+
+    let repo = tempdir();
+    let sub = repo.path().join("sub");
+    std::fs::create_dir_all(repo.path().join(".git")).unwrap();
+    std::fs::create_dir_all(&sub).unwrap();
+    let repo_agents = repo.path().join("AGENTS.md");
+    std::fs::write(&repo_agents, "repo-agent-rule\n").unwrap();
+    std::fs::write(sub.join("AGENTS.md"), "subdir-agent-rule\n").unwrap();
+
+    let result = run_bash_in(&sub, home.path(), &[], &[], |_| {
+        format!(
+            "echo GLOBAL=$( (echo evil >> {}) 2>&1 || true ); \
+             echo REPO=$( (echo evil >> {}) 2>&1 || true )",
+            global_agents.display(),
+            repo_agents.display(),
+        )
+    });
+
+    let global_pos = result
+        .system
+        .find("global-agent-rule")
+        .expect("global AGENTS.md");
+    let repo_pos = result
+        .system
+        .find("repo-agent-rule")
+        .expect("repo AGENTS.md");
+    let sub_pos = result
+        .system
+        .find("subdir-agent-rule")
+        .expect("subdir AGENTS.md");
+    assert!(
+        global_pos < repo_pos && repo_pos < sub_pos,
+        "{}",
+        result.system
+    );
+    assert!(
+        result.system.contains(&sub.display().to_string()),
+        "{}",
+        result.system
+    );
+    assert!(result.system.contains("OS: linux"), "{}", result.system);
+
+    let global_line = result
+        .output
+        .lines()
+        .find(|l| l.starts_with("GLOBAL="))
+        .unwrap();
+    assert!(
+        global_line.contains("Read-only file system"),
+        "{global_line}"
+    );
+    let repo_line = result
+        .output
+        .lines()
+        .find(|l| l.starts_with("REPO="))
+        .unwrap();
+    assert!(repo_line.contains("Read-only file system"), "{repo_line}");
 }
