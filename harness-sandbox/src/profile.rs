@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 use crate::Sandbox;
 
 /// Readable by default: programs, the dynamic loader cache, user and group
-/// names, the time zone, and the files used for name resolution.
+/// names, the time zone, system release, and the files used for name and
+/// service resolution.
 const DEFAULT_READ: &[&str] = &[
     "/usr",
     // Real folders on systems without a merged /usr; links to it otherwise.
@@ -16,16 +17,20 @@ const DEFAULT_READ: &[&str] = &[
     "/sbin",
     "/lib",
     "/lib64",
+    "/etc/alternatives",
     "/etc/ld.so.cache",
     "/etc/ld.so.preload",
     "/etc/passwd",
     "/etc/group",
     "/etc/nsswitch.conf",
     "/etc/localtime",
+    "/etc/os-release",
     "/etc/resolv.conf",
     "/etc/hosts",
     "/etc/host.conf",
     "/etc/gai.conf",
+    "/etc/protocols",
+    "/etc/services",
 ];
 
 /// Port the harness uses to reach the model.

@@ -13,7 +13,7 @@
 
 ## Sandbox
 
-- [ ] Mount more of `/etc` by default (`alternatives`, `os-release`, ...)
+- [x] Mount more of `/etc` by default (`alternatives`, `os-release`, ...)
 - [ ] Protect `.git` of new `git init`
 
 ## Compatibility

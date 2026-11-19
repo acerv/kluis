@@ -52,11 +52,16 @@ fn programs_run_in_given_folders() {
 
 #[test]
 fn dns_files_are_readable() {
-    if !Path::new("/etc/hosts").exists() {
-        return;
+    for path in ["/etc/hosts", "/etc/os-release", "/etc/services"] {
+        if Path::new(path).exists() {
+            let out = run(&Options::default(), &format!("cat {path}"));
+            assert!(out.status.success(), "{path}: {}", stderr(&out));
+        }
     }
-    let out = run(&Options::default(), "cat /etc/hosts");
-    assert!(out.status.success(), "{}", stderr(&out));
+    if Path::new("/etc/alternatives").exists() {
+        let out = run(&Options::default(), "ls /etc/alternatives");
+        assert!(out.status.success(), "{}", stderr(&out));
+    }
 }
 
 #[test]
