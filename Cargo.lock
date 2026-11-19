@@ -1016,6 +1016,7 @@ dependencies = [
 name = "harness-tools"
 version = "0.1.0"
 dependencies = [
+ "anstyle-parse",
  "genai",
  "globset",
  "grep-regex",

@@ -10,6 +10,7 @@ use std::process::{ExitStatus, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
+use anstyle_parse::{Parser, Perform};
 use genai::chat::Tool;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -299,56 +300,33 @@ impl Drop for GroupGuard {
 /// Removes ANSI escape sequences (colors, cursor moves, titles) and
 /// control characters other than tab, newline and carriage return.
 ///
-/// Works on raw bytes and keeps its state between chunks, so sequences
-/// split across reads are removed too.
+/// Keeps parser state between chunks, so sequences split across reads are
+/// removed too.
 #[derive(Default)]
 struct Filter {
-    state: State,
-}
-
-#[derive(Default, Clone, Copy)]
-enum State {
-    #[default]
-    Text,
-    /// After ESC.
-    Escape,
-    /// Inside `ESC [ ...`, ended by a byte in 0x40..=0x7e.
-    Csi,
-    /// Inside `ESC ] ...` or another string sequence, ended by BEL or
-    /// `ESC \`.
-    Str,
-    /// After ESC inside a string sequence.
-    StrEscape,
+    parser: Parser,
 }
 
 impl Filter {
     fn clean_into(&mut self, input: &[u8], tail: &mut Tail) {
-        for &b in input {
-            self.state = match (self.state, b) {
-                (State::Text, 0x1b) => State::Escape,
-                (State::Text, b'\t' | b'\n' | b'\r') => {
-                    tail.buf.push(b);
-                    State::Text
-                }
-                (State::Text, 0x00..=0x1f | 0x7f) => State::Text,
-                (State::Text, _) => {
-                    tail.buf.push(b);
-                    State::Text
-                }
-                (State::Escape, b'[') => State::Csi,
-                (State::Escape, b']' | b'P' | b'X' | b'^' | b'_') => State::Str,
-                // Two-byte sequences such as `ESC c`.
-                (State::Escape, _) => State::Text,
-                (State::Csi, 0x20..=0x3f) => State::Csi,
-                (State::Csi, _) => State::Text,
-                (State::Str, 0x07) => State::Text,
-                (State::Str, 0x1b) => State::StrEscape,
-                (State::Str, _) => State::Str,
-                (State::StrEscape, b'\\') => State::Text,
-                (State::StrEscape, _) => State::Str,
-            };
+        for &byte in input {
+            self.parser.advance(tail, byte);
         }
         tail.trim_batch();
+    }
+}
+
+impl Perform for Tail {
+    fn print(&mut self, c: char) {
+        let mut buf = [0u8; 4];
+        self.buf
+            .extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+    }
+
+    fn execute(&mut self, byte: u8) {
+        if matches!(byte, b'\t' | b'\n' | b'\r') {
+            self.buf.push(byte);
+        }
     }
 }
 
