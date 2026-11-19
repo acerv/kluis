@@ -62,15 +62,40 @@ pub fn run(args: &Args) -> Result<ExitCode, Error> {
     let exe = std::env::current_exe()?;
     let mut read = args.allow_read.clone();
     let mut write = args.allow_write.clone();
+    let mut deny = args.deny_read.clone();
     if args.strict {
         read.push(cwd.clone());
     } else {
         write.push(cwd.clone());
     }
+    // Mount only the current project's session folder writable and mask every
+    // other project's sessions (since $HOME is mounted read-only by default).
+    if let Some(root) = crate::config::sessions_dir() {
+        if args.no_session {
+            deny.push(root);
+        } else {
+            let store = harness_core::SessionStore::new(&root, &cwd);
+            if !args.continue_session {
+                store.ensure_dir()?;
+            }
+            let project_dir = store.project_dir().to_path_buf();
+            if project_dir.exists() {
+                write.push(project_dir.clone());
+            }
+            if let Ok(entries) = std::fs::read_dir(&root) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path != project_dir {
+                        deny.push(path);
+                    }
+                }
+            }
+        }
+    }
     let mut container = Sandbox::with_defaults(&Options {
         read,
         write,
-        deny: args.deny_read.clone(),
+        deny,
         connect: args.allow_connect.clone(),
         network: args.network,
         max_processes: args.max_processes,

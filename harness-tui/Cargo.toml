@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 clap.workspace = true
 crossterm.workspace = true
+genai.workspace = true
 harness-core.workspace = true
 harness-sandbox.workspace = true
 ratatui.workspace = true

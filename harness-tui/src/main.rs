@@ -23,17 +23,27 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use harness_core::tools::ToolContext;
-use harness_core::{Agent, Error, Event};
-use harness_tui::{summary, Status};
+use harness_core::{Agent, Error, Event, SessionStore};
+use harness_tui::{summary, Session, Status};
 use tokio::io::{AsyncBufReadExt, BufReader};
+
+const DEFAULT_MODEL: &str = "deepseek-chat";
 
 /// Terminal coding agent with native sandboxing.
 #[derive(Parser)]
 #[command(version)]
 pub struct Args {
-    /// Model to use; the provider is picked from its name.
-    #[arg(long, env = "HARNESS_MODEL", default_value = "deepseek-chat")]
-    model: String,
+    /// Model to use; the provider is picked from its name [default: deepseek-chat].
+    #[arg(long, env = "HARNESS_MODEL")]
+    model: Option<String>,
+
+    /// Continue the most recent session for the current folder.
+    #[arg(short = 'c', long = "continue", conflicts_with = "no_session")]
+    continue_session: bool,
+
+    /// Do not read or write session files.
+    #[arg(long)]
+    no_session: bool,
 
     /// Run without the sandbox.
     #[arg(long)]
@@ -161,12 +171,39 @@ fn start(args: Args, mut tools: ToolContext) -> Result<(), Error> {
 async fn run(args: Args, tools: ToolContext) -> Result<(), Error> {
     let cwd = std::env::current_dir()?;
     let system = harness_core::system_prompt(&cwd, &agents_files(&args, &cwd));
-    let mut agent = Agent::new(&args.model)?
+    let store = (!args.no_session)
+        .then(config::sessions_dir)
+        .flatten()
+        .map(|root| SessionStore::new(root, &cwd));
+
+    let (model, history, mut session) = if args.continue_session {
+        let store = store.ok_or("cannot continue session: HOME is not set")?;
+        let Some(data) = store.latest()? else {
+            return Err(format!("no session to continue for {}", cwd.display()).into());
+        };
+        let model = args.model.as_deref().unwrap_or(&data.meta.model).to_owned();
+        let mut writer = store.open(&data);
+        if args.model.is_some() && model != data.meta.model {
+            writer.append_model(&model)?;
+        }
+        let session = Session::new(store, writer, data.input_tokens, data.output_tokens);
+        (model, data.messages, Some(session))
+    } else {
+        let model = args.model.as_deref().unwrap_or(DEFAULT_MODEL).to_owned();
+        let session = store.map(|store| {
+            let writer = store.create(&model);
+            Session::new(store, writer, 0, 0)
+        });
+        (model, Vec::new(), session)
+    };
+
+    let mut agent = Agent::new(&model)?
         .with_system(system)
+        .with_history(history)
         .with_tool_context(tools);
 
     if !args.prompt.is_empty() {
-        agent.prompt(&args.prompt.join(" "), print_event).await?;
+        prompt_and_persist(&mut agent, session.as_mut(), &args.prompt.join(" ")).await?;
         return Ok(());
     }
 
@@ -176,10 +213,10 @@ async fn run(args: Args, tools: ToolContext) -> Result<(), Error> {
             sandbox,
             folder: current_folder(),
         };
-        return harness_tui::run(agent, status).await;
+        return harness_tui::run(agent, status, session).await;
     }
 
-    println!("kluis ({}, {sandbox}), Ctrl-D to quit", args.model);
+    println!("kluis ({}, {sandbox}), Ctrl-D to quit", agent.model());
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     loop {
         print!("> ");
@@ -195,10 +232,39 @@ async fn run(args: Args, tools: ToolContext) -> Result<(), Error> {
         }
 
         // Keep the session alive on failures such as network errors.
-        if let Err(err) = agent.prompt(line, print_event).await {
+        if let Err(err) = prompt_and_persist(&mut agent, session.as_mut(), line).await {
             eprintln!("error: {err}");
         }
     }
+}
+
+async fn prompt_and_persist(
+    agent: &mut Agent,
+    session: Option<&mut Session>,
+    text: &str,
+) -> Result<(), Error> {
+    let prev_len = agent.history().len();
+    let mut usage = (0u64, 0u64);
+    let res = agent
+        .prompt(text, |event| {
+            if let Event::TurnEnd(Some(u)) = event {
+                usage.0 = usage
+                    .0
+                    .saturating_add(u.prompt_tokens.unwrap_or(0).max(0) as u64);
+                usage.1 = usage
+                    .1
+                    .saturating_add(u.completion_tokens.unwrap_or(0).max(0) as u64);
+            }
+            print_event(event);
+        })
+        .await;
+    if let Some(session) = session {
+        let added = &agent.history()[prev_len..];
+        if let Err(err) = session.record_prompt(added, usage.0, usage.1) {
+            eprintln!("warning: could not save session: {err}");
+        }
+    }
+    res.map(|_| ())
 }
 
 fn agents_files(args: &Args, cwd: &Path) -> Vec<PathBuf> {

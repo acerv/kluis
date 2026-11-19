@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use genai::chat::{ChatMessage, ContentPart, MessageContent, ToolCall, ToolResponse};
 use harness_core::tools::{Diff, DiffHunk, DiffLine};
 use harness_core::ToolDetails;
 use harness_tui::{
@@ -455,4 +456,42 @@ fn markdown_rendering_and_code_highlighting() {
             assert!(span.style.add_modifier.is_empty());
         }
     }
+}
+
+#[test]
+fn replay_history_and_restore_tokens() {
+    let mut term = inline_terminal(80, 14);
+    let mut app = App::new("deepseek-chat", status(), Theme::new(true));
+    app.set_tokens(1_200, 300);
+
+    let history = vec![
+        ChatMessage::user("check main"),
+        ChatMessage::assistant(MessageContent::from_parts(vec![
+            ContentPart::ReasoningContent("hidden thought".into()),
+            ContentPart::ToolCall(ToolCall {
+                call_id: "c1".into(),
+                fn_name: "read".into(),
+                fn_arguments: serde_json::json!({ "path": "src/main.rs" }),
+                thought_signatures: None,
+            }),
+        ])),
+        ChatMessage::from(ToolResponse::new("c1", r#"{"total_lines":42}"#)),
+        ChatMessage::assistant("Looks good."),
+    ];
+    app.replay_history(&history);
+    let lines = app.take_scrollback();
+    let plain: String = lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(plain.contains("check main"), "{plain}");
+    assert!(plain.contains("read src/main.rs"), "{plain}");
+    assert!(plain.contains("42 lines"), "{plain}");
+    assert!(plain.contains("Looks good."), "{plain}");
+    assert!(!plain.contains("hidden thought"), "{plain}");
+
+    term.draw(|f| app.render(f)).unwrap();
+    let screen = render_text(&term);
+    assert!(screen.contains("deepseek-chat · 1.5K"), "{screen}");
 }

@@ -20,13 +20,14 @@ fn tempdir() -> TempDir {
 
 struct RunResult {
     system: String,
+    messages: Vec<Value>,
     output: String,
 }
 
 /// Start a mock OpenAI SSE server that answers the first request with a
 /// `bash` tool call built from its listening port, captures the first
-/// request's system prompt and the second request's tool output, and replies
-/// `"done"`.
+/// request's system prompt, messages and the second request's tool output, and
+/// replies `"done"`.
 fn start_mock_llm(make_cmd: impl FnOnce(u16) -> String) -> (u16, JoinHandle<RunResult>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -35,9 +36,8 @@ fn start_mock_llm(make_cmd: impl FnOnce(u16) -> String) -> (u16, JoinHandle<RunR
     let handle = thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
         let req1 = read_request(&stream);
-        let system = req1["messages"]
-            .as_array()
-            .unwrap()
+        let messages = req1["messages"].as_array().cloned().unwrap_or_default();
+        let system = messages
             .iter()
             .find(|m| m["role"] == "system")
             .and_then(|m| m["content"].as_str())
@@ -80,7 +80,11 @@ fn start_mock_llm(make_cmd: impl FnOnce(u16) -> String) -> (u16, JoinHandle<RunR
                 delta(json!({}), Some("stop")),
             ],
         );
-        RunResult { system, output }
+        RunResult {
+            system,
+            messages,
+            output,
+        }
     });
 
     (port, handle)
@@ -348,4 +352,76 @@ fn agents_md_loaded_and_protected_in_sandbox() {
         .find(|l| l.starts_with("REPO="))
         .unwrap();
     assert!(repo_line.contains("Read-only file system"), "{repo_line}");
+}
+
+#[test]
+fn session_persists_continues_and_isolates_projects_in_sandbox() {
+    let home = tempdir();
+    let proj_a = tempdir();
+    let proj_b = tempdir();
+
+    // Seed a session in another project to confirm it stays invisible to proj_a.
+    let other_store =
+        harness_core::SessionStore::new(home.path().join(".kluis").join("sessions"), proj_b.path());
+    let mut other_writer = other_store.create("other-model");
+    other_writer
+        .append_messages(&[genai::chat::ChatMessage::user("secret-other-project")])
+        .unwrap();
+
+    // First run in proj_a saves a session file (and cannot see proj_b's session).
+    let first = run_bash_in(proj_a.path(), home.path(), &[], &[], |_| {
+        format!("cat {} 2>&1 || true", other_writer.path().display())
+    });
+    assert!(
+        !first.output.contains("secret-other-project"),
+        "{}",
+        first.output
+    );
+
+    // Second run with `-c` restores the prior turn's history and sends it to the LLM.
+    let second = run_bash_in(proj_a.path(), home.path(), &["-c"], &[], |_| {
+        "echo ok".to_string()
+    });
+    let user_msgs: Vec<&str> = second
+        .messages
+        .iter()
+        .filter(|m| m["role"] == "user")
+        .filter_map(|m| m["content"].as_str())
+        .collect();
+    assert_eq!(user_msgs, vec!["run", "run"], "{:?}", second.messages);
+    let assistant_msgs: Vec<&str> = second
+        .messages
+        .iter()
+        .filter(|m| m["role"] == "assistant")
+        .filter_map(|m| m["content"].as_str())
+        .collect();
+    assert!(
+        assistant_msgs.contains(&"done"),
+        "expected prior assistant reply in continued session: {:?}",
+        second.messages
+    );
+
+    // `--no-session` creates no session directory in a fresh project.
+    let proj_c = tempdir();
+    let _ = run_bash_in(proj_c.path(), home.path(), &["--no-session"], &[], |_| {
+        "echo ephemeral".to_string()
+    });
+    let store_c =
+        harness_core::SessionStore::new(home.path().join(".kluis").join("sessions"), proj_c.path());
+    assert!(!store_c.project_dir().exists());
+
+    // `-c` in a folder with no session fails with a clear error.
+    let out = Command::new(env!("CARGO_BIN_EXE_kl"))
+        .args(["-c"])
+        .current_dir(proj_c.path())
+        .env("HOME", home.path())
+        .env_remove("HARNESS_CONFIG")
+        .env_remove("HARNESS_AGENTS")
+        .env_remove("HARNESS_SANDBOXED")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("no session to continue"), "{stderr}");
 }

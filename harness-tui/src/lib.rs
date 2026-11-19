@@ -15,9 +15,11 @@ mod markdown;
 mod style;
 mod terminal;
 
+use std::io;
 use std::time::Duration;
 
-use harness_core::{Agent, Error};
+use genai::chat::ChatMessage;
+use harness_core::{Agent, Error, SessionStore, SessionWriter};
 use tokio::sync::mpsc;
 use tokio::time::{interval_at, Instant, MissedTickBehavior};
 
@@ -38,10 +40,69 @@ pub struct Status {
     pub folder: String,
 }
 
+/// Active persistence handle for an interactive or single-shot session.
+pub struct Session {
+    store: SessionStore,
+    writer: SessionWriter,
+    initial_tokens: (u64, u64),
+}
+
+impl Session {
+    pub fn new(
+        store: SessionStore,
+        writer: SessionWriter,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) -> Self {
+        Self {
+            store,
+            writer,
+            initial_tokens: (input_tokens, output_tokens),
+        }
+    }
+
+    /// Persist messages added during a prompt and any accumulated token usage.
+    pub fn record_prompt(
+        &mut self,
+        messages: &[ChatMessage],
+        input_tokens: u64,
+        output_tokens: u64,
+    ) -> io::Result<()> {
+        self.writer.append_messages(messages)?;
+        self.writer.append_usage(input_tokens, output_tokens)
+    }
+
+    /// Persist a model change.
+    pub fn record_model(&mut self, model: &str) -> io::Result<()> {
+        self.writer.append_model(model)
+    }
+
+    /// Start a fresh lazy session file (e.g. after `/clear`), leaving the
+    /// previous session file intact on disk.
+    pub fn rotate(&mut self, model: &str) {
+        self.writer = self.store.create(model);
+        self.initial_tokens = (0, 0);
+    }
+}
+
 /// Run the interactive inline TUI until the user quits (`Ctrl-D` or `/quit`).
-pub async fn run(mut agent: Agent, status: Status) -> Result<(), Error> {
+pub async fn run(
+    mut agent: Agent,
+    status: Status,
+    mut session: Option<Session>,
+) -> Result<(), Error> {
     let mut term = InlineTerminal::enter(VIEWPORT_HEIGHT)?;
     let mut app = App::new(agent.model().to_owned(), status, Theme::from_env());
+    if let Some(ref s) = session {
+        app.set_tokens(s.initial_tokens.0, s.initial_tokens.1);
+    }
+    if !agent.history().is_empty() {
+        app.push_info(format!(
+            "[continued session · {} messages]",
+            agent.history().len()
+        ));
+        app.replay_history(agent.history());
+    }
     let mut events = EventReader::spawn();
 
     draw(&mut term, &mut app)?;
@@ -55,7 +116,7 @@ pub async fn run(mut agent: Agent, status: Status) -> Result<(), Error> {
             Action::Redraw => draw(&mut term, &mut app)?,
             Action::Quit => break,
             Action::Slash(cmd) => {
-                if handle_slash(cmd, &mut agent, &mut app) {
+                if handle_slash(cmd, &mut agent, &mut app, session.as_mut()) {
                     break;
                 }
                 draw(&mut term, &mut app)?;
@@ -63,7 +124,16 @@ pub async fn run(mut agent: Agent, status: Status) -> Result<(), Error> {
             Action::Submit(prompt) => {
                 app.start_prompt(&prompt);
                 draw(&mut term, &mut app)?;
-                if run_turn(&mut term, &mut app, &mut agent, &mut events, &prompt).await? {
+                if run_turn(
+                    &mut term,
+                    &mut app,
+                    &mut agent,
+                    &mut events,
+                    session.as_mut(),
+                    &prompt,
+                )
+                .await?
+                {
                     break;
                 }
             }
@@ -74,17 +144,30 @@ pub async fn run(mut agent: Agent, status: Status) -> Result<(), Error> {
 }
 
 /// Execute a slash command. Returns `true` when the user requested to quit.
-fn handle_slash(cmd: SlashCommand, agent: &mut Agent, app: &mut App) -> bool {
+fn handle_slash(
+    cmd: SlashCommand,
+    agent: &mut Agent,
+    app: &mut App,
+    session: Option<&mut Session>,
+) -> bool {
     match cmd {
         SlashCommand::Quit => return true,
         SlashCommand::Clear => {
             agent.clear();
             app.reset_tokens();
+            if let Some(session) = session {
+                session.rotate(agent.model());
+            }
             app.push_info("[conversation cleared]");
         }
         SlashCommand::Model(Some(name)) => {
             agent.set_model(&name);
             app.set_model(&name);
+            if let Some(session) = session {
+                if let Err(err) = session.record_model(&name) {
+                    app.push_info(format!("[session save error: {err}]"));
+                }
+            }
             app.push_info(format!("model: {name}"));
         }
         SlashCommand::Model(None) => {
@@ -106,12 +189,15 @@ async fn run_turn(
     app: &mut App,
     agent: &mut Agent,
     events: &mut EventReader,
+    session: Option<&mut Session>,
     prompt: &str,
 ) -> Result<bool, Error> {
+    let prev_len = agent.history().len();
     let (tx, mut rx) = mpsc::unbounded_channel::<AgentUpdate>();
     let mut cancelled = false;
     let mut quit = false;
     let mut outcome: Option<Result<String, Error>> = None;
+    let mut prompt_usage = (0u64, 0u64);
 
     // Scope `prompt_fut` so dropping it on exit runs `Agent::prompt`'s cancel
     // cleanup and closes `tx` before we drain `rx`.
@@ -151,7 +237,7 @@ async fn run_turn(
                     }
                 }
                 Some(update) = rx.recv() => {
-                    drain_updates(update, &mut rx, app);
+                    drain_updates(update, &mut rx, app, &mut prompt_usage);
                     draw(term, app)?;
                 }
                 res = &mut prompt_fut => {
@@ -167,7 +253,14 @@ async fn run_turn(
     }
 
     if let Ok(first) = rx.try_recv() {
-        drain_updates(first, &mut rx, app);
+        drain_updates(first, &mut rx, app, &mut prompt_usage);
+    }
+
+    if let Some(session) = session {
+        let added = &agent.history()[prev_len..];
+        if let Err(err) = session.record_prompt(added, prompt_usage.0, prompt_usage.1) {
+            app.push_info(format!("[session save error: {err}]"));
+        }
     }
 
     if quit {
@@ -208,7 +301,12 @@ fn handle_event_batch(
 /// Apply `first` and any immediately queued updates from `rx`, coalescing
 /// consecutive `TextDelta` or `ReasoningDelta` chunks so Markdown parsing
 /// and terminal redraws run once per batch instead of once per token.
-fn drain_updates(first: AgentUpdate, rx: &mut mpsc::UnboundedReceiver<AgentUpdate>, app: &mut App) {
+fn drain_updates(
+    first: AgentUpdate,
+    rx: &mut mpsc::UnboundedReceiver<AgentUpdate>,
+    app: &mut App,
+    prompt_usage: &mut (u64, u64),
+) {
     let mut pending = first;
     while let Ok(next) = rx.try_recv() {
         match (&mut pending, next) {
@@ -217,12 +315,24 @@ fn drain_updates(first: AgentUpdate, rx: &mut mpsc::UnboundedReceiver<AgentUpdat
                 acc.push_str(&more);
             }
             (_, next) => {
-                app.apply_update(pending);
+                apply_and_track(pending, app, prompt_usage);
                 pending = next;
             }
         }
     }
-    app.apply_update(pending);
+    apply_and_track(pending, app, prompt_usage);
+}
+
+fn apply_and_track(update: AgentUpdate, app: &mut App, prompt_usage: &mut (u64, u64)) {
+    if let AgentUpdate::TurnEnd {
+        input_tokens,
+        output_tokens,
+    } = &update
+    {
+        prompt_usage.0 = prompt_usage.0.saturating_add(*input_tokens);
+        prompt_usage.1 = prompt_usage.1.saturating_add(*output_tokens);
+    }
+    app.apply_update(update);
 }
 
 fn draw(term: &mut InlineTerminal, app: &mut App) -> Result<(), Error> {

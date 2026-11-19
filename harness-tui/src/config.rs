@@ -99,6 +99,11 @@ pub fn agents_path() -> Option<PathBuf> {
     Some(home()?.join(".kluis").join(harness_core::AGENTS_FILE))
 }
 
+/// Where conversation sessions are stored: `~/.kluis/sessions`.
+pub fn sessions_dir() -> Option<PathBuf> {
+    Some(home()?.join(".kluis").join("sessions"))
+}
+
 /// Read the config file at `path`, creating it with the default template
 /// first if `!required` and it does not exist yet. Paths in it come back
 /// absolute.

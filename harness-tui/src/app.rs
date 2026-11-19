@@ -2,8 +2,10 @@
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
 use std::cell::Cell;
+use std::collections::HashMap;
 
 use crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use genai::chat::{ChatMessage, ChatRole, ContentPart};
 use harness_core::tools::{Diff, DiffLine};
 use harness_core::{Event as AgentEvent, ToolDetails};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
@@ -14,7 +16,7 @@ use ratatui::Frame;
 use serde_json::Value;
 
 use crate::input::Input;
-use crate::markdown::MarkdownStream;
+use crate::markdown::{render_markdown, MarkdownStream};
 use crate::style::Theme;
 use crate::terminal::{char_width, wrap_lines, wrapped_line_count};
 use crate::Status;
@@ -197,8 +199,61 @@ impl App {
 
     /// Reset displayed token counters (e.g. after `/clear`).
     pub fn reset_tokens(&mut self) {
-        self.input_tokens = 0;
-        self.output_tokens = 0;
+        self.set_tokens(0, 0);
+    }
+
+    /// Set displayed token counters (e.g. when restoring a persisted session).
+    pub fn set_tokens(&mut self, input: u64, output: u64) {
+        self.input_tokens = input;
+        self.output_tokens = output;
+    }
+
+    /// Replay a restored conversation history into scrollback.
+    pub fn replay_history(&mut self, messages: &[ChatMessage]) {
+        let mut tool_names: HashMap<&str, &str> = HashMap::new();
+        for msg in messages {
+            match msg.role {
+                ChatRole::User => {
+                    if let Some(text) = msg.content.joined_texts() {
+                        self.push_user_message(&text);
+                    }
+                }
+                ChatRole::Assistant => {
+                    for part in msg.content.parts() {
+                        match part {
+                            ContentPart::Text(text) if !text.is_empty() => {
+                                self.scrollback
+                                    .extend(render_markdown(text, self.theme.color));
+                                self.scrollback.push(Line::raw(String::new()));
+                            }
+                            ContentPart::ToolCall(call) => {
+                                tool_names.insert(call.call_id.as_str(), call.fn_name.as_str());
+                                self.scrollback.push(format_tool_call(
+                                    &call.fn_name,
+                                    &call.fn_arguments.to_string(),
+                                    self.theme,
+                                ));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                ChatRole::Tool => {
+                    for resp in msg.content.tool_responses() {
+                        let tool = tool_names.get(resp.call_id.as_str()).copied();
+                        format_tool_result(
+                            tool,
+                            &resp.content,
+                            None,
+                            self.theme,
+                            &mut self.scrollback,
+                        );
+                        self.scrollback.push(Line::raw(String::new()));
+                    }
+                }
+                ChatRole::System => {}
+            }
+        }
     }
 
     /// Take lines queued for native terminal scrollback.
@@ -220,6 +275,10 @@ impl App {
         self.active_tool = None;
         self.clear_live();
         self.notice = None;
+        self.push_user_message(text);
+    }
+
+    fn push_user_message(&mut self, text: &str) {
         self.scrollback.push(Line::raw(String::new()));
         for line in text.lines() {
             if self.theme.color {
