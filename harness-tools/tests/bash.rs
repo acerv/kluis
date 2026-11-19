@@ -303,7 +303,11 @@ async fn dropped_run_kills_command() {
 
 #[tokio::test]
 async fn failing_hook_stops_command() {
-    let ctx = with_hook(|| Err(std::io::Error::from_raw_os_error(libc::EPERM)));
+    let ctx = with_hook(|| {
+        Err(std::io::Error::from_raw_os_error(
+            nix::errno::Errno::EPERM as i32,
+        ))
+    });
 
     let err = call("echo never", None).run_with(&ctx).await.unwrap_err();
     assert!(err.message.contains("Operation not permitted"), "{err}");

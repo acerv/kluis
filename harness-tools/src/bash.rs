@@ -12,6 +12,8 @@ use std::time::Duration;
 
 use anstyle_parse::{Parser, Perform};
 use genai::chat::Tool;
+use nix::sys::signal::{killpg, Signal};
+use nix::unistd::{setsid, Pid};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tempfile::{Builder, NamedTempFile, TempPath};
@@ -237,9 +239,7 @@ fn spawn(command: &str, cwd: &Path, ctx: &BashContext) -> io::Result<(Child, Rec
     // group can be killed as a whole.
     unsafe {
         cmd.pre_exec(move || {
-            if libc::setsid() == -1 {
-                return Err(io::Error::last_os_error());
-            }
+            setsid().map_err(io::Error::from)?;
             match &hook {
                 Some(hook) => hook(),
                 None => Ok(()),
@@ -278,11 +278,8 @@ struct GroupGuard(Option<u32>);
 
 impl GroupGuard {
     fn kill(&mut self) {
-        if let Some(pid) = self.0.take().and_then(|p| libc::pid_t::try_from(p).ok()) {
-            // SAFETY: killpg only sends a signal; an empty group yields ESRCH.
-            unsafe {
-                libc::killpg(pid, libc::SIGKILL);
-            }
+        if let Some(pid) = self.0.take().and_then(|p| i32::try_from(p).ok()) {
+            let _ = killpg(Pid::from_raw(pid), Signal::SIGKILL);
         }
     }
 

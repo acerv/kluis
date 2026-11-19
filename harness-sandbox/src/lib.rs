@@ -607,15 +607,8 @@ fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
 ///
 /// Only makes a system call, so it is safe to use in `Command::pre_exec`.
 pub fn limit_memory(bytes: u64) -> io::Result<()> {
-    let limit = libc::rlimit {
-        rlim_cur: bytes,
-        rlim_max: bytes,
-    };
-    // SAFETY: plain system call with a valid rlimit struct.
-    if unsafe { libc::setrlimit(libc::RLIMIT_AS, &limit) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
+    nix::sys::resource::setrlimit(nix::sys::resource::Resource::RLIMIT_AS, bytes, bytes)
+        .map_err(io::Error::from)
 }
 
 /// The closest mount strictly above `path` and whether it is writable.

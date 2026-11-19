@@ -6,6 +6,10 @@
 use std::ffi::CStr;
 use std::io;
 
+use nix::sched::{unshare, CloneFlags};
+use nix::unistd::{getegid, geteuid};
+use rustix::fs::{open, Mode, OFlags};
+
 use crate::protect::set_dumpable;
 
 /// Takes the network away from a process, e.g. a command before `exec`.
@@ -22,8 +26,7 @@ pub struct NoNetwork {
 impl NoNetwork {
     /// Prepare for the current user and group.
     pub fn new() -> Self {
-        // SAFETY: these calls cannot fail.
-        let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+        let (uid, gid) = (geteuid(), getegid());
         Self {
             uid_map: format!("{uid} {uid} 1"),
             gid_map: format!("{gid} {gid} 1"),
@@ -39,10 +42,7 @@ impl NoNetwork {
         // which keeps them from writing their own id maps. Their memory is
         // replaced right after, so it is safe to drop the protection.
         set_dumpable(true)?;
-        // SAFETY: plain system call.
-        if unsafe { libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNET) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
+        unshare(CloneFlags::CLONE_NEWUSER | CloneFlags::CLONE_NEWNET).map_err(io::Error::from)?;
         write(c"/proc/self/setgroups", b"deny")?;
         write(c"/proc/self/uid_map", self.uid_map.as_bytes())?;
         write(c"/proc/self/gid_map", self.gid_map.as_bytes())
@@ -57,20 +57,8 @@ impl Default for NoNetwork {
 
 /// Write `data` to the file at `path` with a single system call.
 fn write(path: &CStr, data: &[u8]) -> io::Result<()> {
-    // SAFETY: `path` is a C string and `data` a valid buffer; the
-    // descriptor is closed before returning.
-    unsafe {
-        let fd = libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let written = libc::write(fd, data.as_ptr().cast(), data.len());
-        let result = if written < 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(())
-        };
-        libc::close(fd);
-        result
-    }
+    let fd =
+        open(path, OFlags::WRONLY | OFlags::CLOEXEC, Mode::empty()).map_err(io::Error::from)?;
+    rustix::io::write(&fd, data).map_err(io::Error::from)?;
+    Ok(())
 }

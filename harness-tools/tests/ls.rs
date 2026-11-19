@@ -87,7 +87,7 @@ async fn symlinks_are_followed() {
 #[tokio::test]
 async fn unreachable_target_is_not_broken() {
     // Permissions do not stop root.
-    if unsafe { libc::geteuid() } == 0 {
+    if nix::unistd::Uid::effective().is_root() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();

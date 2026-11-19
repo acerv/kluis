@@ -172,7 +172,7 @@ async fn kind(path: &Path) -> Kind {
 /// through something that is not a directory.
 fn is_dangling(err: &std::io::Error) -> bool {
     matches!(err.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory)
-        || err.raw_os_error() == Some(libc::ELOOP)
+        || err.raw_os_error() == Some(nix::errno::Errno::ELOOP as i32)
 }
 
 async fn is_symlink(path: &Path) -> bool {

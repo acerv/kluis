@@ -16,18 +16,5 @@ pub fn protect_self() -> io::Result<()> {
 
 /// Set whether processes of the same user may inspect the calling process.
 pub(crate) fn set_dumpable(dumpable: bool) -> io::Result<()> {
-    // SAFETY: plain system call.
-    if unsafe {
-        libc::prctl(
-            libc::PR_SET_DUMPABLE,
-            libc::c_ulong::from(dumpable),
-            0,
-            0,
-            0,
-        )
-    } != 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
+    nix::sys::prctl::set_dumpable(dumpable).map_err(io::Error::from)
 }

@@ -8,9 +8,11 @@ authors.workspace = true
 
 [dependencies]
 hakoniwa.workspace = true
-libc.workspace = true
+nix.workspace = true
 openssl-probe.workspace = true
+rustix.workspace = true
 walkdir.workspace = true
 
 [dev-dependencies]
+libc.workspace = true
 tempfile.workspace = true

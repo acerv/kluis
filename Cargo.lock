@@ -1008,7 +1008,9 @@ version = "0.1.0"
 dependencies = [
  "hakoniwa",
  "libc",
+ "nix",
  "openssl-probe",
+ "rustix",
  "tempfile",
  "walkdir",
 ]
@@ -1023,7 +1025,7 @@ dependencies = [
  "grep-regex",
  "grep-searcher",
  "ignore",
- "libc",
+ "nix",
  "serde",
  "serde_json",
  "similar",
