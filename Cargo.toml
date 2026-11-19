@@ -20,8 +20,10 @@ harness-tools = { path = "harness-tools" }
 harness-tui = { path = "harness-tui" }
 
 genai = "0.7.5"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4", features = ["derive", "env"] }
 crossterm = "0.29"
+fnv = "1"
 futures-util = { version = "0.3", default-features = false }
 globset = "0.4"
 grep-regex = "0.1"
@@ -38,3 +40,4 @@ tempfile = "3"
 toml = { version = "1", default-features = false, features = ["display", "parse", "serde", "std"] }
 tokio = "1"
 tui-markdown = "0.3"
+uuid = { version = "1", features = ["v4"] }

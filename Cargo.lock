@@ -990,6 +990,8 @@ dependencies = [
 name = "harness-core"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "fnv",
  "futures-util",
  "genai",
  "harness-tools",
@@ -997,6 +999,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

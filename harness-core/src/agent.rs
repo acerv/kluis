@@ -74,9 +74,22 @@ impl Agent {
         self.model = model.into();
     }
 
-    /// Drop the conversation history, keeping the model and tool context.
+    /// Drop the conversation history, keeping the model, system prompt, and
+    /// tool context.
     pub fn clear(&mut self) {
         self.req.messages.clear();
+    }
+
+    /// Replace the conversation history, keeping the model, system prompt, and
+    /// tool context.
+    pub fn set_history(&mut self, messages: Vec<ChatMessage>) {
+        self.req.messages = messages;
+    }
+
+    /// Initialize the agent with an existing conversation history.
+    pub fn with_history(mut self, messages: Vec<ChatMessage>) -> Self {
+        self.req.messages = messages;
+        self
     }
 
     /// The conversation so far: user messages, model turns and tool
