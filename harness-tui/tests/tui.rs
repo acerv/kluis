@@ -718,4 +718,20 @@ fn thinking_effort_slash_keybinding_and_footer() {
     let screen = render_text(&term);
     assert!(screen.contains("claude-sonnet-4-5 (low) · 0"), "{screen}");
     assert!(screen.contains("Thinking: low"), "{screen}");
+
+    // Footer model color changes by thinking effort when color is enabled.
+    let mut colored = App::new("deepseek-flash", status(), Theme::new(true));
+    for (level, expected_fg) in [
+        (Thinking::Default, Color::Green),
+        (Thinking::Low, Color::Cyan),
+        (Thinking::Medium, Color::Yellow),
+        (Thinking::High, Color::Indexed(208)),
+    ] {
+        colored.set_thinking(level);
+        term.draw(|f| colored.render(f)).unwrap();
+        let buf = term.backend().buffer();
+        let footer_y = VIEWPORT_HEIGHT - 1;
+        assert_eq!(buf[(0, footer_y)].symbol(), "d");
+        assert_eq!(buf[(0, footer_y)].fg, expected_fg, "level: {level}");
+    }
 }

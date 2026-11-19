@@ -814,7 +814,7 @@ impl App {
         let gap = width.saturating_sub(left_w + right_w).max(2);
 
         let line = Line::from(vec![
-            Span::styled(model_label, self.theme.status_accent),
+            Span::styled(model_label, self.theme.thinking_model(self.thinking)),
             Span::styled(dot, self.theme.status_bar),
             Span::styled(tokens, self.theme.status_bar),
             Span::raw(" ".repeat(gap)),

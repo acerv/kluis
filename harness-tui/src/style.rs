@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
+use harness_core::Thinking;
 use ratatui::style::{Color, Modifier, Style};
 
 /// Styles used across the TUI. All styles are plain when `NO_COLOR` is active.
@@ -77,5 +78,19 @@ impl Theme {
     pub fn from_env() -> Self {
         let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
         Self::new(!no_color)
+    }
+
+    /// Footer model color keyed by thinking effort.
+    pub fn thinking_model(&self, thinking: Thinking) -> Style {
+        if !self.color {
+            return Style::default();
+        }
+        let fg = match thinking {
+            Thinking::Default => Color::Green,
+            Thinking::Low => Color::Cyan,
+            Thinking::Medium => Color::Yellow,
+            Thinking::High => Color::Indexed(208),
+        };
+        Style::default().fg(fg)
     }
 }
