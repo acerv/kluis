@@ -109,7 +109,21 @@ impl WriteTool {
 }
 
 /// Removes a temporary file if dropped before being disarmed.
-struct TempGuard(Option<PathBuf>);
+pub(crate) struct TempGuard(Option<PathBuf>);
+
+impl TempGuard {
+    pub(crate) fn new(path: PathBuf) -> Self {
+        Self(Some(path))
+    }
+
+    pub(crate) fn path(&self) -> Option<&Path> {
+        self.0.as_deref()
+    }
+
+    pub(crate) fn disarm(&mut self) -> Option<PathBuf> {
+        self.0.take()
+    }
+}
 
 impl Drop for TempGuard {
     fn drop(&mut self) {
@@ -148,22 +162,23 @@ fn atomic_write_sync(path: &Path, content: &[u8], existing_mode: Option<u32>) ->
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
 
-    let (mut file, tmp_path) = match create_temp(parent, existing_mode.is_some()) {
-        Ok(pair) => pair,
-        // A single writable file inside a read-only folder (e.g. a bind mount)
-        // cannot hold a sibling temp file; fall back to writing in place.
-        Err(e)
-            if existing_mode.is_some()
-                && matches!(
-                    e.kind(),
-                    ErrorKind::PermissionDenied | ErrorKind::ReadOnlyFilesystem
-                ) =>
-        {
-            return std::fs::write(&target, content);
-        }
-        Err(e) => return Err(e),
-    };
-    let mut guard = TempGuard(Some(tmp_path));
+    let (mut file, tmp_path) =
+        match create_temp(parent, ".harness-tmp", "", existing_mode.is_some()) {
+            Ok(pair) => pair,
+            // A single writable file inside a read-only folder (e.g. a bind mount)
+            // cannot hold a sibling temp file; fall back to writing in place.
+            Err(e)
+                if existing_mode.is_some()
+                    && matches!(
+                        e.kind(),
+                        ErrorKind::PermissionDenied | ErrorKind::ReadOnlyFilesystem
+                    ) =>
+            {
+                return std::fs::write(&target, content);
+            }
+            Err(e) => return Err(e),
+        };
+    let mut guard = TempGuard::new(tmp_path);
 
     file.write_all(content)?;
     if let Some(mode) = existing_mode {
@@ -172,10 +187,10 @@ fn atomic_write_sync(path: &Path, content: &[u8], existing_mode: Option<u32>) ->
     }
     drop(file);
 
-    let tmp_path = guard.0.as_deref().unwrap();
+    let tmp_path = guard.path().unwrap();
     match std::fs::rename(tmp_path, &target) {
         Ok(()) => {
-            guard.0 = None;
+            guard.disarm();
             Ok(())
         }
         // A writable single-file bind mount inside a writable folder rejects
@@ -187,18 +202,21 @@ fn atomic_write_sync(path: &Path, content: &[u8], existing_mode: Option<u32>) ->
     }
 }
 
-fn create_temp(dir: &Path, private: bool) -> io::Result<(std::fs::File, PathBuf)> {
+pub(crate) fn create_temp(
+    dir: &Path,
+    prefix: &str,
+    suffix: &str,
+    private: bool,
+) -> io::Result<(std::fs::File, PathBuf)> {
     let pid = std::process::id();
     let mut opts = OpenOptions::new();
     opts.write(true).create_new(true);
     if private {
-        // Keep the temp file private while writing; the original mode is
-        // applied right before rename.
         opts.mode(0o600);
     }
     loop {
         let id = NEXT_TMP_ID.fetch_add(1, Ordering::Relaxed);
-        let candidate = dir.join(format!(".harness-tmp-{pid}-{id}"));
+        let candidate = dir.join(format!("{prefix}-{pid}-{id}{suffix}"));
         match opts.open(&candidate) {
             Ok(file) => return Ok((file, candidate)),
             Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,

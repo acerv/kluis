@@ -27,7 +27,7 @@ mod write;
 
 pub use bash::{
     BashContext, BashOutput, BashTool, PreExec, DEFAULT_BASH_TIMEOUT, MAX_BASH_LINES,
-    MAX_BASH_OUTPUT,
+    MAX_BASH_LOG_BYTES, MAX_BASH_OUTPUT,
 };
 pub use diff::{Diff, DiffHunk, DiffLine, DIFF_CONTEXT_LINES, MAX_DIFF_BYTES};
 pub use edit::{Edit, EditOutput, EditTool, MAX_EDIT_BYTES};

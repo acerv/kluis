@@ -4,7 +4,10 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use harness_tools::{BashContext, BashTool, DEFAULT_BASH_TIMEOUT, MAX_BASH_LINES, MAX_BASH_OUTPUT};
+use harness_tools::{
+    BashContext, BashTool, DEFAULT_BASH_TIMEOUT, MAX_BASH_LINES, MAX_BASH_LOG_BYTES,
+    MAX_BASH_OUTPUT,
+};
 
 fn call(command: &str, timeout: Option<u64>) -> BashTool {
     BashTool {
@@ -44,6 +47,7 @@ async fn merged_output_and_exit_code() {
     assert_eq!(out.output, "out\nerr\nagain\n");
     assert_eq!(out.exit_code, Some(3));
     assert!(!out.truncated);
+    assert_eq!(out.output_file, None);
     assert!(!out.timed_out);
 }
 
@@ -98,6 +102,8 @@ async fn stdin_is_closed() {
 
 #[tokio::test]
 async fn keeps_last_bytes() {
+    use std::os::unix::fs::PermissionsExt;
+
     let out = call("head -c 200000 /dev/zero | tr '\\0' a; echo END", None)
         .run()
         .await
@@ -105,6 +111,15 @@ async fn keeps_last_bytes() {
     assert!(out.truncated);
     assert_eq!(out.output.len(), MAX_BASH_OUTPUT);
     assert!(out.output.ends_with("aaaEND\n"));
+
+    let path = out.output_file.expect("spill file path");
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+    let full = std::fs::read_to_string(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(full.len(), 200_004);
+    assert!(full.starts_with("aaaa"));
+    assert!(full.ends_with("aaaEND\n"));
 }
 
 #[tokio::test]
@@ -114,6 +129,13 @@ async fn keeps_last_lines() {
     assert_eq!(out.output.lines().count(), MAX_BASH_LINES);
     assert!(out.output.starts_with("3001\n"));
     assert!(out.output.ends_with("\n5000\n"));
+
+    let path = out.output_file.expect("spill file path");
+    let full = std::fs::read_to_string(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(full.lines().count(), 5000);
+    assert!(full.starts_with("1\n"));
+    assert!(full.ends_with("\n5000\n"));
 }
 
 #[tokio::test]
@@ -131,6 +153,47 @@ async fn cut_does_not_split_characters() {
         out.output.chars().all(|c| c == 'é'),
         "starts with a fragment"
     );
+
+    let path = out.output_file.expect("spill file path");
+    let full = std::fs::read_to_string(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(full.chars().count(), 40_001);
+    assert!(full.starts_with('x'));
+    assert!(full[1..].chars().all(|c| c == 'é'));
+}
+
+#[tokio::test]
+async fn spill_file_keeps_full_output_when_both_bytes_and_lines_truncate() {
+    let out = call("seq 30000", None).run().await.unwrap();
+    assert!(out.truncated);
+    assert_eq!(out.output.lines().count(), MAX_BASH_LINES);
+    assert!(out.output.starts_with("28001\n"));
+    assert!(out.output.ends_with("\n30000\n"));
+
+    let path = out.output_file.expect("spill file path");
+    let full = std::fs::read_to_string(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    let expected: String = (1..=30_000).map(|i| format!("{i}\n")).collect();
+    assert_eq!(full, expected);
+}
+
+#[tokio::test]
+async fn spill_file_is_capped_at_max_bash_log_bytes() {
+    let total = MAX_BASH_LOG_BYTES + 100_000;
+    let out = call(
+        &format!("head -c {total} /dev/zero | tr '\\0' a; echo END"),
+        None,
+    )
+    .run()
+    .await
+    .unwrap();
+    assert!(out.truncated);
+    assert!(out.output.ends_with("aaaEND\n"));
+
+    let path = out.output_file.expect("spill file path");
+    let len = std::fs::metadata(&path).unwrap().len();
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(len, MAX_BASH_LOG_BYTES);
 }
 
 #[tokio::test]

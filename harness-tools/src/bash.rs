@@ -3,7 +3,8 @@
 
 use std::ffi::OsString;
 use std::fmt;
-use std::io;
+use std::fs::File;
+use std::io::{self, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{ExitStatus, Stdio};
@@ -19,12 +20,16 @@ use tokio::process::{Child, Command};
 use tokio::time::{sleep_until, Instant};
 
 use crate::error::ToolError;
+use crate::write::{create_temp, TempGuard};
 
 /// Bytes kept from the end of the output.
 pub const MAX_BASH_OUTPUT: usize = 50 * 1024;
 
 /// Lines kept from the end of the output.
 pub const MAX_BASH_LINES: usize = 2000;
+
+/// Maximum bytes saved to the spill file when output is truncated.
+pub const MAX_BASH_LOG_BYTES: u64 = 10 * 1024 * 1024;
 
 /// Time limit in seconds when the call sets none.
 pub const DEFAULT_BASH_TIMEOUT: u64 = 600;
@@ -85,6 +90,10 @@ pub struct BashOutput {
     pub output: String,
     /// True when only the end of the output is kept.
     pub truncated: bool,
+    /// Path to a file with the full cleaned output (up to [`MAX_BASH_LOG_BYTES`])
+    /// when truncated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_file: Option<String>,
     pub timed_out: bool,
 }
 
@@ -195,11 +204,12 @@ impl BashTool {
             group.disarm();
         }
 
-        let (output, truncated) = tail.finish();
+        let (output, truncated, output_file) = tail.finish();
         Ok(BashOutput {
             exit_code: status.map(exit_code),
             output,
             truncated,
+            output_file,
             timed_out,
         })
     }
@@ -344,11 +354,13 @@ impl Filter {
 }
 
 /// The end of the output: the last [`MAX_BASH_OUTPUT`] bytes, then the
-/// last [`MAX_BASH_LINES`] lines.
+/// last [`MAX_BASH_LINES`] lines. Overflowing bytes are streamed to a
+/// temporary file so callers can inspect the full output without re-running.
 #[derive(Default)]
 struct Tail {
     buf: Vec<u8>,
     cut: bool,
+    spill: Spill,
 }
 
 impl Tail {
@@ -361,7 +373,9 @@ impl Tail {
 
     fn trim_bytes(&mut self) {
         if self.buf.len() > MAX_BASH_OUTPUT {
-            self.buf.drain(..self.buf.len() - MAX_BASH_OUTPUT);
+            let cut = self.buf.len() - MAX_BASH_OUTPUT;
+            self.spill.write(&self.buf[..cut]);
+            self.buf.drain(..cut);
             self.cut = true;
         }
     }
@@ -374,15 +388,20 @@ impl Tail {
             .rev()
             .filter(|&(_, &b)| b == b'\n');
         if let Some((i, _)) = breaks.nth(MAX_BASH_LINES - 1) {
+            self.spill.write(&self.buf[..=i]);
             self.buf.drain(..=i);
             self.cut = true;
         }
     }
 
-    /// The kept text and whether anything was cut.
-    fn finish(mut self) -> (String, bool) {
+    /// The kept text, whether anything was cut, and the spill file path if one
+    /// was saved.
+    fn finish(mut self) -> (String, bool, Option<String>) {
         self.trim_bytes();
         self.trim_lines();
+        // Flush the kept tail before skipping leading UTF-8 continuation bytes,
+        // so the spill file preserves characters split across a byte cut.
+        let output_file = self.spill.finish(&self.buf);
         if self.cut {
             // Do not start in the middle of a UTF-8 character.
             let skip = self.buf.iter().take_while(|&&b| b & 0xc0 == 0x80).count();
@@ -392,6 +411,88 @@ impl Tail {
             Ok(text) => text,
             Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
         };
-        (text, self.cut)
+        (text, self.cut, output_file)
     }
+}
+
+/// Lazily created file holding the full cleaned output when truncated.
+///
+/// Dropped without calling [`finish`](Self::finish) (e.g. on cancellation or
+/// error), its [`TempGuard`] removes the file automatically.
+#[derive(Default)]
+enum Spill {
+    #[default]
+    Idle,
+    Writing {
+        file: File,
+        guard: TempGuard,
+        remaining: u64,
+    },
+    /// Reached [`MAX_BASH_LOG_BYTES`]; the file is closed and kept on disk.
+    Full(TempGuard),
+    Failed,
+}
+
+impl Spill {
+    fn write(&mut self, data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
+        if matches!(self, Self::Idle) {
+            match create_temp(&std::env::temp_dir(), "harness-bash", ".log", true) {
+                Ok((file, path)) => {
+                    *self = Self::Writing {
+                        file,
+                        guard: TempGuard::new(path),
+                        remaining: MAX_BASH_LOG_BYTES,
+                    };
+                }
+                Err(_) => {
+                    *self = Self::Failed;
+                    return;
+                }
+            }
+        }
+        let Self::Writing {
+            file, remaining, ..
+        } = self
+        else {
+            return;
+        };
+        let slice = &data[..data.len().min(*remaining as usize)];
+        if file.write_all(slice).is_err() {
+            // Transitioning to Failed drops `TempGuard`, freeing `/tmp` space
+            // (e.g. on ENOSPC) instead of leaving a broken partial file.
+            *self = Self::Failed;
+            return;
+        }
+        *remaining -= slice.len() as u64;
+        if *remaining == 0 {
+            if let Self::Writing { guard, .. } = std::mem::replace(self, Self::Failed) {
+                *self = Self::Full(guard);
+            }
+        }
+    }
+
+    fn finish(mut self, tail: &[u8]) -> Option<String> {
+        if matches!(self, Self::Writing { .. }) {
+            self.write(tail);
+        }
+        let guard = match self {
+            Self::Writing { file, guard, .. } => {
+                // Close the descriptor before exposing the path.
+                drop(file);
+                guard
+            }
+            Self::Full(guard) => guard,
+            Self::Idle | Self::Failed => return None,
+        };
+        take_utf8_path(guard)
+    }
+}
+
+fn take_utf8_path(mut guard: TempGuard) -> Option<String> {
+    let path = guard.path()?.to_str()?.to_owned();
+    guard.disarm();
+    Some(path)
 }
