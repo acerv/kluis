@@ -10,6 +10,7 @@
 compile_error!("harness-tui only supports Linux");
 
 mod app;
+mod history;
 mod input;
 mod markdown;
 mod picker;
@@ -25,6 +26,7 @@ use tokio::sync::mpsc;
 use tokio::time::{interval_at, Instant, MissedTickBehavior};
 
 pub use app::{summary, Action, AgentUpdate, App, SlashCommand, VIEWPORT_HEIGHT};
+pub use history::{History, MAX_HISTORY};
 pub use style::Theme;
 pub use terminal::flush_scrollback;
 
@@ -107,21 +109,26 @@ impl Session {
     }
 }
 
-/// Run the interactive inline TUI until the user quits (`Ctrl-D` or `/quit`).
-pub async fn run(agent: Agent, status: Status, session: Option<Session>) -> Result<(), Error> {
-    run_with_picker(agent, status, session, Vec::new()).await
+/// Optional state passed into [`run`].
+#[derive(Default)]
+pub struct RunOptions {
+    pub session: Option<Session>,
+    pub history: Option<History>,
+    pub picker_entries: Vec<SessionSummary>,
 }
 
-/// Like [`run`], opening the session picker immediately when `picker_entries`
-/// is non-empty and the agent has no loaded history yet (used by `--resume`).
-pub async fn run_with_picker(
-    mut agent: Agent,
-    status: Status,
-    mut session: Option<Session>,
-    picker_entries: Vec<SessionSummary>,
-) -> Result<(), Error> {
+/// Run the interactive inline TUI until the user quits (`Ctrl-D` or `/quit`).
+pub async fn run(mut agent: Agent, status: Status, opts: RunOptions) -> Result<(), Error> {
+    let RunOptions {
+        mut session,
+        mut history,
+        picker_entries,
+    } = opts;
     let mut term = InlineTerminal::enter(VIEWPORT_HEIGHT)?;
     let mut app = App::new(agent.model().to_owned(), status, Theme::from_env());
+    if let Some(ref h) = history {
+        app.set_history(h.entries());
+    }
     if let Some(ref s) = session {
         app.set_tokens(s.initial_tokens.0, s.initial_tokens.1);
     }
@@ -157,6 +164,9 @@ pub async fn run_with_picker(
                 draw(&mut term, &mut app)?;
             }
             Action::Submit(prompt) => {
+                if let Some(ref mut h) = history {
+                    let _ = h.record(&prompt);
+                }
                 app.start_prompt(&prompt);
                 draw(&mut term, &mut app)?;
                 if run_turn(

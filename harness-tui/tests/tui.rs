@@ -584,3 +584,91 @@ fn session_picker_navigation_filtering_and_resume_slash() {
     assert_eq!(app.handle_event(key(KeyCode::Esc)), Action::Redraw);
     assert!(!app.is_picker_open());
 }
+
+#[test]
+fn persistent_history_round_trip_multiline_dedup_and_compaction() {
+    use harness_tui::{History, MAX_HISTORY};
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("kluis").join("history");
+
+    // Missing file loads empty without creating anything on disk.
+    let mut history = History::load(&path);
+    assert!(history.entries().is_empty());
+    assert!(!path.exists());
+
+    // Blank entries and consecutive duplicates are ignored; multiline prompts round-trip.
+    history.record("   ").unwrap();
+    assert!(!path.exists());
+    history.record("first prompt").unwrap();
+    history.record("first prompt").unwrap();
+    history.record("line one\nline two").unwrap();
+
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "history file must be 0600, got {mode:o}");
+
+    // Simulate a crash leaving a partial line with no trailing newline.
+    let mut raw = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
+    raw.write_all(b"\"truncated").unwrap();
+    drop(raw);
+
+    // Reloading ignores the corrupt tail and cleanly separates the next record.
+    let mut reloaded = History::load(&path);
+    assert_eq!(
+        reloaded.entries(),
+        vec!["first prompt", "line one\nline two"]
+    );
+    reloaded.record("after crash").unwrap();
+
+    let after = History::load(&path);
+    assert_eq!(
+        after.entries(),
+        vec!["first prompt", "line one\nline two", "after crash"]
+    );
+
+    // Seeding `App` recalls persisted multiline prompts via Up/Down.
+    let mut app = App::new("model", status(), Theme::new(false));
+    app.set_history(after.entries());
+    assert_eq!(app.handle_event(key(KeyCode::Up)), Action::Redraw);
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Submit("after crash".into())
+    );
+    assert_eq!(app.handle_event(key(KeyCode::Up)), Action::Redraw);
+    assert_eq!(app.handle_event(key(KeyCode::Up)), Action::Redraw);
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Submit("line one\nline two".into())
+    );
+
+    // Writing past compaction threshold trims the file back down to MAX_HISTORY lines.
+    let compact_path = dir.path().join("compact");
+    let mut h = History::load(&compact_path);
+    for i in 0..(MAX_HISTORY * 2 + 5) {
+        h.record(&format!("cmd-{i}")).unwrap();
+    }
+    let lines: Vec<String> = std::fs::read_to_string(&compact_path)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    assert!(lines.len() <= MAX_HISTORY + 10, "got {} lines", lines.len());
+    let final_entries = History::load(&compact_path).entries();
+    assert_eq!(final_entries.len(), MAX_HISTORY);
+    assert_eq!(
+        final_entries.last().map(String::as_str),
+        Some(format!("cmd-{}", MAX_HISTORY * 2 + 4).as_str())
+    );
+
+    // `ensure_file` rejects non-regular paths (such as a directory).
+    assert!(History::ensure_file(dir.path()).is_err());
+
+    // Oversized prompts are ignored rather than bloating or evicting history.
+    h.record(&"x".repeat(32 * 1024)).unwrap();
+    assert_eq!(History::load(&compact_path).entries(), final_entries);
+}

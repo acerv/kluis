@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
+use std::collections::VecDeque;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use unicode_width::UnicodeWidthStr;
 
-const MAX_HISTORY: usize = 200;
+use crate::history::MAX_HISTORY;
 
 /// Multiline prompt editor with cursor navigation, prompt history, and
 /// bracketed paste.
@@ -13,7 +15,7 @@ pub struct Input {
     buf: String,
     /// Byte offset of the cursor inside `buf` (always on a char boundary).
     cursor: usize,
-    history: Vec<String>,
+    history: VecDeque<String>,
     /// Current index in `history` while browsing (`None` when editing live).
     history_idx: Option<usize>,
     /// Unsubmitted draft saved when entering history navigation.
@@ -46,6 +48,15 @@ impl Input {
         self.draft.clear();
     }
 
+    /// Seed prompt history from persisted entries (oldest first).
+    pub fn set_history(&mut self, entries: Vec<String>) {
+        self.history.clear();
+        self.history_idx = None;
+        for entry in entries {
+            self.push_history(&entry);
+        }
+    }
+
     /// Take the buffer contents, record non-empty text in history, and reset.
     pub fn submit(&mut self) -> String {
         let text = std::mem::take(&mut self.buf);
@@ -53,14 +64,18 @@ impl Input {
         self.history_idx = None;
         self.draft.clear();
 
-        let trimmed = text.trim();
-        if !trimmed.is_empty() && self.history.last().map(String::as_str) != Some(trimmed) {
-            if self.history.len() >= MAX_HISTORY {
-                self.history.remove(0);
-            }
-            self.history.push(trimmed.to_owned());
-        }
+        self.push_history(&text);
         text
+    }
+
+    fn push_history(&mut self, text: &str) {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() && self.history.back().map(String::as_str) != Some(trimmed) {
+            if self.history.len() >= MAX_HISTORY {
+                self.history.pop_front();
+            }
+            self.history.push_back(trimmed.to_owned());
+        }
     }
 
     /// Insert pasted text at the cursor, normalizing `\r\n` and `\r` to `\n`.

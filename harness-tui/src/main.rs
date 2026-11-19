@@ -25,7 +25,7 @@ use clap::Parser;
 use genai::chat::ChatMessage;
 use harness_core::tools::ToolContext;
 use harness_core::{Agent, Error, Event, SessionData, SessionStore};
-use harness_tui::{summary, Session, Status};
+use harness_tui::{summary, History, RunOptions, Session, Status};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 const DEFAULT_MODEL: &str = "deepseek-chat";
@@ -242,7 +242,17 @@ async fn run(args: Args, tools: ToolContext) -> Result<(), Error> {
             sandbox,
             folder: current_folder(),
         };
-        return harness_tui::run_with_picker(agent, status, session, picker_entries).await;
+        let history = config::history_path().map(History::load);
+        return harness_tui::run(
+            agent,
+            status,
+            RunOptions {
+                session,
+                history,
+                picker_entries,
+            },
+        )
+        .await;
     }
 
     println!("kluis ({}, {sandbox}), Ctrl-D to quit", agent.model());

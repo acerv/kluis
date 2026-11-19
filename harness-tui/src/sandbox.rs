@@ -7,6 +7,7 @@
 //! no network unless `--network` is given.
 
 use std::ffi::OsString;
+use std::io::{self, IsTerminal};
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -89,6 +90,15 @@ pub fn run(args: &Args) -> Result<ExitCode, Error> {
                         deny.push(path);
                     }
                 }
+            }
+        }
+    }
+    // Mount only `~/.kluis/history` writable during interactive TUI sessions so
+    // `~/.kluis/` itself (and `config.toml` / `AGENTS.md`) remains read-only.
+    if args.prompt.is_empty() && io::stdin().is_terminal() && io::stdout().is_terminal() {
+        if let Some(history) = crate::config::history_path() {
+            if harness_tui::History::ensure_file(&history).is_ok() {
+                write.push(history);
             }
         }
     }

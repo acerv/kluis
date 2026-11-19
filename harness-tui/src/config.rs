@@ -104,6 +104,11 @@ pub fn sessions_dir() -> Option<PathBuf> {
     Some(home()?.join(".kluis").join("sessions"))
 }
 
+/// Where persistent prompt history is stored: `~/.kluis/history`.
+pub fn history_path() -> Option<PathBuf> {
+    Some(home()?.join(".kluis").join("history"))
+}
+
 /// Read the config file at `path`, creating it with the default template
 /// first if `!required` and it does not exist yet. Paths in it come back
 /// absolute.

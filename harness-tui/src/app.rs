@@ -203,6 +203,11 @@ impl App {
         self.model = model.into();
     }
 
+    /// Seed the editor's prompt history (oldest first).
+    pub fn set_history(&mut self, entries: Vec<String>) {
+        self.input.set_history(entries);
+    }
+
     pub fn theme(&self) -> Theme {
         self.theme
     }

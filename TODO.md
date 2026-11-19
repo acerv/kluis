@@ -28,7 +28,7 @@
 - [ ] `@path` expansion: attach or inline referenced files (and images) into the prompt
 - [ ] Allow typing and queuing the next prompt while the agent is busy
 - [ ] Editor: word movement (`Ctrl-Left`/`Right`, `Alt-B`/`F`), `Alt-D`, undo (`Ctrl-Z`) and `$EDITOR` (`Ctrl-G`)
-- [ ] Persistent input history across runs (`~/.kluis/history`)
+- [x] Persistent input history across runs (`~/.kluis/history`)
 - [ ] Direct shell shortcut (`!<cmd>`) running inside the sandbox
 - [ ] Live `bash` stdout/stderr preview and elapsed timer on the spinner (`⠋ Running bash… 12s`)
 - [x] Real-time multi-line thinking and text streaming, toggled with `Ctrl-O`
