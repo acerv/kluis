@@ -62,6 +62,21 @@ impl Agent {
         self
     }
 
+    /// The model name currently used for requests.
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    /// Switch the model used for subsequent prompts.
+    pub fn set_model(&mut self, model: impl Into<String>) {
+        self.model = model.into();
+    }
+
+    /// Drop the conversation history, keeping the model and tool context.
+    pub fn clear(&mut self) {
+        self.req.messages.clear();
+    }
+
     /// The conversation so far: user messages, model turns and tool
     /// results, oldest first.
     pub fn history(&self) -> &[ChatMessage] {

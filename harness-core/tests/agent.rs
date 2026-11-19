@@ -79,6 +79,30 @@ fn prompt_future_is_send() {
 fn history_starts_empty() {
     let agent = Agent::new("deepseek-chat").unwrap();
     assert!(agent.history().is_empty());
+    assert_eq!(agent.model(), "deepseek-chat");
+}
+
+#[tokio::test]
+async fn set_model_and_clear_history() {
+    let model = MockModel::start(vec![text("first"), text("second")]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = agent(&model, dir.path());
+
+    assert_eq!(prompt(&mut agent, "hi").await.unwrap(), "first");
+    assert_eq!(agent.history().len(), 2);
+
+    agent.set_model("other-model");
+    assert_eq!(agent.model(), "other-model");
+    agent.clear();
+    assert!(agent.history().is_empty());
+
+    assert_eq!(prompt(&mut agent, "again").await.unwrap(), "second");
+    let reqs = model.requests();
+    assert_eq!(reqs.len(), 2);
+    assert_eq!(reqs[1]["model"], "other-model");
+    // Only the fresh user message was sent after clear().
+    assert_eq!(sent(&reqs[1], "user").len(), 1);
+    assert_eq!(sent(&reqs[1], "assistant").len(), 0);
 }
 
 #[tokio::test]
