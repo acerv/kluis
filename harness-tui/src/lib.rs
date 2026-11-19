@@ -93,7 +93,7 @@ fn handle_slash(cmd: SlashCommand, agent: &mut Agent, app: &mut App) -> bool {
         }
         SlashCommand::Help => {
             app.push_info(
-                "commands: /model [name], /clear, /quit · keys: Enter send, Shift/Alt+Enter newline, Up/Down history, Ctrl-T toggle thinking, Esc/Ctrl-C cancel, Ctrl-D quit",
+                "commands: /model [name], /clear, /quit · keys: Enter send, Shift/Alt+Enter newline, Up/Down history, Ctrl-O toggle thinking, Esc/Ctrl-C cancel, Ctrl-D quit",
             );
         }
     }

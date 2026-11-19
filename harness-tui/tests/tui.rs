@@ -183,14 +183,14 @@ fn slash_commands() {
 }
 
 #[test]
-fn ctrl_c_esc_ctrl_t_and_ctrl_d_behavior() {
+fn ctrl_c_esc_ctrl_o_and_ctrl_d_behavior() {
     let mut app = App::new("model", status(), Theme::new(true));
 
-    // Ctrl-T toggles thinking visibility.
+    // Ctrl-O toggles thinking visibility (idle and mid-stream).
     assert!(app.show_thinking());
-    assert_eq!(app.handle_event(ctrl('t')), Action::Redraw);
+    assert_eq!(app.handle_event(ctrl('o')), Action::Redraw);
     assert!(!app.show_thinking());
-    assert_eq!(app.handle_event(ctrl('t')), Action::Redraw);
+    assert_eq!(app.handle_event(ctrl('o')), Action::Redraw);
     assert!(app.show_thinking());
 
     // Idle with non-empty input: Ctrl-C clears it; Ctrl-D does not quit.
@@ -208,6 +208,51 @@ fn ctrl_c_esc_ctrl_t_and_ctrl_d_behavior() {
     assert_eq!(app.handle_event(ctrl('c')), Action::Cancel);
     assert_eq!(app.handle_event(key(KeyCode::Esc)), Action::Cancel);
     assert_eq!(app.handle_event(ctrl('d')), Action::Quit);
+}
+
+#[test]
+fn realtime_multiline_thinking_and_ctrl_o_toggle() {
+    let mut app = App::new("model", status(), Theme::new(true));
+    assert_eq!(app.handle_event(Event::Resize(20, 14)), Action::Redraw);
+
+    app.start_prompt("think");
+    let _ = app.take_scrollback();
+    app.apply_update(AgentUpdate::TurnStart);
+
+    // Long thinking paragraph without '\n' soft-wraps in real time at word
+    // boundaries into scrollback as soon as it exceeds terminal width (20 cols).
+    app.apply_update(AgentUpdate::ReasoningDelta(
+        "Thinking about how to solve this cleanly".into(),
+    ));
+    let wrapped = app.take_scrollback();
+    let rows: Vec<String> = wrapped.iter().map(ToString::to_string).collect();
+    assert_eq!(rows, vec!["Thinking about how", "to solve this"]);
+
+    // Hide thinking mid-turn with Ctrl-O: the live tail ("cleanly") is hidden
+    // and new reasoning chunks buffer silently without emitting to scrollback.
+    assert_eq!(app.handle_event(ctrl('o')), Action::Redraw);
+    assert!(!app.show_thinking());
+    app.apply_update(AgentUpdate::ReasoningDelta(" right now\n".into()));
+    assert!(app.take_scrollback().is_empty());
+
+    // Reveal thinking mid-turn with Ctrl-O: buffered reasoning flushes immediately.
+    assert_eq!(app.handle_event(ctrl('o')), Action::Redraw);
+    assert!(app.show_thinking());
+    let revealed: Vec<String> = app
+        .take_scrollback()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(revealed, vec!["cleanly right now"]);
+
+    // Multi-line live Markdown preview grows viewport_height while streaming a
+    // long paragraph before '\n' arrives.
+    app.apply_update(AgentUpdate::TextDelta(
+        "A long streaming markdown paragraph that wraps across multiple rows".into(),
+    ));
+    assert!(app.viewport_height(20) > VIEWPORT_HEIGHT);
+    app.finish_prompt(Ok(()));
+    assert_eq!(app.viewport_height(20), VIEWPORT_HEIGHT);
 }
 
 #[test]

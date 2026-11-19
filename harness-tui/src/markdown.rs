@@ -32,12 +32,15 @@ fn into_owned_line(line: Line<'_>, color: bool) -> Line<'static> {
 }
 
 /// Incremental Markdown renderer that commits finalized lines into scrollback
-/// as tokens stream in, while exposing the active incomplete line for live
-/// preview above the spinner.
+/// as tokens stream in, while caching the active uncommitted lines for the
+/// multi-line live preview above the spinner.
 #[derive(Debug, Default)]
 pub struct MarkdownStream {
     buf: String,
     committed: usize,
+    parsed_prefix_end: usize,
+    in_unclosed_fence: bool,
+    live: Vec<Line<'static>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,45 +57,68 @@ enum PrefixState {
     OpenBlock,
 }
 
+struct Scan {
+    safe_end: usize,
+    safe_state: PrefixState,
+    in_unclosed_fence: bool,
+}
+
 impl MarkdownStream {
     pub fn clear(&mut self) {
         self.buf.clear();
         self.committed = 0;
+        self.parsed_prefix_end = 0;
+        self.in_unclosed_fence = false;
+        self.live.clear();
     }
 
-    /// Append a streaming chunk and push any newly finalized Markdown lines
-    /// into `out`.
+    /// Append a streaming chunk, push any newly finalized Markdown lines into
+    /// `out`, and refresh the cached live preview lines.
     pub fn push_delta(&mut self, delta: &str, color: bool, out: &mut Vec<Line<'static>>) {
-        self.buf.push_str(delta);
-        let Some((prefix, state)) = committable_prefix(&self.buf) else {
+        if delta.is_empty() {
             return;
-        };
-        let mut lines = render_markdown(prefix, color);
-        let safe_len = match state {
-            PrefixState::InFence | PrefixState::OpenBlock => lines.len().saturating_sub(1),
-            PrefixState::ClosedBlock => lines.len(),
-        };
-        if safe_len > self.committed {
-            out.extend(lines.drain(self.committed..safe_len));
-            self.committed = safe_len;
         }
-    }
+        self.buf.push_str(delta);
+        let scan = scan_markdown(&self.buf);
+        self.in_unclosed_fence = scan.in_unclosed_fence;
 
-    /// The currently active (uncommitted) line for the 1-row live preview above
-    /// the spinner, if any.
-    pub fn live_line(&self, color: bool) -> Option<Line<'static>> {
-        if self.buf.is_empty() {
-            return None;
+        if scan.safe_end > self.parsed_prefix_end {
+            self.parsed_prefix_end = scan.safe_end;
+            let prefix = &self.buf[..scan.safe_end];
+            let mut lines = render_markdown(prefix, color);
+            let safe_len = match scan.safe_state {
+                PrefixState::InFence | PrefixState::OpenBlock => lines.len().saturating_sub(1),
+                PrefixState::ClosedBlock => lines.len(),
+            };
+            let split = safe_len.clamp(self.committed, lines.len());
+            let mut tail = lines.split_off(split);
+            if split > self.committed {
+                out.extend(lines.drain(self.committed..));
+                self.committed = split;
+            }
+            if scan.safe_end == self.buf.len() {
+                if matches!(scan.safe_state, PrefixState::InFence) {
+                    tail.pop();
+                }
+                self.live = tail;
+                return;
+            }
         }
+
         let mut lines = render_markdown(&self.buf, color);
-        if is_in_unclosed_fence(&self.buf) {
+        if self.in_unclosed_fence {
             // Drop the synthetic closing fence line added by tui-markdown.
             lines.pop();
         }
-        if lines.len() <= self.committed {
-            return None;
-        }
-        lines.pop()
+        let remain = self.committed.min(lines.len());
+        lines.drain(..remain);
+        self.live = lines;
+    }
+
+    /// Cached uncommitted lines for the multi-line live preview above the
+    /// spinner.
+    pub fn live_lines(&self) -> &[Line<'static>] {
+        &self.live
     }
 
     /// Flush all remaining uncommitted lines of the current turn into `out` and
@@ -105,25 +131,35 @@ impl MarkdownStream {
         out: &mut Vec<Line<'static>>,
     ) -> bool {
         if self.buf.is_empty() {
-            if let Some(text) = fallback.filter(|t| !t.is_empty()) {
-                self.buf.push_str(text);
-            } else {
+            let Some(text) = fallback.filter(|t| !t.is_empty()) else {
                 let had_output = self.committed > 0;
                 self.clear();
                 return had_output;
+            };
+            let lines = render_markdown(text, color);
+            let emitted = !lines.is_empty();
+            out.extend(lines);
+            self.clear();
+            return emitted;
+        }
+
+        let emitted = if self.in_unclosed_fence {
+            let mut lines = render_markdown(&self.buf, color);
+            if lines.len() > self.committed {
+                out.extend(lines.drain(self.committed..));
             }
-        }
-        let mut lines = render_markdown(&self.buf, color);
-        if lines.len() > self.committed {
-            out.extend(lines.drain(self.committed..));
-        }
-        let emitted = !lines.is_empty() || self.committed > 0;
+            !lines.is_empty() || self.committed > 0
+        } else {
+            let had_live = !self.live.is_empty();
+            out.append(&mut self.live);
+            had_live || self.committed > 0
+        };
         self.clear();
         emitted
     }
 }
 
-fn committable_prefix(buf: &str) -> Option<(&str, PrefixState)> {
+fn scan_markdown(buf: &str) -> Scan {
     let mut in_fence: Option<(char, usize)> = None;
     let mut safe_end = 0usize;
     let mut safe_state = PrefixState::ClosedBlock;
@@ -138,14 +174,12 @@ fn committable_prefix(buf: &str) -> Option<(&str, PrefixState)> {
 
         match in_fence {
             Some((fch, flen)) => {
-                if let Some(stripped) = stripped {
-                    if is_closing_fence(stripped, fch, flen) {
-                        in_fence = None;
-                        safe_end = line_end;
-                        safe_state = PrefixState::ClosedBlock;
-                        pos = line_end;
-                        continue;
-                    }
+                if stripped.is_some_and(|s| is_closing_fence(s, fch, flen)) {
+                    in_fence = None;
+                    safe_end = line_end;
+                    safe_state = PrefixState::ClosedBlock;
+                    pos = line_end;
+                    continue;
                 }
                 safe_end = line_end;
                 safe_state = PrefixState::InFence;
@@ -170,13 +204,9 @@ fn committable_prefix(buf: &str) -> Option<(&str, PrefixState)> {
         pos = line_end;
     }
 
-    (safe_end > 0).then_some((&buf[..safe_end], safe_state))
-}
-
-fn is_in_unclosed_fence(buf: &str) -> bool {
-    let mut in_fence: Option<(char, usize)> = None;
-    for raw in buf.lines() {
-        let stripped = strip_up_to_3_spaces(raw);
+    if pos < buf.len() {
+        let tail = buf[pos..].strip_suffix('\r').unwrap_or(&buf[pos..]);
+        let stripped = strip_up_to_3_spaces(tail);
         match in_fence {
             Some((fch, flen)) => {
                 if stripped.is_some_and(|s| is_closing_fence(s, fch, flen)) {
@@ -190,7 +220,12 @@ fn is_in_unclosed_fence(buf: &str) -> bool {
             }
         }
     }
-    in_fence.is_some()
+
+    Scan {
+        safe_end,
+        safe_state,
+        in_unclosed_fence: in_fence.is_some(),
+    }
 }
 
 /// CommonMark block markers may be indented by at most 3 leading spaces.

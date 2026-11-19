@@ -160,7 +160,7 @@ pub fn flush_scrollback<B: Backend>(
     if width == 0 {
         return Ok(());
     }
-    let wrapped = wrap_lines(lines, width);
+    let wrapped = wrap_lines(&lines, width);
     let height = wrapped.len().min(u16::MAX as usize) as u16;
     if height == 0 {
         return Ok(());
@@ -171,23 +171,55 @@ pub fn flush_scrollback<B: Backend>(
     })
 }
 
+/// Display width of a single Unicode character in terminal cells.
+pub(crate) fn char_width(ch: char) -> usize {
+    let mut tmp = [0u8; 4];
+    Span::raw(&*ch.encode_utf8(&mut tmp)).width()
+}
+
+/// Count how many rows `lines` occupy when soft-wrapped to `width` cells,
+/// without allocating wrapped lines.
+pub(crate) fn wrapped_line_count(lines: &[Line<'static>], width: usize) -> usize {
+    let width = width.max(1);
+    let mut total = 0usize;
+    for line in lines {
+        if line.width() <= width {
+            total += 1;
+            continue;
+        }
+        let mut col = 0usize;
+        let mut rows = 1usize;
+        for span in &line.spans {
+            for ch in span.content.chars() {
+                let ch_w = char_width(ch);
+                if col > 0 && col + ch_w > width {
+                    rows += 1;
+                    col = 0;
+                }
+                col += ch_w;
+            }
+        }
+        total += rows;
+    }
+    total
+}
+
 /// Wrap styled lines so each resulting line fits within `width` cells.
-fn wrap_lines(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
+pub(crate) fn wrap_lines(lines: &[Line<'static>], width: usize) -> Vec<Line<'static>> {
     let mut out = Vec::with_capacity(lines.len());
     for line in lines {
         if line.width() <= width {
-            out.push(line);
+            out.push(line.clone());
             continue;
         }
         let line_style = line.style;
         let mut current: Vec<Span<'static>> = Vec::new();
         let mut col = 0usize;
-        for span in line.spans {
+        for span in &line.spans {
             let style = line_style.patch(span.style);
             let mut chunk = String::new();
             for ch in span.content.chars() {
-                let mut tmp = [0u8; 4];
-                let ch_w = Span::raw(&*ch.encode_utf8(&mut tmp)).width();
+                let ch_w = char_width(ch);
                 if col > 0 && col + ch_w > width {
                     if !chunk.is_empty() {
                         current.push(Span::styled(std::mem::take(&mut chunk), style));

@@ -29,8 +29,8 @@
 - [ ] Persistent input history across runs (`~/.kluis/history`)
 - [ ] Direct shell shortcut (`!<cmd>`) running inside the sandbox
 - [ ] Live `bash` stdout/stderr preview and elapsed timer on the spinner (`⠋ Running bash… 12s`)
-- [ ] Show hunk line numbers in `edit` diffs and expand the last tool output (`Ctrl-O`)
-- [ ] Multi-line live streaming preview above the spinner
+- [x] Real-time multi-line thinking and text streaming, toggled with `Ctrl-O`
+- [ ] Show hunk line numbers in `edit` diffs and expand full tool output
 - [ ] Thinking effort (`off`, `low`, `medium`, `high`) via `/thinking`, keybinding and CLI/config
 - [ ] Session commands: `/compact`, `/undo`, `/retry`, `/diff`, `/copy`, `/status`, `/export`, `/resume`
 - [ ] Context window usage (`<tokens>/<limit>`) for known models in the status bar

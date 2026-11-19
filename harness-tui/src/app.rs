@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
+use std::cell::Cell;
+
 use crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use harness_core::tools::{Diff, DiffLine};
 use harness_core::{Event as AgentEvent, ToolDetails};
@@ -14,6 +16,7 @@ use serde_json::Value;
 use crate::input::Input;
 use crate::markdown::MarkdownStream;
 use crate::style::Theme;
+use crate::terminal::{char_width, wrap_lines, wrapped_line_count};
 use crate::Status;
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -21,8 +24,8 @@ const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 /// Maximum characters shown in a single-line summary.
 const SUMMARY_LEN: usize = 120;
 
-/// Maximum bytes retained in an unterminated live streaming line.
-const MAX_LIVE_LINE_BYTES: usize = 4 * 1024;
+/// Maximum bytes retained in hidden reasoning when thinking is toggled off.
+const MAX_HIDDEN_REASONING_BYTES: usize = 64 * 1024;
 
 /// Maximum diff lines shown inline in scrollback per `edit` call.
 const MAX_DIFF_PREVIEW_LINES: usize = 24;
@@ -30,16 +33,21 @@ const MAX_DIFF_PREVIEW_LINES: usize = 24;
 /// Maximum output lines shown inline in scrollback per `bash` call.
 const MAX_BASH_PREVIEW_LINES: usize = 8;
 
+/// Maximum visible rows in the live streaming preview above the spinner.
+const MAX_LIVE_ROWS: u16 = 6;
+
 /// Maximum visible rows inside the framed multiline editor before scrolling.
 const MAX_EDITOR_ROWS: u16 = 8;
 
-/// Non-editor chrome rows in the inline viewport:
-/// 1 live streaming line + 1 status/spinner line + top rule + bottom rule +
-/// 1 footer line.
-const CHROME_ROWS: u16 = 5;
+/// Default width used for soft-wrapping before the first terminal size is seen.
+const DEFAULT_WIDTH: u16 = 80;
 
-/// Initial height of the inline viewport (1-row editor + chrome).
-pub const VIEWPORT_HEIGHT: u16 = CHROME_ROWS + 1;
+/// Fixed non-editor, non-live chrome rows in the inline viewport:
+/// 1 status/spinner line + top rule + bottom rule + 1 footer line.
+const FIXED_CHROME_ROWS: u16 = 4;
+
+/// Initial height of the inline viewport (1 live row + 1-row editor + chrome).
+pub const VIEWPORT_HEIGHT: u16 = FIXED_CHROME_ROWS + 2;
 
 /// Owned agent progress update passed over the channel from [`Agent::prompt`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,15 +123,20 @@ pub struct App {
     model: String,
     status: Status,
     theme: Theme,
+    width: Cell<u16>,
     input: Input,
     busy: bool,
     show_thinking: bool,
+    is_thinking: bool,
     spinner: usize,
     active_tool: Option<String>,
     /// Incremental Markdown stream for the current assistant turn.
     markdown: MarkdownStream,
-    /// Current incomplete streaming reasoning line.
+    /// Current incomplete streaming reasoning row (fits within `width`).
     live_reasoning: String,
+    /// Reasoning buffered while `show_thinking` is off so `Ctrl-O` can reveal
+    /// the current turn's thinking in real time.
+    hidden_reasoning: String,
     /// Whether any reasoning lines were emitted during the current turn.
     emitted_reasoning: bool,
     input_tokens: u64,
@@ -138,13 +151,16 @@ impl App {
             model: model.into(),
             status,
             theme,
+            width: Cell::new(DEFAULT_WIDTH),
             input: Input::default(),
             busy: false,
             show_thinking: true,
+            is_thinking: false,
             spinner: 0,
             active_tool: None,
             markdown: MarkdownStream::default(),
             live_reasoning: String::new(),
+            hidden_reasoning: String::new(),
             emitted_reasoning: false,
             input_tokens: 0,
             output_tokens: 0,
@@ -224,13 +240,20 @@ impl App {
                 self.clear_live();
             }
             AgentUpdate::ReasoningDelta(delta) => {
+                self.is_thinking = true;
                 if !self.show_thinking {
+                    append_bounded(
+                        &mut self.hidden_reasoning,
+                        &delta,
+                        MAX_HIDDEN_REASONING_BYTES,
+                    );
                     return;
                 }
                 self.emitted_reasoning = true;
-                stream_lines(
+                stream_reasoning(
                     &mut self.live_reasoning,
                     &delta,
+                    self.width.get() as usize,
                     self.theme.reasoning,
                     &mut self.scrollback,
                 );
@@ -306,7 +329,21 @@ impl App {
     /// Process a crossterm terminal event and return the next action.
     pub fn handle_event(&mut self, event: TermEvent) -> Action {
         match event {
-            TermEvent::Resize(_, _) => Action::Redraw,
+            TermEvent::Resize(w, _) => {
+                if w > 0 {
+                    self.width.set(w);
+                    if self.show_thinking && !self.live_reasoning.is_empty() {
+                        stream_reasoning(
+                            &mut self.live_reasoning,
+                            "",
+                            w as usize,
+                            self.theme.reasoning,
+                            &mut self.scrollback,
+                        );
+                    }
+                }
+                Action::Redraw
+            }
             TermEvent::Paste(text) if !self.busy => {
                 self.notice = None;
                 if self.input.paste(&text) {
@@ -323,16 +360,8 @@ impl App {
     fn handle_key(&mut self, key: KeyEvent) -> Action {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match (key.code, ctrl) {
-            (KeyCode::Char('t'), true) => {
-                self.show_thinking = !self.show_thinking;
-                if !self.show_thinking {
-                    self.live_reasoning.clear();
-                }
-                self.notice = Some(if self.show_thinking {
-                    "Thinking visible (Ctrl-T to hide)".to_owned()
-                } else {
-                    "Thinking hidden (Ctrl-T to show)".to_owned()
-                });
+            (KeyCode::Char('o'), true) => {
+                self.toggle_thinking();
                 return Action::Redraw;
             }
             (KeyCode::Char('c'), true) => {
@@ -387,13 +416,45 @@ impl App {
         }
     }
 
+    fn toggle_thinking(&mut self) {
+        self.show_thinking = !self.show_thinking;
+        if self.show_thinking {
+            if !self.hidden_reasoning.is_empty() {
+                let hidden = std::mem::take(&mut self.hidden_reasoning);
+                self.emitted_reasoning = true;
+                stream_reasoning(
+                    &mut self.live_reasoning,
+                    &hidden,
+                    self.width.get() as usize,
+                    self.theme.reasoning,
+                    &mut self.scrollback,
+                );
+            }
+            self.notice = Some("Thinking visible (Ctrl-O to hide)".to_owned());
+        } else {
+            if !self.live_reasoning.is_empty() {
+                let live = std::mem::take(&mut self.live_reasoning);
+                append_bounded(
+                    &mut self.hidden_reasoning,
+                    &live,
+                    MAX_HIDDEN_REASONING_BYTES,
+                );
+            }
+            self.notice = Some("Thinking hidden (Ctrl-O to show)".to_owned());
+        }
+    }
+
     fn clear_live(&mut self) {
         self.markdown.clear();
         self.live_reasoning.clear();
+        self.hidden_reasoning.clear();
         self.emitted_reasoning = false;
+        self.is_thinking = false;
     }
 
     fn flush_reasoning(&mut self) {
+        self.is_thinking = false;
+        self.hidden_reasoning.clear();
         if !self.live_reasoning.is_empty() {
             let tail = std::mem::take(&mut self.live_reasoning);
             self.scrollback
@@ -414,10 +475,24 @@ impl App {
         }
     }
 
-    /// Desired inline viewport height for `width`, growing with editor lines
-    /// and soft-wrapped text up to [`MAX_EDITOR_ROWS`].
+    /// Desired inline viewport height for `width`, growing with live streaming
+    /// preview lines (up to [`MAX_LIVE_ROWS`]) and editor lines (up to
+    /// [`MAX_EDITOR_ROWS`]).
     pub fn viewport_height(&self, width: u16) -> u16 {
-        CHROME_ROWS + self.editor_rows(width)
+        if width > 0 {
+            self.width.set(width);
+        }
+        FIXED_CHROME_ROWS + self.live_rows(width) + self.editor_rows(width)
+    }
+
+    fn live_rows(&self, width: u16) -> u16 {
+        let width = (width as usize).max(1);
+        let count = if !self.markdown.live_lines().is_empty() {
+            wrapped_line_count(self.markdown.live_lines(), width)
+        } else {
+            1
+        };
+        (count as u16).clamp(1, MAX_LIVE_ROWS)
     }
 
     fn editor_rows(&self, width: u16) -> u16 {
@@ -426,14 +501,38 @@ impl App {
         (layout.rows.len() as u16).clamp(1, MAX_EDITOR_ROWS)
     }
 
-    /// Draw the pi-style inline viewport: streaming line, spinner/notice,
-    /// framed multiline editor with cursor, and 2-line footer.
+    fn wrapped_live_lines(&self, width: usize) -> Vec<Line<'static>> {
+        let width = width.max(1);
+        if !self.markdown.live_lines().is_empty() {
+            wrap_lines(self.markdown.live_lines(), width)
+        } else if self.show_thinking && !self.live_reasoning.is_empty() {
+            let line = Line::styled(self.live_reasoning.clone(), self.theme.reasoning);
+            wrap_lines(&[line], width)
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Draw the pi-style inline viewport: multi-line live preview,
+    /// spinner/notice, framed multiline editor with cursor, and footer.
     pub fn render(&self, frame: &mut Frame<'_>) {
         let area = frame.area();
-        let editor_h = area.height.saturating_sub(CHROME_ROWS).max(1);
+        if area.width > 0 {
+            self.width.set(area.width);
+        }
+        let live_lines = self.wrapped_live_lines(area.width as usize);
+        let max_live = area
+            .height
+            .saturating_sub(FIXED_CHROME_ROWS + 1)
+            .clamp(1, MAX_LIVE_ROWS);
+        let live_h = (live_lines.len() as u16).clamp(1, max_live);
+        let editor_h = area
+            .height
+            .saturating_sub(FIXED_CHROME_ROWS + live_h)
+            .max(1);
         let [live_area, spinner_area, top_rule, editor_area, bottom_rule, footer_area] =
             Layout::vertical([
-                Constraint::Length(1),
+                Constraint::Length(live_h),
                 Constraint::Length(1),
                 Constraint::Length(1),
                 Constraint::Length(editor_h),
@@ -442,7 +541,7 @@ impl App {
             ])
             .areas(area);
 
-        self.render_live_line(frame, live_area);
+        self.render_live(frame, live_area, live_lines);
         self.render_spinner(frame, spinner_area);
         self.render_rule(frame, top_rule);
         self.render_editor(frame, editor_area);
@@ -450,26 +549,15 @@ impl App {
         self.render_footer(frame, footer_area);
     }
 
-    fn render_live_line(&self, frame: &mut Frame<'_>, area: Rect) {
-        if area.height == 0 || area.width == 0 {
+    fn render_live(&self, frame: &mut Frame<'_>, area: Rect, mut lines: Vec<Line<'static>>) {
+        if area.height == 0 || area.width == 0 || lines.is_empty() {
             return;
         }
-        let width = area.width as usize;
-        let line = if let Some(md_line) = self.markdown.live_line(self.theme.color) {
-            if md_line.width() <= width {
-                md_line
-            } else {
-                Line::raw(tail_to_width(&md_line.to_string(), width))
-            }
-        } else if self.show_thinking && !self.live_reasoning.is_empty() {
-            Line::styled(
-                tail_to_width(&self.live_reasoning, width),
-                self.theme.reasoning,
-            )
-        } else {
-            return;
-        };
-        frame.render_widget(Paragraph::new(line), area);
+        let visible = area.height as usize;
+        if lines.len() > visible {
+            lines.drain(..lines.len() - visible);
+        }
+        frame.render_widget(Paragraph::new(lines), area);
     }
 
     fn render_spinner(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -481,9 +569,12 @@ impl App {
             let label = match &self.active_tool {
                 Some(tool) => format!("{spin} Running {tool}…  (esc to cancel)"),
                 None if !self.show_thinking => {
-                    format!("{spin} Thinking…  (Ctrl-T to show · esc to cancel)")
+                    format!("{spin} Thinking…  (Ctrl-O to show · esc to cancel)")
                 }
-                None => format!("{spin} Working…  (esc to cancel)"),
+                None if self.is_thinking => {
+                    format!("{spin} Thinking…  (Ctrl-O to hide · esc to cancel)")
+                }
+                None => format!("{spin} Working…  (Ctrl-O to hide · esc to cancel)"),
             };
             Line::styled(label, self.theme.muted)
         } else if let Some(notice) = &self.notice {
@@ -589,19 +680,96 @@ impl App {
     }
 }
 
-/// Append `delta` to `live`, flushing every completed `\n`-terminated line
-/// straight into `scrollback` with `style`.
-fn stream_lines(live: &mut String, delta: &str, style: Style, scrollback: &mut Vec<Line<'static>>) {
+/// Append `delta` to `live`, flushing every `\n`-terminated line and every
+/// soft-wrapped row exceeding `width` columns into `scrollback` with `style`.
+fn stream_reasoning(
+    live: &mut String,
+    delta: &str,
+    width: usize,
+    style: Style,
+    scrollback: &mut Vec<Line<'static>>,
+) {
+    let width = width.max(1);
     live.push_str(delta);
+
     while let Some(nl) = live.find('\n') {
         let line = live[..nl].strip_suffix('\r').unwrap_or(&live[..nl]);
-        scrollback.push(Line::styled(line.to_owned(), style));
+        push_wrapped_str(line, width, style, scrollback);
         live.drain(..=nl);
     }
-    if live.len() > MAX_LIVE_LINE_BYTES {
-        let cut = live.len() - MAX_LIVE_LINE_BYTES;
-        let boundary = live.ceil_char_boundary(cut);
-        live.drain(..boundary);
+
+    while let Some((row_end, next_start)) = wrap_split(live, width) {
+        scrollback.push(Line::styled(live[..row_end].to_owned(), style));
+        live.drain(..next_start);
+    }
+}
+
+fn push_wrapped_str(
+    mut line: &str,
+    width: usize,
+    style: Style,
+    scrollback: &mut Vec<Line<'static>>,
+) {
+    while let Some((row_end, next_start)) = wrap_split(line, width) {
+        scrollback.push(Line::styled(line[..row_end].to_owned(), style));
+        line = &line[next_start..];
+    }
+    scrollback.push(Line::styled(line.to_owned(), style));
+}
+
+/// If `text` exceeds `width` display columns, return `(row_end, next_start)`
+/// splitting at the last whitespace break within `width` (or at the character
+/// boundary reaching `width` when a single word exceeds `width`).
+fn wrap_split(text: &str, width: usize) -> Option<(usize, usize)> {
+    let mut col = 0usize;
+    let mut has_non_ws = false;
+    let mut last_break: Option<(usize, usize)> = None;
+
+    for (idx, ch) in text.char_indices() {
+        let ch_w = char_width(ch);
+        if col > 0 && col + ch_w > width {
+            if ch.is_whitespace() && has_non_ws {
+                let row_end = last_break
+                    .filter(|&(_, prev_next)| prev_next == idx)
+                    .map_or(idx, |(prev_end, _)| prev_end);
+                let ws_len: usize = text[idx..]
+                    .chars()
+                    .take_while(|c| c.is_whitespace())
+                    .map(char::len_utf8)
+                    .sum();
+                return Some((row_end, idx + ws_len));
+            }
+            if let Some(brk) = last_break {
+                return Some(brk);
+            }
+            return Some((idx, idx));
+        }
+        col += ch_w;
+        if ch.is_whitespace() {
+            if has_non_ws {
+                let next = idx + ch.len_utf8();
+                let row_end = last_break
+                    .filter(|&(_, prev_next)| prev_next == idx)
+                    .map_or(idx, |(prev_end, _)| prev_end);
+                last_break = Some((row_end, next));
+            }
+        } else {
+            has_non_ws = true;
+        }
+        if col > width {
+            let next = idx + ch.len_utf8();
+            return Some((next, next));
+        }
+    }
+    None
+}
+
+fn append_bounded(buf: &mut String, delta: &str, max_bytes: usize) {
+    buf.push_str(delta);
+    if buf.len() > max_bytes {
+        let cut = buf.len() - max_bytes;
+        let boundary = buf.ceil_char_boundary(cut);
+        buf.drain(..boundary);
     }
 }
 
@@ -860,28 +1028,6 @@ fn layout_editor(input: &Input, width: usize) -> EditorLayout {
         cursor_row,
         cursor_col,
     }
-}
-
-fn char_width(ch: char) -> usize {
-    let mut tmp = [0u8; 4];
-    Span::raw(&*ch.encode_utf8(&mut tmp)).width()
-}
-
-fn tail_to_width(line: &str, width: usize) -> String {
-    if Span::raw(line).width() <= width {
-        return line.to_owned();
-    }
-    let mut used = 0usize;
-    let mut start = line.len();
-    for (idx, ch) in line.char_indices().rev() {
-        let w = char_width(ch);
-        if used + w > width {
-            break;
-        }
-        used += w;
-        start = idx;
-    }
-    line[start..].to_owned()
 }
 
 /// First line of `text`, cut to [`SUMMARY_LEN`] characters.
