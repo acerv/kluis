@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
-use std::fmt;
-
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 /// Error returned by a tool. Meant to be sent back to the model as text.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Error)]
+#[error("{message}")]
 pub struct ToolError {
     pub message: String,
 }
@@ -22,11 +22,3 @@ impl ToolError {
         Self::new(format!("{path}: {err}"))
     }
 }
-
-impl fmt::Display for ToolError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for ToolError {}

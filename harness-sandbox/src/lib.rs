@@ -32,6 +32,7 @@ use std::path::{Component, Path, PathBuf};
 
 use hakoniwa::landlock::{CompatMode, Resource, Ruleset};
 use hakoniwa::{Container, MountOptions, Rlimit, Runctl};
+use thiserror::Error;
 use walkdir::WalkDir;
 
 /// Folders and network the harness may use.
@@ -68,18 +69,11 @@ impl Default for Network {
 }
 
 /// Error raised while building a sandbox.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("{message}")]
 pub struct SandboxError {
     pub message: String,
 }
-
-impl fmt::Display for SandboxError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for SandboxError {}
 
 impl Sandbox {
     /// A sandbox that allows nothing.

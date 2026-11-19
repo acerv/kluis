@@ -1013,6 +1013,7 @@ dependencies = [
  "openssl-probe",
  "rustix",
  "tempfile",
+ "thiserror",
  "walkdir",
 ]
 
@@ -1033,6 +1034,7 @@ dependencies = [
  "serde_json",
  "similar",
  "tempfile",
+ "thiserror",
  "tokio",
 ]
 
