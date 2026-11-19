@@ -30,7 +30,7 @@
 - [ ] Editor: word movement (`Ctrl-Left`/`Right`, `Alt-B`/`F`), `Alt-D`, undo (`Ctrl-Z`) and `$EDITOR` (`Ctrl-G`)
 - [x] Persistent input history across runs (`~/.kluis/history`)
 - [ ] Direct shell shortcut (`!<cmd>`) running inside the sandbox
-- [ ] Live `bash` stdout/stderr preview and elapsed timer on the spinner (`⠋ Running bash… 12s`)
+- [x] Live `bash` stdout/stderr preview and elapsed timer on the spinner (`⠋ Running bash… 12s`)
 - [x] Real-time multi-line thinking and text streaming, toggled with `Ctrl-O`
 - [ ] Show hunk line numbers in `edit` diffs and expand full tool output
 - [x] Thinking effort (`default`, `low`, `medium`, `high`) via `/thinking`, keybinding and CLI/config

@@ -811,3 +811,50 @@ fn slash_command_autocomplete_popup_and_tab_completion() {
     app.handle_event(key(KeyCode::Char('r')));
     assert!(app.is_completion_open());
 }
+
+#[test]
+fn live_bash_preview_and_elapsed_spinner_timer() {
+    use std::time::Duration;
+
+    let mut app = App::new("deepseek-chat", status(), Theme::new(false));
+    app.start_prompt("run build");
+    let _ = app.take_scrollback();
+
+    app.apply_update(AgentUpdate::ToolCall {
+        name: "bash".into(),
+        args: r#"{"command":"cargo test"}"#.into(),
+    });
+    app.set_elapsed(Duration::from_secs(12));
+    app.apply_update(AgentUpdate::ToolOutput(
+        "compiling\rbuilding 50%\rbuilding 100%\nline 2\nline 3".into(),
+    ));
+
+    let h = app.viewport_height(80);
+    assert!(
+        h > VIEWPORT_HEIGHT,
+        "live preview should grow viewport: {h}"
+    );
+    let mut term = inline_terminal_with(80, 14, h);
+    term.draw(|f| app.render(f)).unwrap();
+    let screen = render_text(&term);
+    assert!(screen.contains("Running bash… 12s"), "{screen}");
+    assert!(screen.contains("building 100%"), "{screen}");
+    assert!(
+        !screen.contains("compiling"),
+        "CR overwrite failed: {screen}"
+    );
+    assert!(screen.contains("line 2"), "{screen}");
+    assert!(screen.contains("line 3"), "{screen}");
+
+    // >= 60s formats as minutes + zero-padded seconds.
+    app.set_elapsed(Duration::from_secs(65));
+    term.draw(|f| app.render(f)).unwrap();
+    assert!(render_text(&term).contains("Running bash… 1m05s"));
+
+    // Completing the tool clears the transient live preview.
+    app.apply_update(AgentUpdate::ToolResult {
+        content: r#"{"output":"done\n","exit_code":0}"#.into(),
+        details: None,
+    });
+    assert_eq!(app.viewport_height(80), VIEWPORT_HEIGHT);
+}

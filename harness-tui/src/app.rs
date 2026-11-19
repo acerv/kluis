@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::time::{Duration, Instant};
 
 use crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use genai::chat::{ChatMessage, ChatRole, ContentPart};
@@ -38,6 +39,9 @@ const MAX_DIFF_PREVIEW_LINES: usize = 24;
 /// Maximum output lines shown inline in scrollback per `bash` call.
 const MAX_BASH_PREVIEW_LINES: usize = 8;
 
+/// Maximum bytes retained per live tool output preview line.
+const MAX_TOOL_PREVIEW_LINE_BYTES: usize = 1024;
+
 /// Maximum visible rows in the live streaming preview above the spinner.
 const MAX_LIVE_ROWS: u16 = 6;
 
@@ -69,6 +73,7 @@ pub enum AgentUpdate {
         name: String,
         args: String,
     },
+    ToolOutput(String),
     ToolResult {
         content: String,
         details: Option<ToolDetails>,
@@ -94,6 +99,7 @@ impl AgentUpdate {
                 name: call.fn_name.clone(),
                 args: call.fn_arguments.to_string(),
             },
+            AgentEvent::ToolOutput(chunk) => Self::ToolOutput(chunk.to_owned()),
             AgentEvent::ToolResult(resp, details) => Self::ToolResult {
                 content: resp.content.clone(),
                 details: details.cloned(),
@@ -139,7 +145,10 @@ pub struct App {
     show_thinking: bool,
     is_thinking: bool,
     spinner: usize,
+    activity_started: Option<Instant>,
     active_tool: Option<String>,
+    /// Bounded live stdout/stderr preview while a streaming tool runs.
+    tool_preview: ToolPreview,
     /// Incremental Markdown stream for the current assistant turn.
     markdown: MarkdownStream,
     /// Current incomplete streaming reasoning row (fits within `width`).
@@ -170,7 +179,9 @@ impl App {
             show_thinking: true,
             is_thinking: false,
             spinner: 0,
+            activity_started: None,
             active_tool: None,
+            tool_preview: ToolPreview::default(),
             markdown: MarkdownStream::default(),
             live_reasoning: String::new(),
             hidden_reasoning: String::new(),
@@ -319,10 +330,16 @@ impl App {
         }
     }
 
+    /// Override the elapsed activity timer (useful for deterministic rendering tests).
+    pub fn set_elapsed(&mut self, elapsed: Duration) {
+        self.activity_started = Instant::now().checked_sub(elapsed);
+    }
+
     /// Record a submitted user prompt and enter the busy state.
     pub fn start_prompt(&mut self, text: &str) {
         self.busy = true;
         self.spinner = 0;
+        self.activity_started = Some(Instant::now());
         self.active_tool = None;
         self.clear_live();
         self.completion.clear();
@@ -348,6 +365,7 @@ impl App {
         match update {
             AgentUpdate::TurnStart => {
                 self.active_tool = None;
+                self.activity_started = Some(Instant::now());
                 self.clear_live();
             }
             AgentUpdate::ReasoningDelta(delta) => {
@@ -393,12 +411,19 @@ impl App {
             AgentUpdate::ToolCall { name, args } => {
                 self.flush_reasoning();
                 self.flush_text();
+                self.tool_preview.clear();
                 self.active_tool = Some(name.clone());
+                self.activity_started = Some(Instant::now());
                 self.scrollback
                     .push(format_tool_call(&name, &args, self.theme));
             }
+            AgentUpdate::ToolOutput(chunk) => {
+                self.tool_preview.push(&chunk);
+            }
             AgentUpdate::ToolResult { content, details } => {
                 let tool_name = self.active_tool.take();
+                self.tool_preview.clear();
+                self.activity_started = Some(Instant::now());
                 format_tool_result(
                     tool_name.as_deref(),
                     &content,
@@ -416,6 +441,7 @@ impl App {
         self.flush_reasoning();
         self.flush_text();
         self.busy = false;
+        self.activity_started = None;
         self.active_tool = None;
         self.clear_live();
         if let Err(err) = outcome {
@@ -430,6 +456,7 @@ impl App {
         self.flush_reasoning();
         self.flush_text();
         self.busy = false;
+        self.activity_started = None;
         self.active_tool = None;
         self.clear_live();
         self.scrollback
@@ -641,6 +668,7 @@ impl App {
         self.markdown.clear();
         self.live_reasoning.clear();
         self.hidden_reasoning.clear();
+        self.tool_preview.clear();
         self.emitted_reasoning = false;
         self.is_thinking = false;
     }
@@ -688,6 +716,9 @@ impl App {
         let width = (width as usize).max(1);
         let count = if !self.markdown.live_lines().is_empty() {
             wrapped_line_count(self.markdown.live_lines(), width)
+        } else if !self.tool_preview.is_empty() {
+            let lines = self.tool_preview.render_lines(self.theme.muted);
+            wrapped_line_count(&lines, width)
         } else {
             1
         };
@@ -704,6 +735,9 @@ impl App {
         let width = width.max(1);
         if !self.markdown.live_lines().is_empty() {
             wrap_lines(self.markdown.live_lines(), width)
+        } else if !self.tool_preview.is_empty() {
+            let lines = self.tool_preview.render_lines(self.theme.muted);
+            wrap_lines(&lines, width)
         } else if self.show_thinking && !self.live_reasoning.is_empty() {
             let line = Line::styled(self.live_reasoning.clone(), self.theme.reasoning);
             wrap_lines(&[line], width)
@@ -788,15 +822,21 @@ impl App {
         }
         let line = if self.busy {
             let spin = SPINNER[self.spinner];
+            let elapsed = self
+                .activity_started
+                .map(|t| format_elapsed(t.elapsed().as_secs()))
+                .filter(|s| !s.is_empty())
+                .map(|s| format!(" {s}"))
+                .unwrap_or_default();
             let label = match &self.active_tool {
-                Some(tool) => format!("{spin} Running {tool}…  (esc to cancel)"),
+                Some(tool) => format!("{spin} Running {tool}…{elapsed}  (esc to cancel)"),
                 None if !self.show_thinking => {
-                    format!("{spin} Thinking…  (Ctrl-O to show · esc to cancel)")
+                    format!("{spin} Thinking…{elapsed}  (Ctrl-O to show · esc to cancel)")
                 }
                 None if self.is_thinking => {
-                    format!("{spin} Thinking…  (Ctrl-O to hide · esc to cancel)")
+                    format!("{spin} Thinking…{elapsed}  (Ctrl-O to hide · esc to cancel)")
                 }
-                None => format!("{spin} Working…  (Ctrl-O to hide · esc to cancel)"),
+                None => format!("{spin} Working…{elapsed}  (Ctrl-O to hide · esc to cancel)"),
             };
             Line::styled(label, self.theme.muted)
         } else if let Some(notice) = &self.notice {
@@ -1170,6 +1210,73 @@ fn render_diff(diff: &Diff, theme: Theme, out: &mut Vec<Line<'static>>) {
             "  … diff truncated".to_owned()
         };
         out.push(Line::styled(note, theme.muted));
+    }
+}
+
+/// Bounded ring buffer of live stdout/stderr lines from a running tool,
+/// handling `\r` progress-bar overwrites without unbounded growth.
+#[derive(Default)]
+struct ToolPreview {
+    lines: VecDeque<String>,
+    current: String,
+    cr_pending: bool,
+}
+
+impl ToolPreview {
+    fn is_empty(&self) -> bool {
+        self.lines.is_empty() && self.current.is_empty()
+    }
+
+    fn clear(&mut self) {
+        self.lines.clear();
+        self.current.clear();
+        self.cr_pending = false;
+    }
+
+    fn push(&mut self, chunk: &str) {
+        for ch in chunk.chars() {
+            match ch {
+                '\n' => {
+                    self.cr_pending = false;
+                    let line = std::mem::take(&mut self.current);
+                    if self.lines.len() >= MAX_LIVE_ROWS as usize {
+                        self.lines.pop_front();
+                    }
+                    self.lines.push_back(line);
+                }
+                '\r' => self.cr_pending = true,
+                _ => {
+                    if self.cr_pending {
+                        self.current.clear();
+                        self.cr_pending = false;
+                    }
+                    if self.current.len() < MAX_TOOL_PREVIEW_LINE_BYTES {
+                        self.current.push(ch);
+                    }
+                }
+            }
+        }
+    }
+
+    fn render_lines(&self, style: Style) -> Vec<Line<'static>> {
+        let mut out = Vec::with_capacity(self.lines.len() + usize::from(!self.current.is_empty()));
+        for line in &self.lines {
+            out.push(Line::styled(format!("  {line}"), style));
+        }
+        if !self.current.is_empty() {
+            out.push(Line::styled(format!("  {}", self.current), style));
+        }
+        out
+    }
+}
+
+fn format_elapsed(secs: u64) -> String {
+    if secs == 0 {
+        String::new()
+    } else if secs < 60 {
+        format!("{secs}s")
+    } else {
+        format!("{}m{:02}s", secs / 60, secs % 60)
     }
 }
 
