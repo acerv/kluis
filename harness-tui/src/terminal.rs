@@ -20,7 +20,7 @@ use ratatui::widgets::{Paragraph, Widget};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 use scopeguard::ScopeGuard;
 use tokio::sync::mpsc;
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::App;
 
@@ -193,6 +193,33 @@ pub fn flush_scrollback<B: Backend>(
 /// Display width of a single Unicode character in terminal cells.
 pub(crate) fn char_width(ch: char) -> usize {
     ch.width().unwrap_or(0)
+}
+
+/// Truncate `text` to fit within `max_width` terminal cells, appending `…` if cut.
+pub(crate) fn truncate_width(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    if text.width() <= max_width {
+        return text.to_owned();
+    }
+    let ellipsis = '…';
+    let ellipsis_w = char_width(ellipsis);
+    let budget = max_width.saturating_sub(ellipsis_w);
+    let mut out = String::new();
+    let mut col = 0usize;
+    for ch in text.chars() {
+        let w = char_width(ch);
+        if col + w > budget {
+            break;
+        }
+        out.push(ch);
+        col += w;
+    }
+    if ellipsis_w <= max_width {
+        out.push(ellipsis);
+    }
+    out
 }
 
 /// Count how many rows `lines` occupy when soft-wrapped to `width` cells,

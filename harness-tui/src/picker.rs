@@ -14,7 +14,7 @@ use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use crate::style::Theme;
-use crate::terminal::char_width;
+use crate::terminal::truncate_width;
 
 /// Maximum visible session rows inside the inline picker before scrolling.
 pub(crate) const MAX_PICKER_ROWS: u16 = 8;
@@ -293,30 +293,4 @@ fn format_age(timestamp: u64, now: u64) -> String {
     } else {
         format!("{}mo ago", elapsed / (86_400 * 30))
     }
-}
-
-fn truncate_width(text: &str, max_width: usize) -> String {
-    if max_width == 0 {
-        return String::new();
-    }
-    if text.width() <= max_width {
-        return text.to_owned();
-    }
-    let ellipsis = '…';
-    let ellipsis_w = char_width(ellipsis);
-    let budget = max_width.saturating_sub(ellipsis_w);
-    let mut out = String::new();
-    let mut col = 0usize;
-    for ch in text.chars() {
-        let w = char_width(ch);
-        if col + w > budget {
-            break;
-        }
-        out.push(ch);
-        col += w;
-    }
-    if ellipsis_w <= max_width {
-        out.push(ellipsis);
-    }
-    out
 }

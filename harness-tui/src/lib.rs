@@ -10,6 +10,7 @@
 compile_error!("harness-tui only supports Linux");
 
 mod app;
+mod complete;
 mod history;
 mod input;
 mod markdown;
@@ -254,28 +255,11 @@ fn handle_slash(
             },
         },
         SlashCommand::Help => {
-            app.push_info(HELP_TEXT);
+            app.push_info(complete::help_text());
         }
     }
     false
 }
-
-const HELP_TEXT: &str = "\
-Commands:
-  /model [name]      show or switch the model
-  /thinking [level]  set thinking effort (default, low, medium, high)
-  /resume [id]       pick or resume a saved session
-  /clear             start a fresh conversation
-  /quit              exit the harness
-
-Keys:
-  Enter              send prompt
-  Shift/Alt+Enter    insert newline (also Ctrl-J)
-  Shift+Tab          cycle thinking effort
-  Up/Down            browse prompt history
-  Ctrl-O             toggle thinking visibility
-  Esc / Ctrl-C       cancel turn or clear input
-  Ctrl-D             quit";
 
 fn resume_session(id: &str, agent: &mut Agent, app: &mut App, session: Option<&mut Session>) {
     let Some(session) = session else {

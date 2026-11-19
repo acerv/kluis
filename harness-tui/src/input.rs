@@ -27,6 +27,18 @@ impl Input {
         self.buf.is_empty()
     }
 
+    pub fn text(&self) -> &str {
+        &self.buf
+    }
+
+    /// Replace the editor buffer with `text` and place the cursor at the end.
+    pub fn set_text(&mut self, text: &str) {
+        self.buf.clear();
+        self.buf.push_str(text);
+        self.cursor = self.buf.len();
+        self.history_idx = None;
+    }
+
     /// Lines in the editor (always at least one, even when empty).
     pub fn lines(&self) -> Vec<&str> {
         self.buf.split('\n').collect()

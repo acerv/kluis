@@ -1,0 +1,278 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
+
+//! Inline autocomplete popup for slash commands (`/`) and their fixed arguments.
+
+use std::fmt::Write;
+
+use ratatui::layout::Rect;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::Paragraph;
+use ratatui::Frame;
+use unicode_width::UnicodeWidthStr;
+
+use crate::style::Theme;
+use crate::terminal::truncate_width;
+
+/// Maximum visible completion rows below the editor.
+const MAX_COMPLETION_ROWS: u16 = 6;
+
+struct CommandSpec {
+    name: &'static str,
+    arg: Option<&'static str>,
+    description: &'static str,
+}
+
+const COMMANDS: &[CommandSpec] = &[
+    CommandSpec {
+        name: "/model",
+        arg: Some("[name]"),
+        description: "show or switch the model",
+    },
+    CommandSpec {
+        name: "/thinking",
+        arg: Some("[level]"),
+        description: "set thinking effort (default, low, medium, high)",
+    },
+    CommandSpec {
+        name: "/resume",
+        arg: Some("[id]"),
+        description: "pick or resume a saved session",
+    },
+    CommandSpec {
+        name: "/clear",
+        arg: None,
+        description: "start a fresh conversation",
+    },
+    CommandSpec {
+        name: "/help",
+        arg: None,
+        description: "show commands and keybindings",
+    },
+    CommandSpec {
+        name: "/quit",
+        arg: None,
+        description: "exit the harness",
+    },
+];
+
+impl CommandSpec {
+    fn label(&self) -> String {
+        match self.arg {
+            Some(arg) => format!("{} {arg}", self.name),
+            None => self.name.to_owned(),
+        }
+    }
+
+    fn insert(&self) -> String {
+        match self.arg {
+            Some(_) => format!("{} ", self.name),
+            None => self.name.to_owned(),
+        }
+    }
+}
+
+const THINKING_LEVELS: &[(&str, &str)] = &[
+    ("default", "leave provider reasoning default untouched"),
+    ("low", "light reasoning effort"),
+    ("medium", "balanced reasoning effort"),
+    ("high", "deep reasoning effort"),
+];
+
+/// Build the multi-line `/help` text from [`COMMANDS`] so help and
+/// autocomplete never drift out of sync.
+pub(crate) fn help_text() -> String {
+    let mut out = String::from("Commands:\n");
+    for cmd in COMMANDS {
+        let usage = cmd.label();
+        let _ = writeln!(out, "  {usage:<19}{}", cmd.description);
+    }
+    out.push_str(
+        "\nKeys:\n\
+         \x20 Enter              send prompt\n\
+         \x20 Shift/Alt+Enter    insert newline (also Ctrl-J)\n\
+         \x20 Tab                autocomplete command\n\
+         \x20 Shift+Tab          cycle thinking effort\n\
+         \x20 Up/Down            browse prompt history\n\
+         \x20 Ctrl-O             toggle thinking visibility\n\
+         \x20 Esc / Ctrl-C       cancel turn or clear input\n\
+         \x20 Ctrl-D             quit",
+    );
+    out
+}
+
+/// One candidate shown in the autocomplete popup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompletionItem {
+    pub(crate) label: String,
+    pub(crate) insert: String,
+    pub(crate) description: &'static str,
+}
+
+/// Active slash-command completion state.
+#[derive(Debug, Default)]
+pub(crate) struct CommandCompletion {
+    last_input: String,
+    items: Vec<CompletionItem>,
+    selected: usize,
+    navigated: bool,
+    dismissed: bool,
+}
+
+impl CommandCompletion {
+    pub(crate) fn is_open(&self) -> bool {
+        !self.dismissed && !self.items.is_empty()
+    }
+
+    pub(crate) fn visible_rows(&self) -> u16 {
+        if !self.is_open() {
+            return 0;
+        }
+        (self.items.len() as u16).min(MAX_COMPLETION_ROWS)
+    }
+
+    pub(crate) fn navigated(&self) -> bool {
+        self.navigated
+    }
+
+    pub(crate) fn selected_item(&self) -> Option<&CompletionItem> {
+        self.is_open()
+            .then(|| self.items.get(self.selected))
+            .flatten()
+    }
+
+    pub(crate) fn dismiss(&mut self) {
+        self.dismissed = true;
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.last_input.clear();
+        self.items.clear();
+        self.selected = 0;
+        self.navigated = false;
+        self.dismissed = false;
+    }
+
+    /// Recompute completion candidates when the editor text changes.
+    pub(crate) fn update(&mut self, input: &str) {
+        if !input.starts_with('/') || input.contains('\n') || input.len() > 64 {
+            self.clear();
+            return;
+        }
+        if input == self.last_input {
+            return;
+        }
+        self.last_input.clear();
+        self.last_input.push_str(input);
+        self.dismissed = false;
+        self.navigated = false;
+        self.selected = 0;
+        self.items.clear();
+
+        if let Some((cmd, rest)) = input.split_once(' ') {
+            if !cmd.eq_ignore_ascii_case("/thinking") || rest.contains(char::is_whitespace) {
+                return;
+            }
+            let prefix = rest.to_ascii_lowercase();
+            for &(level, desc) in THINKING_LEVELS {
+                if level.starts_with(&prefix) {
+                    self.items.push(CompletionItem {
+                        label: format!("/thinking {level}"),
+                        insert: format!("/thinking {level}"),
+                        description: desc,
+                    });
+                }
+            }
+            return;
+        }
+
+        if input.contains(char::is_whitespace) {
+            return;
+        }
+
+        let prefix = input.to_ascii_lowercase();
+        for cmd in COMMANDS {
+            if cmd.name.starts_with(&prefix) {
+                self.items.push(CompletionItem {
+                    label: cmd.label(),
+                    insert: cmd.insert(),
+                    description: cmd.description,
+                });
+            }
+        }
+    }
+
+    pub(crate) fn move_up(&mut self) -> bool {
+        if !self.is_open() || self.selected == 0 {
+            return false;
+        }
+        self.selected -= 1;
+        self.navigated = true;
+        true
+    }
+
+    pub(crate) fn move_down(&mut self) -> bool {
+        if !self.is_open() || self.selected + 1 >= self.items.len() {
+            return false;
+        }
+        self.selected += 1;
+        self.navigated = true;
+        true
+    }
+
+    pub(crate) fn render(&self, frame: &mut Frame<'_>, area: Rect, theme: Theme) {
+        if !self.is_open() || area.height == 0 || area.width == 0 {
+            return;
+        }
+        let visible = area.height as usize;
+        let scroll = self.selected.saturating_sub(visible.saturating_sub(1));
+        let width = area.width as usize;
+        let label_col = self
+            .items
+            .iter()
+            .map(|i| i.label.width())
+            .max()
+            .unwrap_or(0)
+            + 2;
+
+        let mut lines = Vec::with_capacity(visible);
+        for (pos, item) in self.items.iter().enumerate().skip(scroll).take(visible) {
+            let selected = pos == self.selected;
+            let marker = if selected { "❯ " } else { "  " };
+            let marker_style = if selected { theme.prompt } else { theme.muted };
+            let label_style = if selected {
+                theme.user
+            } else {
+                theme.status_accent
+            };
+            let desc_style = if selected {
+                theme.status_accent
+            } else {
+                theme.muted
+            };
+
+            let marker_w = marker.width();
+            let mut spans = Vec::with_capacity(4);
+            spans.push(Span::styled(marker, marker_style));
+
+            if marker_w + label_col + 4 <= width {
+                let pad = label_col.saturating_sub(item.label.width());
+                spans.push(Span::styled(item.label.clone(), label_style));
+                spans.push(Span::raw(" ".repeat(pad)));
+                let desc_budget = width - marker_w - label_col;
+                spans.push(Span::styled(
+                    truncate_width(item.description, desc_budget),
+                    desc_style,
+                ));
+            } else {
+                let budget = width.saturating_sub(marker_w);
+                spans.push(Span::styled(
+                    truncate_width(&item.label, budget),
+                    label_style,
+                ));
+            }
+            lines.push(Line::from(spans));
+        }
+        frame.render_widget(Paragraph::new(lines), area);
+    }
+}

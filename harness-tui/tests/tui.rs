@@ -735,3 +735,71 @@ fn thinking_effort_slash_keybinding_and_footer() {
         assert_eq!(buf[(0, footer_y)].fg, expected_fg, "level: {level}");
     }
 }
+
+#[test]
+fn slash_command_autocomplete_popup_and_tab_completion() {
+    let mut app = App::new("deepseek-chat", status(), Theme::new(false));
+    assert!(!app.is_completion_open());
+
+    // Typing `/` opens the popup with all commands and expands the viewport.
+    app.handle_event(key(KeyCode::Char('/')));
+    assert!(app.is_completion_open());
+    let h = app.viewport_height(80);
+    assert!(h > VIEWPORT_HEIGHT, "viewport did not grow: {h}");
+
+    let mut term = inline_terminal_with(80, 16, h);
+    term.draw(|f| app.render(f)).unwrap();
+    let screen = render_text(&term);
+    assert!(screen.contains("❯ /model [name]"), "{screen}");
+    assert!(screen.contains("/thinking [level]"), "{screen}");
+    assert!(screen.contains("/resume [id]"), "{screen}");
+    assert!(screen.contains("/clear"), "{screen}");
+    assert!(screen.contains("/quit"), "{screen}");
+    for cell in term.backend().buffer().content() {
+        assert_eq!(cell.fg, Color::Reset, "fg set under NO_COLOR: {cell:?}");
+        assert!(cell.modifier.is_empty(), "modifier set: {cell:?}");
+    }
+
+    // Typing `t` narrows to `/thinking`, Tab inserts `/thinking ` and offers effort levels.
+    app.handle_event(key(KeyCode::Char('t')));
+    assert_eq!(app.handle_event(key(KeyCode::Tab)), Action::Redraw);
+    assert!(app.is_completion_open());
+    term.draw(|f| app.render(f)).unwrap();
+    let screen = render_text(&term);
+    assert!(screen.contains("❯ /thinking default"), "{screen}");
+    assert!(screen.contains("/thinking high"), "{screen}");
+
+    // Down selects `low`, Enter submits `/thinking low` and closes popup.
+    assert_eq!(app.handle_event(key(KeyCode::Down)), Action::Redraw);
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Slash(SlashCommand::Thinking(Some("low".into())))
+    );
+    assert!(!app.is_completion_open());
+
+    // Partial no-arg command `/c` and uppercase `/CLEAR` both resolve to `/clear`.
+    app.handle_event(key(KeyCode::Char('/')));
+    app.handle_event(key(KeyCode::Char('c')));
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Slash(SlashCommand::Clear)
+    );
+    assert!(!app.is_completion_open());
+
+    app.handle_event(Event::Paste("/CLEAR".into()));
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Slash(SlashCommand::Clear)
+    );
+
+    // Esc dismisses popup; cursor movement keeps it dismissed until text changes.
+    app.handle_event(key(KeyCode::Char('/')));
+    assert!(app.is_completion_open());
+    assert_eq!(app.handle_event(key(KeyCode::Esc)), Action::Redraw);
+    assert!(!app.is_completion_open());
+    app.handle_event(key(KeyCode::Left));
+    assert!(!app.is_completion_open());
+    app.handle_event(key(KeyCode::Right));
+    app.handle_event(key(KeyCode::Char('r')));
+    assert!(app.is_completion_open());
+}

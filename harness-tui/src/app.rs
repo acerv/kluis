@@ -16,6 +16,7 @@ use ratatui::Frame;
 use serde_json::Value;
 use unicode_width::UnicodeWidthStr;
 
+use crate::complete::CommandCompletion;
 use crate::input::Input;
 use crate::markdown::{render_markdown, MarkdownStream};
 use crate::picker::{PickerOutcome, SessionPicker};
@@ -152,6 +153,7 @@ pub struct App {
     output_tokens: u64,
     notice: Option<String>,
     picker: Option<SessionPicker>,
+    completion: CommandCompletion,
     scrollback: Vec<Line<'static>>,
 }
 
@@ -177,6 +179,7 @@ impl App {
             output_tokens: 0,
             notice: None,
             picker: None,
+            completion: CommandCompletion::default(),
             scrollback: Vec::new(),
         }
     }
@@ -184,11 +187,16 @@ impl App {
     /// Open the inline session picker with `entries`.
     pub fn open_picker(&mut self, entries: Vec<SessionSummary>, current_id: Option<String>) {
         self.notice = None;
+        self.completion.clear();
         self.picker = Some(SessionPicker::new(entries, current_id));
     }
 
     pub fn is_picker_open(&self) -> bool {
         self.picker.is_some()
+    }
+
+    pub fn is_completion_open(&self) -> bool {
+        self.completion.is_open()
     }
 
     pub fn is_busy(&self) -> bool {
@@ -314,6 +322,7 @@ impl App {
         self.spinner = 0;
         self.active_tool = None;
         self.clear_live();
+        self.completion.clear();
         self.notice = None;
         self.push_user_message(text);
     }
@@ -453,6 +462,7 @@ impl App {
                 }
                 self.notice = None;
                 if self.input.paste(&text) {
+                    self.completion.update(self.input.text());
                     Action::Redraw
                 } else {
                     Action::None
@@ -495,6 +505,7 @@ impl App {
                 }
                 if !self.input.is_empty() {
                     self.input.clear();
+                    self.completion.clear();
                     self.notice = None;
                 } else {
                     self.notice = Some("Press Ctrl-D to quit".to_owned());
@@ -522,8 +533,54 @@ impl App {
             return Action::SetThinking(next);
         }
 
+        if self.completion.is_open() {
+            match (key.code, ctrl) {
+                (KeyCode::Esc, false) => {
+                    self.completion.dismiss();
+                    return Action::Redraw;
+                }
+                (KeyCode::Up, false) | (KeyCode::Char('p'), true) => {
+                    return if self.completion.move_up() {
+                        Action::Redraw
+                    } else {
+                        Action::None
+                    };
+                }
+                (KeyCode::Down, false) | (KeyCode::Char('n'), true) => {
+                    return if self.completion.move_down() {
+                        Action::Redraw
+                    } else {
+                        Action::None
+                    };
+                }
+                (KeyCode::Tab, false) => {
+                    if let Some(insert) = self.completion.selected_item().map(|i| i.insert.clone())
+                    {
+                        self.input.set_text(&insert);
+                        self.completion.update(self.input.text());
+                        return Action::Redraw;
+                    }
+                }
+                _ => {}
+            }
+        }
+
         self.notice = None;
         if key.code == KeyCode::Enter && key.modifiers.is_empty() {
+            if let Some(insert) = self.completion.selected_item().map(|i| i.insert.clone()) {
+                let trimmed = self.input.text().trim();
+                let already_complete = trimmed.eq_ignore_ascii_case(insert.trim())
+                    || matches!(parse_slash(trimmed), Some(Ok(SlashCommand::Thinking(None))));
+                if !already_complete || self.completion.navigated() {
+                    if insert.ends_with(' ') {
+                        self.input.set_text(&insert);
+                        self.completion.update(self.input.text());
+                        return Action::Redraw;
+                    }
+                    self.input.set_text(&insert);
+                }
+            }
+            self.completion.clear();
             let text = self.input.submit();
             let trimmed = text.trim();
             if trimmed.is_empty() {
@@ -542,6 +599,7 @@ impl App {
         }
 
         if self.input.handle_key(key) {
+            self.completion.update(self.input.text());
             Action::Redraw
         } else {
             Action::None
@@ -617,7 +675,10 @@ impl App {
         if let Some(picker) = &self.picker {
             return FIXED_CHROME_ROWS + picker.visible_rows();
         }
-        FIXED_CHROME_ROWS + self.live_rows(width) + self.editor_rows(width)
+        FIXED_CHROME_ROWS
+            + self.live_rows(width)
+            + self.editor_rows(width)
+            + self.completion.visible_rows()
     }
 
     fn live_rows(&self, width: u16) -> u16 {
@@ -673,22 +734,27 @@ impl App {
             return;
         }
         let live_lines = self.wrapped_live_lines(area.width as usize);
+        let completion_h = self
+            .completion
+            .visible_rows()
+            .min(area.height.saturating_sub(FIXED_CHROME_ROWS + 2));
         let max_live = area
             .height
-            .saturating_sub(FIXED_CHROME_ROWS + 1)
+            .saturating_sub(FIXED_CHROME_ROWS + completion_h + 1)
             .clamp(1, MAX_LIVE_ROWS);
         let live_h = (live_lines.len() as u16).clamp(1, max_live);
         let editor_h = area
             .height
-            .saturating_sub(FIXED_CHROME_ROWS + live_h)
+            .saturating_sub(FIXED_CHROME_ROWS + live_h + completion_h)
             .max(1);
-        let [live_area, spinner_area, top_rule, editor_area, bottom_rule, footer_area] =
+        let [live_area, spinner_area, top_rule, editor_area, bottom_rule, completion_area, footer_area] =
             Layout::vertical([
                 Constraint::Length(live_h),
                 Constraint::Length(1),
                 Constraint::Length(1),
                 Constraint::Length(editor_h),
                 Constraint::Length(1),
+                Constraint::Length(completion_h),
                 Constraint::Fill(1),
             ])
             .areas(area);
@@ -698,6 +764,7 @@ impl App {
         self.render_rule(frame, top_rule);
         self.render_editor(frame, editor_area);
         self.render_rule(frame, bottom_rule);
+        self.completion.render(frame, completion_area, self.theme);
         self.render_footer(frame, footer_area);
     }
 
@@ -935,14 +1002,14 @@ fn parse_slash(input: &str) -> Option<Result<SlashCommand, String>> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_owned);
-    Some(match cmd {
+    Some(match cmd.to_ascii_lowercase().as_str() {
         "/model" => Ok(SlashCommand::Model(arg)),
         "/thinking" => Ok(SlashCommand::Thinking(arg)),
         "/resume" => Ok(SlashCommand::Resume(arg)),
         "/clear" => Ok(SlashCommand::Clear),
         "/quit" | "/exit" => Ok(SlashCommand::Quit),
         "/help" => Ok(SlashCommand::Help),
-        other => Err(other.to_owned()),
+        _ => Err(cmd.to_owned()),
     })
 }
 
