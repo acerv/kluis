@@ -8,6 +8,7 @@ authors.workspace = true
 
 [dependencies]
 hakoniwa.workspace = true
+indexmap.workspace = true
 nix.workspace = true
 openssl-probe.workspace = true
 rustix.workspace = true

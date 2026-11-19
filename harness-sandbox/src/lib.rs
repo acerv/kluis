@@ -32,6 +32,7 @@ use std::path::{Component, Path, PathBuf};
 
 use hakoniwa::landlock::{CompatMode, Resource, Ruleset};
 use hakoniwa::{Container, MountOptions, Rlimit, Runctl};
+use indexmap::IndexSet;
 use thiserror::Error;
 use walkdir::WalkDir;
 
@@ -55,7 +56,7 @@ enum Network {
     Any,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum MountKind {
     Bind { writable: bool },
     MaskDir,
@@ -254,7 +255,7 @@ impl Sandbox {
         }
         let all_writable: Vec<_> = all.iter().filter(|(_, w)| *w).map(|(p, _)| p).collect();
 
-        let mut ro_paths = Vec::new();
+        let mut ro_paths = IndexSet::new();
         for (root, canon_root, writable) in &canon_mounts {
             if !*writable {
                 continue;
@@ -262,11 +263,9 @@ impl Sandbox {
             for git in collect_git(root, canon_root, &all_writable, &denied_targets) {
                 // Skip `.git` entries that vanished or cannot be mounted
                 // (e.g. non-UTF-8 paths) instead of failing startup.
-                let mut found = Vec::new();
+                let mut found = IndexSet::new();
                 if resolve_read_only(&canon_mounts, &git, false, &mut found).is_ok() {
-                    for path in found {
-                        push_unique(&mut ro_paths, path);
-                    }
+                    ro_paths.extend(found);
                 }
             }
         }
@@ -297,7 +296,7 @@ impl Sandbox {
             effective.push((path.clone(), false));
         }
 
-        let mut mounts: Vec<_> = canon_mounts
+        let mut mounts: IndexSet<_> = canon_mounts
             .into_iter()
             .map(|(path, _, writable)| (path, MountKind::Bind { writable }))
             .collect();
@@ -306,10 +305,7 @@ impl Sandbox {
             // points, which cannot be moved away to free the path.
             if let Some((root, true)) = closest_ancestor(&effective, path) {
                 for dir in path.ancestors().skip(1).take_while(|d| *d != root) {
-                    let pin = (dir.to_path_buf(), MountKind::Bind { writable: true });
-                    if !mounts.contains(&pin) {
-                        mounts.push(pin);
-                    }
+                    mounts.insert((dir.to_path_buf(), MountKind::Bind { writable: true }));
                 }
             }
         }
@@ -318,7 +314,7 @@ impl Sandbox {
             // inside an existing mount touches the target on the host, which
             // fails on files owned by another user (e.g. under /usr).
             if !matches!(closest_ancestor(&effective, &path), Some((_, false))) {
-                mounts.push((path, MountKind::Bind { writable: false }));
+                mounts.insert((path, MountKind::Bind { writable: false }));
             }
         }
         for (path, is_dir) in mask_paths {
@@ -327,7 +323,7 @@ impl Sandbox {
             } else {
                 MountKind::MaskFile
             };
-            mounts.push((path, kind));
+            mounts.insert((path, kind));
         }
         mounts
             .into_iter()
@@ -346,7 +342,7 @@ impl Sandbox {
 
 /// Canonical paths and whether they are directories for existing `deny` entries.
 fn resolve_denied(deny: &[PathBuf]) -> Result<Vec<(PathBuf, bool)>, SandboxError> {
-    let mut out = Vec::new();
+    let mut out = IndexSet::new();
     for raw in deny {
         let error = |e: &dyn fmt::Display| SandboxError {
             message: format!("{}: {e}", raw.display()),
@@ -371,12 +367,9 @@ fn resolve_denied(deny: &[PathBuf]) -> Result<Vec<(PathBuf, bool)>, SandboxError
         if canon.to_str().is_none() {
             return Err(error(&"not UTF-8"));
         }
-        let entry = (canon, meta.is_dir());
-        if !out.contains(&entry) {
-            out.push(entry);
-        }
+        out.insert((canon, meta.is_dir()));
     }
-    Ok(out)
+    Ok(out.into_iter().collect())
 }
 
 /// Whether `path` or its canonical target `canon` is at or below any denied target.
@@ -403,15 +396,12 @@ fn map_denied(
     canon_mounts: &[(PathBuf, PathBuf, bool)],
     denied: &[(PathBuf, bool)],
 ) -> Vec<(PathBuf, bool)> {
-    let mut mapped = Vec::new();
+    let mut mapped = IndexSet::new();
     for (target, is_dir) in denied {
         for (mount, canon, _) in canon_mounts {
             if target != canon {
                 if let Ok(rest) = target.strip_prefix(canon) {
-                    let entry = (mount.join(rest), *is_dir);
-                    if !mapped.contains(&entry) {
-                        mapped.push(entry);
-                    }
+                    mapped.insert((mount.join(rest), *is_dir));
                 }
             }
         }
@@ -479,7 +469,7 @@ fn resolve_read_only(
     canon_mounts: &[(PathBuf, PathBuf, bool)],
     raw: &Path,
     expose_target: bool,
-    ro_paths: &mut Vec<PathBuf>,
+    ro_paths: &mut IndexSet<PathBuf>,
 ) -> Result<(), SandboxError> {
     let abs = checked(raw)?;
     let canonical = walk_symlinks(canon_mounts, &abs, ro_paths)?;
@@ -489,12 +479,12 @@ fn resolve_read_only(
     for (mount, canon, writable) in canon_mounts {
         if *writable {
             if let Ok(rest) = canonical.strip_prefix(canon) {
-                push_unique(ro_paths, mount.join(rest));
+                ro_paths.insert(mount.join(rest));
             }
         }
     }
     if expose_target {
-        push_unique(ro_paths, canonical);
+        ro_paths.insert(canonical);
     }
     Ok(())
 }
@@ -525,7 +515,7 @@ fn push_steps(queue: &mut VecDeque<Step>, path: &Path) {
 fn walk_symlinks(
     canon_mounts: &[(PathBuf, PathBuf, bool)],
     abs: &Path,
-    ro_paths: &mut Vec<PathBuf>,
+    ro_paths: &mut IndexSet<PathBuf>,
 ) -> Result<PathBuf, SandboxError> {
     const MAX_SYMLINKS: usize = 40;
     let mut cur = PathBuf::from("/");
@@ -555,7 +545,7 @@ fn walk_symlinks(
                         });
                     }
                     if let Some(dir) = writable_symlink_parent(canon_mounts, &cur) {
-                        push_unique(ro_paths, checked(&dir)?);
+                        ro_paths.insert(checked(&dir)?);
                     }
                     let target = std::fs::read_link(&next).map_err(|e| SandboxError {
                         message: format!("{}: {e}", next.display()),
@@ -588,12 +578,6 @@ fn writable_symlink_parent(
         return None;
     }
     Some(mount.join(rest))
-}
-
-fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
-    if !paths.contains(&path) {
-        paths.push(path);
-    }
 }
 
 /// Limit the virtual memory of the calling process and its children to
