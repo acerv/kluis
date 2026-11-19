@@ -1,19 +1,7 @@
 # TODO
 
-## Config file
-
-`[sandbox]` section in `~/.kluis/config.toml`:
-
-- [x] Paths to deny reading (`.ssh`, `.gnupg`, `.pi`, ...)
-- [x] Extra mount points, read-only or writable (`/etc/ssl`, ...)
-- [x] Memory limit for commands
-- [x] Process limit and `/tmp` size
-- [x] Environment variables passed to commands
-- [x] TCP ports and network access
-
 ## Sandbox
 
-- [x] Mount more of `/etc` by default (`alternatives`, `os-release`, ...)
 - [ ] Protect `.git` of new `git init`
 
 ## Compatibility
@@ -23,35 +11,32 @@
 
 ## Tools
 
-Same set as pi: `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`.
-
-- [x] `read`/`edit`: do not load huge files whole into memory
-- [x] `write`/`edit`: atomic writes (temp file + rename, keep mode)
-- [x] `edit`: return a diff for the TUI
 - [ ] `read`: images as attachments
-- [x] `bash`: save the full output to a file when truncated
-- [x] Move `path.rs` unit tests to `tests/`
+
+## Agent & Session
+
+- [ ] Default system prompt with cwd/OS context and `AGENTS.md` loading (`~/.kluis/AGENTS.md` + workspace)
+- [ ] Session persistence (`~/.kluis/sessions/`) with `--continue` / `-c` and `/resume`
+- [ ] Auto-compaction when `input_tokens` approaches the model's context limit
+- [ ] Model and thinking defaults in `~/.kluis/config.toml`
 
 ## TUI
 
-`harness-tui` (`kl` binary): inline UI (`ratatui` + `crossterm`), keeping the
-scrollback, falling back to line mode when not on a terminal.
+- [ ] Autocomplete popup for slash commands (`/`) and workspace files (`@path`)
+- [ ] `@path` expansion: attach or inline referenced files (and images) into the prompt
+- [ ] Allow typing and queuing the next prompt while the agent is busy
+- [ ] Editor: word movement (`Ctrl-Left`/`Right`, `Alt-B`/`F`), `Alt-D`, undo (`Ctrl-Z`) and `$EDITOR` (`Ctrl-G`)
+- [ ] Persistent input history across runs (`~/.kluis/history`)
+- [ ] Direct shell shortcut (`!<cmd>`) running inside the sandbox
+- [ ] Live `bash` stdout/stderr preview and elapsed timer on the spinner (`⠋ Running bash… 12s`)
+- [ ] Show hunk line numbers in `edit` diffs and expand the last tool output (`Ctrl-O`)
+- [ ] Multi-line live streaming preview above the spinner
+- [ ] Thinking effort (`off`, `low`, `medium`, `high`) via `/thinking`, keybinding and CLI/config
+- [ ] Session commands: `/compact`, `/undo`, `/retry`, `/diff`, `/copy`, `/status`, `/export`, `/resume`
+- [ ] Context window usage (`<tokens>/<limit>`) for known models in the status bar
+- [ ] Update terminal title with activity state and ring bell on long turns
+- [ ] Restore the terminal on `SIGTERM`/`SIGHUP`
 
-- [x] Event loop over keys, agent updates (channel) and the prompt
-- [x] Multiline input with history and bracketed paste
-- [x] Markdown rendering with code highlighting
-- [x] Status bar: model, sandbox mode, tokens, folder
-- [x] Ctrl-C/Esc cancels the prompt, Ctrl-D quits
-- [x] Slash commands (`/model`, `/clear`, `/quit`)
-- [x] Restore the terminal on panic, handle resize, `NO_COLOR`
-- [x] Tests with ratatui's `TestBackend`
+## Nice to have
 
-## CLI
-
-- [x] Use the TUI on a terminal, line mode otherwise
 - [ ] Check the terminal works inside the container
-- [ ] Remove `/tmp/hakoniwa-*` left behind when killed
-
-## Tests
-
-- [x] End-to-end CLI test: commands get no network and no API keys
