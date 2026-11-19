@@ -6,7 +6,8 @@ use genai::chat::{ChatMessage, ContentPart, MessageContent, ToolCall, ToolRespon
 use harness_core::tools::{Diff, DiffHunk, DiffLine};
 use harness_core::{TokenUsage, ToolDetails};
 use harness_tui::{
-    flush_scrollback, Action, AgentUpdate, App, SlashCommand, Status, Theme, VIEWPORT_HEIGHT,
+    flush_scrollback, last_assistant_text, osc52_sequence, Action, AgentUpdate, App, SlashCommand,
+    Status, Theme, VIEWPORT_HEIGHT,
 };
 use ratatui::backend::TestBackend;
 use ratatui::style::Color;
@@ -766,6 +767,7 @@ fn slash_command_autocomplete_popup_and_tab_completion() {
     assert!(screen.contains("❯ /model [name]"), "{screen}");
     assert!(screen.contains("/thinking [level]"), "{screen}");
     assert!(screen.contains("/resume [id]"), "{screen}");
+    assert!(screen.contains("/copy"), "{screen}");
     assert!(screen.contains("/new"), "{screen}");
     assert!(screen.contains("/quit"), "{screen}");
     for cell in term.backend().buffer().content() {
@@ -870,4 +872,54 @@ fn live_bash_preview_and_elapsed_spinner_timer() {
         details: None,
     });
     assert_eq!(app.viewport_height(80), VIEWPORT_HEIGHT);
+}
+
+#[test]
+fn copy_command_extracts_last_assistant_reply_and_formats_osc52() {
+    let mut app = App::new("deepseek-chat", status(), Theme::new(false));
+    app.handle_event(Event::Paste("/copy".into()));
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Slash(SlashCommand::Copy)
+    );
+
+    // Partial `/c` completes to `/copy` on Enter.
+    app.handle_event(key(KeyCode::Char('/')));
+    app.handle_event(key(KeyCode::Char('c')));
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Slash(SlashCommand::Copy)
+    );
+
+    // Empty or user-only history has nothing to copy.
+    assert_eq!(last_assistant_text(&[]), None);
+    assert_eq!(last_assistant_text(&[ChatMessage::user("hi")]), None);
+
+    // Skips trailing tool-only and reasoning-only assistant turns.
+    let history = vec![
+        ChatMessage::user("first"),
+        ChatMessage::assistant("earlier reply"),
+        ChatMessage::user("second"),
+        ChatMessage::assistant(MessageContent::from_parts(vec![
+            ContentPart::ReasoningContent("thinking...".into()),
+            ContentPart::Text("final answer".into()),
+        ])),
+        ChatMessage::assistant(MessageContent::from_parts(vec![ContentPart::ToolCall(
+            ToolCall {
+                call_id: "c1".into(),
+                fn_name: "read".into(),
+                fn_arguments: serde_json::json!({ "path": "src/main.rs" }),
+                thought_signatures: None,
+            },
+        )])),
+        ChatMessage::from(ToolResponse::new("c1", r#"{"content":"ok"}"#)),
+    ];
+    assert_eq!(
+        last_assistant_text(&history).as_deref(),
+        Some("final answer")
+    );
+
+    // OSC 52 sequence base64-encodes UTF-8 into the system clipboard (`c`).
+    assert_eq!(osc52_sequence("hello"), "\x1b]52;c;aGVsbG8=\x07");
+    assert_eq!(osc52_sequence("ciao ✓"), "\x1b]52;c;Y2lhbyDinJM=\x07");
 }

@@ -15,7 +15,7 @@ use crate::style::Theme;
 use crate::terminal::truncate_width;
 
 /// Maximum visible completion rows below the editor.
-const MAX_COMPLETION_ROWS: u16 = 6;
+const MAX_COMPLETION_ROWS: u16 = 8;
 
 struct CommandSpec {
     name: &'static str,
@@ -38,6 +38,11 @@ const COMMANDS: &[CommandSpec] = &[
         name: "/resume",
         arg: Some("[id]"),
         description: "pick or resume a saved session",
+    },
+    CommandSpec {
+        name: "/copy",
+        arg: None,
+        description: "copy last assistant reply to clipboard",
     },
     CommandSpec {
         name: "/new",

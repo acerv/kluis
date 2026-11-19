@@ -10,6 +10,7 @@
 compile_error!("harness-tui only supports Linux");
 
 mod app;
+mod clipboard;
 mod complete;
 mod history;
 mod input;
@@ -29,6 +30,7 @@ use tokio::sync::mpsc;
 use tokio::time::{interval_at, Instant, MissedTickBehavior};
 
 pub use app::{summary, Action, AgentUpdate, App, SlashCommand, VIEWPORT_HEIGHT};
+pub use clipboard::{last_assistant_text, osc52_sequence};
 pub use history::{History, MAX_HISTORY};
 pub use style::Theme;
 pub use terminal::flush_scrollback;
@@ -196,6 +198,17 @@ fn handle_slash(
 ) -> bool {
     match cmd {
         SlashCommand::Quit => return true,
+        SlashCommand::Copy => match clipboard::last_assistant_text(agent.history()) {
+            None => app.push_info("[nothing to copy]"),
+            Some(text) => match clipboard::copy(&text) {
+                Ok(()) => {
+                    let chars = text.chars().count();
+                    let unit = if chars == 1 { "char" } else { "chars" };
+                    app.push_info(format!("[copied last reply ({chars} {unit})]"));
+                }
+                Err(err) => app.push_info(format!("[copy error: {err}]")),
+            },
+        },
         SlashCommand::New => {
             agent.clear();
             app.reset_session();

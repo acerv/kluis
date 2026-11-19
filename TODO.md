@@ -34,7 +34,8 @@
 - [x] Real-time multi-line thinking and text streaming, toggled with `Ctrl-O`
 - [ ] Show hunk line numbers in `edit` diffs and expand full tool output
 - [x] Thinking effort (`default`, `low`, `medium`, `high`) via `/thinking`, keybinding and CLI/config
-- [ ] Session commands: `/compact`, `/undo`, `/retry`, `/diff`, `/copy`, `/status`, `/export`
+- [x] `/copy` command to copy last assistant reply to clipboard
+- [ ] Session commands: `/compact`, `/undo`, `/retry`, `/diff`, `/status`, `/export`
 - [ ] Context window usage (`<tokens>/<limit>`) for known models in the status bar
 - [ ] Update terminal title with activity state and ring bell on long turns
 - [ ] Restore the terminal on `SIGTERM`/`SIGHUP`
