@@ -3,7 +3,6 @@
 
 use std::ffi::OsString;
 use std::fmt;
-use std::fs::File;
 use std::io::{self, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
@@ -14,13 +13,13 @@ use std::time::Duration;
 use genai::chat::Tool;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tempfile::{Builder, NamedTempFile, TempPath};
 use tokio::io::AsyncReadExt;
 use tokio::net::unix::pipe::Receiver;
 use tokio::process::{Child, Command};
 use tokio::time::{sleep_until, Instant};
 
 use crate::error::ToolError;
-use crate::write::{create_temp, TempGuard};
 
 /// Bytes kept from the end of the output.
 pub const MAX_BASH_OUTPUT: usize = 50 * 1024;
@@ -418,18 +417,17 @@ impl Tail {
 /// Lazily created file holding the full cleaned output when truncated.
 ///
 /// Dropped without calling [`finish`](Self::finish) (e.g. on cancellation or
-/// error), its [`TempGuard`] removes the file automatically.
+/// error), its temporary file is removed automatically.
 #[derive(Default)]
 enum Spill {
     #[default]
     Idle,
     Writing {
-        file: File,
-        guard: TempGuard,
+        file: NamedTempFile,
         remaining: u64,
     },
     /// Reached [`MAX_BASH_LOG_BYTES`]; the file is closed and kept on disk.
-    Full(TempGuard),
+    Full(TempPath),
     Failed,
 }
 
@@ -439,11 +437,14 @@ impl Spill {
             return;
         }
         if matches!(self, Self::Idle) {
-            match create_temp(&std::env::temp_dir(), "harness-bash", ".log", true) {
-                Ok((file, path)) => {
+            match Builder::new()
+                .prefix("harness-bash-")
+                .suffix(".log")
+                .tempfile()
+            {
+                Ok(file) => {
                     *self = Self::Writing {
                         file,
-                        guard: TempGuard::new(path),
                         remaining: MAX_BASH_LOG_BYTES,
                     };
                 }
@@ -453,23 +454,20 @@ impl Spill {
                 }
             }
         }
-        let Self::Writing {
-            file, remaining, ..
-        } = self
-        else {
+        let Self::Writing { file, remaining } = self else {
             return;
         };
         let slice = &data[..data.len().min(*remaining as usize)];
         if file.write_all(slice).is_err() {
-            // Transitioning to Failed drops `TempGuard`, freeing `/tmp` space
-            // (e.g. on ENOSPC) instead of leaving a broken partial file.
+            // Transitioning to Failed drops the `NamedTempFile`, freeing `/tmp`
+            // space (e.g. on ENOSPC) instead of leaving a broken partial file.
             *self = Self::Failed;
             return;
         }
         *remaining -= slice.len() as u64;
         if *remaining == 0 {
-            if let Self::Writing { guard, .. } = std::mem::replace(self, Self::Failed) {
-                *self = Self::Full(guard);
+            if let Self::Writing { file, .. } = std::mem::replace(self, Self::Failed) {
+                *self = Self::Full(file.into_temp_path());
             }
         }
     }
@@ -478,21 +476,13 @@ impl Spill {
         if matches!(self, Self::Writing { .. }) {
             self.write(tail);
         }
-        let guard = match self {
-            Self::Writing { file, guard, .. } => {
-                // Close the descriptor before exposing the path.
-                drop(file);
-                guard
-            }
-            Self::Full(guard) => guard,
+        let path = match self {
+            // Close the descriptor before exposing the path.
+            Self::Writing { file, .. } => file.into_temp_path(),
+            Self::Full(path) => path,
             Self::Idle | Self::Failed => return None,
         };
-        take_utf8_path(guard)
+        path.to_str()?;
+        path.keep().ok()?.into_os_string().into_string().ok()
     }
-}
-
-fn take_utf8_path(mut guard: TempGuard) -> Option<String> {
-    let path = guard.path()?.to_str()?.to_owned();
-    guard.disarm();
-    Some(path)
 }

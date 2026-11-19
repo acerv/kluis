@@ -22,12 +22,20 @@ fn definition() {
 
 #[tokio::test]
 async fn new_and_overwrite() {
+    use std::os::unix::fs::PermissionsExt;
+
     let dir = tempfile::tempdir().unwrap();
     let f = dir.path().join("a.txt");
+    let reference = dir.path().join("ref.txt");
+    std::fs::write(&reference, "ref").unwrap();
 
     let out = call(p(&f), "hello").run().await.unwrap();
     assert_eq!(out.bytes_written, 5);
     assert_eq!(std::fs::read_to_string(&f).unwrap(), "hello");
+    assert_eq!(
+        std::fs::metadata(&f).unwrap().permissions().mode() & 0o777,
+        std::fs::metadata(&reference).unwrap().permissions().mode() & 0o777,
+    );
 
     call(p(&f), "bye").run().await.unwrap();
     assert_eq!(std::fs::read_to_string(&f).unwrap(), "bye");

@@ -3,18 +3,16 @@
 
 use std::fs::{OpenOptions, Permissions};
 use std::io::{self, ErrorKind, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use genai::chat::Tool;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tempfile::Builder;
 
 use crate::error::ToolError;
 use crate::path::resolve;
-
-static NEXT_TMP_ID: AtomicU64 = AtomicU64::new(0);
 
 /// A call of the `write` tool.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,31 +106,6 @@ impl WriteTool {
     }
 }
 
-/// Removes a temporary file if dropped before being disarmed.
-pub(crate) struct TempGuard(Option<PathBuf>);
-
-impl TempGuard {
-    pub(crate) fn new(path: PathBuf) -> Self {
-        Self(Some(path))
-    }
-
-    pub(crate) fn path(&self) -> Option<&Path> {
-        self.0.as_deref()
-    }
-
-    pub(crate) fn disarm(&mut self) -> Option<PathBuf> {
-        self.0.take()
-    }
-}
-
-impl Drop for TempGuard {
-    fn drop(&mut self) {
-        if let Some(path) = self.0.take() {
-            let _ = std::fs::remove_file(path);
-        }
-    }
-}
-
 /// Write `content` to `path` via a temporary file in the same directory and
 /// an atomic rename, preserving `existing_mode` and following symlinks on
 /// existing files.
@@ -162,65 +135,42 @@ fn atomic_write_sync(path: &Path, content: &[u8], existing_mode: Option<u32>) ->
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
 
-    let (mut file, tmp_path) =
-        match create_temp(parent, ".harness-tmp", "", existing_mode.is_some()) {
-            Ok(pair) => pair,
-            // A single writable file inside a read-only folder (e.g. a bind mount)
-            // cannot hold a sibling temp file; fall back to writing in place.
-            Err(e)
-                if existing_mode.is_some()
-                    && matches!(
-                        e.kind(),
-                        ErrorKind::PermissionDenied | ErrorKind::ReadOnlyFilesystem
-                    ) =>
-            {
-                return std::fs::write(&target, content);
-            }
-            Err(e) => return Err(e),
-        };
-    let mut guard = TempGuard::new(tmp_path);
+    let mut builder = Builder::new();
+    builder.prefix(".harness-tmp-");
+    if existing_mode.is_none() {
+        // Let open(2) apply the process umask instead of forcing 0o600.
+        builder.permissions(Permissions::from_mode(0o666));
+    }
+    let mut tmp = match builder.tempfile_in(parent) {
+        Ok(tmp) => tmp,
+        // A single writable file inside a read-only folder (e.g. a bind mount)
+        // cannot hold a sibling temp file; fall back to writing in place.
+        Err(e)
+            if existing_mode.is_some()
+                && matches!(
+                    e.kind(),
+                    ErrorKind::PermissionDenied | ErrorKind::ReadOnlyFilesystem
+                ) =>
+        {
+            return std::fs::write(&target, content);
+        }
+        Err(e) => return Err(e),
+    };
 
-    file.write_all(content)?;
+    tmp.write_all(content)?;
     if let Some(mode) = existing_mode {
         // Keep permission bits, dropping setuid/setgid/sticky like write(2).
-        file.set_permissions(Permissions::from_mode(mode & 0o0777))?;
+        tmp.as_file()
+            .set_permissions(Permissions::from_mode(mode & 0o0777))?;
     }
-    drop(file);
 
-    let tmp_path = guard.path().unwrap();
-    match std::fs::rename(tmp_path, &target) {
-        Ok(()) => {
-            guard.disarm();
-            Ok(())
-        }
+    match tmp.persist(&target) {
+        Ok(_) => Ok(()),
         // A writable single-file bind mount inside a writable folder rejects
         // rename with EBUSY; `target` was already verified writable above.
-        Err(e) if existing_mode.is_some() && e.kind() == ErrorKind::ResourceBusy => {
+        Err(e) if existing_mode.is_some() && e.error.kind() == ErrorKind::ResourceBusy => {
             std::fs::write(&target, content)
         }
-        Err(e) => Err(e),
-    }
-}
-
-pub(crate) fn create_temp(
-    dir: &Path,
-    prefix: &str,
-    suffix: &str,
-    private: bool,
-) -> io::Result<(std::fs::File, PathBuf)> {
-    let pid = std::process::id();
-    let mut opts = OpenOptions::new();
-    opts.write(true).create_new(true);
-    if private {
-        opts.mode(0o600);
-    }
-    loop {
-        let id = NEXT_TMP_ID.fetch_add(1, Ordering::Relaxed);
-        let candidate = dir.join(format!("{prefix}-{pid}-{id}{suffix}"));
-        match opts.open(&candidate) {
-            Ok(file) => return Ok((file, candidate)),
-            Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e),
-        }
+        Err(e) => Err(e.error),
     }
 }
