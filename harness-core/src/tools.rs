@@ -66,7 +66,17 @@ pub async fn run_with(call: &ToolCall, ctx: &ToolContext) -> ToolResponse {
 
 /// Like [`run_with`], also returning any UI-only [`ToolDetails`].
 pub async fn execute(call: &ToolCall, ctx: &ToolContext) -> (ToolResponse, Option<ToolDetails>) {
-    let (content, details) = match dispatch(call, ctx).await {
+    execute_streaming(call, ctx, |_| {}).await
+}
+
+/// Like [`execute`], streaming cleaned live output chunks (e.g. from `bash`)
+/// via `on_output` while the tool runs.
+pub async fn execute_streaming(
+    call: &ToolCall,
+    ctx: &ToolContext,
+    on_output: impl FnMut(&str),
+) -> (ToolResponse, Option<ToolDetails>) {
+    let (content, details) = match dispatch(call, ctx, on_output).await {
         Ok(pair) => pair,
         Err(err) => (json!({ "error": err.to_string() }).to_string(), None),
     };
@@ -77,6 +87,7 @@ pub async fn execute(call: &ToolCall, ctx: &ToolContext) -> (ToolResponse, Optio
 async fn dispatch(
     call: &ToolCall,
     ctx: &ToolContext,
+    on_output: impl FnMut(&str),
 ) -> Result<(String, Option<ToolDetails>), Error> {
     let args = &call.fn_arguments;
     let cwd = &ctx.cwd;
@@ -93,7 +104,11 @@ async fn dispatch(
         "ls" => plain(&LsTool::deserialize(args)?.run_in(cwd).await?),
         "find" => plain(&FindTool::deserialize(args)?.run_in(cwd).await?),
         "grep" => plain(&GrepTool::deserialize(args)?.run_in(cwd).await?),
-        "bash" => plain(&BashTool::deserialize(args)?.run_in(cwd, &ctx.bash).await?),
+        "bash" => plain(
+            &BashTool::deserialize(args)?
+                .run_in_streaming(cwd, &ctx.bash, on_output)
+                .await?,
+        ),
         other => Err(format!("unknown tool {other}").into()),
     }
 }

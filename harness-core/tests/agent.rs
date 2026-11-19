@@ -165,6 +165,7 @@ async fn tool_call_round_trip() {
                 Event::TextDelta(text) => format!("delta {text}"),
                 Event::Text(text) => format!("text {text}"),
                 Event::ToolCall(call) => format!("call {}", call.fn_name),
+                Event::ToolOutput(chunk) => format!("out {}", chunk.trim_end()),
                 Event::ToolResult(resp, _) => format!("result {}", resp.call_id),
             })
         })
@@ -178,6 +179,7 @@ async fn tool_call_round_trip() {
             "start",
             "end Some(15)",
             "call bash",
+            "out hi",
             "result call_1",
             "start",
             "delta ok",

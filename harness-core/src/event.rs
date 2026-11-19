@@ -27,6 +27,8 @@ pub enum Event<'a> {
     TurnEnd(Option<&'a Usage>),
     /// A tool call the model made, before it runs.
     ToolCall(&'a ToolCall),
+    /// A cleaned chunk of live output from a running tool (e.g. `bash`).
+    ToolOutput(&'a str),
     /// The result of a tool call, as sent back to the model, with optional
     /// UI-only details (such as a diff for `edit`).
     ToolResult(&'a ToolResponse, Option<&'a ToolDetails>),

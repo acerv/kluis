@@ -237,7 +237,10 @@ impl Agent {
                 let (resp, details) = if turn.truncated {
                     (error_response(call, TRUNCATED), None)
                 } else {
-                    tools::execute(call, &self.tools).await
+                    tools::execute_streaming(call, &self.tools, |chunk| {
+                        on_event(Event::ToolOutput(chunk));
+                    })
+                    .await
                 };
                 on_event(Event::ToolResult(&resp, details.as_ref()));
                 pending.answer(resp);
