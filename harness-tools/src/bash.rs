@@ -142,6 +142,17 @@ impl BashTool {
 
     /// Like [`run_with`](Self::run_with), starting the command in `cwd`.
     pub async fn run_in(self, cwd: &Path, ctx: &BashContext) -> Result<BashOutput, ToolError> {
+        self.run_in_streaming(cwd, ctx, |_| {}).await
+    }
+
+    /// Like [`run_in`](Self::run_in), calling `on_output` with each cleaned
+    /// UTF-8 chunk of stdout/stderr as it arrives.
+    pub async fn run_in_streaming(
+        self,
+        cwd: &Path,
+        ctx: &BashContext,
+        mut on_output: impl FnMut(&str),
+    ) -> Result<BashOutput, ToolError> {
         if self.timeout == Some(0) {
             return Err(ToolError::new("timeout must be >= 1"));
         }
@@ -178,7 +189,7 @@ impl BashTool {
                     match read.map_err(bash_error)? {
                         0 => pipe = None,
                         n => {
-                            filter.clean_into(&chunk[..n], &mut tail);
+                            filter.clean_into(&chunk[..n], &mut tail, &mut on_output);
                             if status.is_some() {
                                 idle = (Instant::now() + EXIT_IDLE).min(exited_at + EXIT_GRACE);
                             }
@@ -292,9 +303,15 @@ struct Filter {
 }
 
 impl Filter {
-    fn clean_into(&mut self, input: &[u8], tail: &mut Tail) {
+    fn clean_into(&mut self, input: &[u8], tail: &mut Tail, on_output: &mut impl FnMut(&str)) {
+        let start = tail.buf.len();
         for &byte in input {
             self.parser.advance(tail, byte);
+        }
+        if tail.buf.len() > start {
+            if let Ok(text) = std::str::from_utf8(&tail.buf[start..]) {
+                on_output(text);
+            }
         }
         tail.trim_batch();
     }

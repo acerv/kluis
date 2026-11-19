@@ -233,6 +233,24 @@ async fn zero_timeout_fails() {
 }
 
 #[tokio::test]
+async fn streams_cleaned_output_as_it_arrives() {
+    let mut chunks = Vec::new();
+    let out = call(r"printf '\033[32mstep1\033[0m\n'; echo err1 >&2", None)
+        .run_in_streaming(
+            std::path::Path::new("."),
+            &BashContext::default(),
+            |chunk| {
+                chunks.push(chunk.to_owned());
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(out.output, "step1\nerr1\n");
+    assert_eq!(chunks.concat(), "step1\nerr1\n");
+}
+
+#[tokio::test]
 async fn huge_timeout_means_no_limit() {
     let out = call("echo hi", Some(u64::MAX)).run().await.unwrap();
     assert_eq!(out.output, "hi\n");
