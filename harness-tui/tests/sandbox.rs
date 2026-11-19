@@ -5,7 +5,7 @@ use std::process::{Command, Output, Stdio};
 
 fn run_cli(args: &[&str]) -> Output {
     let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
-    Command::new(env!("CARGO_BIN_EXE_kl-cli"))
+    Command::new(env!("CARGO_BIN_EXE_kl"))
         .args(args)
         .env("HOME", home.path())
         .env_remove("HARNESS_CONFIG")

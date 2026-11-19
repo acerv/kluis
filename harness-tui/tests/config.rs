@@ -14,7 +14,7 @@ fn tempdir() -> TempDir {
 
 /// Run the harness with `home` as `$HOME`.
 fn run_cli(home: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_kl-cli"))
+    Command::new(env!("CARGO_BIN_EXE_kl"))
         .args(args)
         .env("HOME", home)
         .env_remove("HARNESS_CONFIG")
@@ -198,7 +198,7 @@ fn file_in_current_folder_works() {
     std::fs::create_dir(&sub).unwrap();
     std::fs::write(sub.join("config.toml"), "[sandbox]\nenv = [\"CC\"]\n").unwrap();
 
-    let out = Command::new(env!("CARGO_BIN_EXE_kl-cli"))
+    let out = Command::new(env!("CARGO_BIN_EXE_kl"))
         .args(["--config", "sub/config.toml"])
         .current_dir(cwd.path())
         .env("HOME", home.path())
@@ -245,7 +245,7 @@ fn file_behind_unmounted_link_works() {
 fn no_sandbox_uses_given_config_even_if_marker_set() {
     let home = tempdir();
     let missing = home.path().join("explicit.toml");
-    let out = Command::new(env!("CARGO_BIN_EXE_kl-cli"))
+    let out = Command::new(env!("CARGO_BIN_EXE_kl"))
         .args(["--no-sandbox", "--config", missing.to_str().unwrap()])
         .env("HOME", home.path())
         .env("HARNESS_SANDBOXED", "1")

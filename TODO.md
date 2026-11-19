@@ -34,22 +34,21 @@ Same set as pi: `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`.
 
 ## TUI
 
-New `harness-tui` library crate: inline UI (`ratatui` + `crossterm`),
-keeping the scrollback. `harness-cli` builds the `Agent` and passes it to
-`harness_tui::run(agent, status)`.
+`harness-tui` (`kl` binary): inline UI (`ratatui` + `crossterm`), keeping the
+scrollback, falling back to line mode when not on a terminal.
 
-- [ ] Event loop over keys, agent updates (channel) and the prompt
+- [x] Event loop over keys, agent updates (channel) and the prompt
 - [ ] Multiline input with history and bracketed paste
 - [ ] Markdown rendering with code highlighting
-- [ ] Status bar: model, sandbox mode, tokens, folder
-- [ ] Ctrl-C/Esc cancels the prompt, Ctrl-D quits
+- [x] Status bar: model, sandbox mode, tokens, folder
+- [x] Ctrl-C/Esc cancels the prompt, Ctrl-D quits
 - [ ] Slash commands (`/model`, `/clear`, `/quit`)
-- [ ] Restore the terminal on panic, handle resize, `NO_COLOR`
+- [x] Restore the terminal on panic, handle resize, `NO_COLOR`
 - [ ] Tests with ratatui's `TestBackend`
 
 ## CLI
 
-- [ ] Use the TUI on a terminal, line mode otherwise
+- [x] Use the TUI on a terminal, line mode otherwise
 - [ ] Check the terminal works inside the container
 - [ ] Remove `/tmp/hakoniwa-*` left behind when killed
 

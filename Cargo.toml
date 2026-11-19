@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["harness-cli", "harness-core", "harness-sandbox", "harness-tools"]
+members = [
+    "harness-core",
+    "harness-sandbox",
+    "harness-tools",
+    "harness-tui",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,9 +17,11 @@ authors = ["Andrea Cervesato <andrea.cervesato@linux.dev>"]
 harness-core = { path = "harness-core" }
 harness-sandbox = { path = "harness-sandbox" }
 harness-tools = { path = "harness-tools" }
+harness-tui = { path = "harness-tui" }
 
 genai = "0.7.5"
 clap = { version = "4", features = ["derive", "env"] }
+crossterm = "0.29"
 futures-util = { version = "0.3", default-features = false }
 globset = "0.4"
 grep-regex = "0.1"
@@ -23,6 +30,7 @@ hakoniwa = { version = "1.8", features = ["landlock"] }
 ignore = "0.4"
 libc = "0.2"
 openssl-probe = "0.2"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm_0_29", "layout-cache", "std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 similar = "3"

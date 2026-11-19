@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
-//! Tests running the real `kl-cli` binary against a local OpenAI-compatible
+//! Tests running the real `kl` binary against a local OpenAI-compatible
 //! mock server to verify what commands executed by the `bash` tool can see
 //! and do inside the sandbox.
 
@@ -72,7 +72,7 @@ fn start_mock_llm(make_cmd: impl FnOnce(u16) -> String) -> (u16, JoinHandle<Stri
     (port, handle)
 }
 
-/// Run `kl-cli` with a single `bash` tool call and return the command output.
+/// Run `kl` with a single `bash` tool call and return the command output.
 fn run_bash(
     home: &Path,
     extra_args: &[&str],
@@ -82,7 +82,7 @@ fn run_bash(
     let cwd = tempdir();
     let (llm_port, server) = start_mock_llm(make_cmd);
 
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_kl-cli"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_kl"));
     cmd.args([
         "--model",
         "genai_1::test-model",

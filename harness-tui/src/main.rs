@@ -1,34 +1,33 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
-//! Line-based command-line coding agent.
+//! Terminal coding agent with native sandboxing.
 //!
 //! ```sh
-//! kl-cli                           # interactive chat, Ctrl-D to quit
-//! kl-cli "fix the typo in README.md"   # single prompt
+//! kl                           # interactive chat, Ctrl-D to quit
+//! kl "fix the typo in README.md"   # single prompt
 //! ```
 //!
-//! genai picks the provider from the model name and reads the matching API
-//! key, e.g. `DEEPSEEK_API_KEY`. The harness runs in a hakoniwa container
-//! (see `sandbox.rs`) unless `--no-sandbox` is given. Settings may also come
-//! from a config file (see `config.rs`).
+//! Uses an inline TUI when attached to a terminal and falls back to line mode
+//! when stdin or stdout is not a terminal. genai picks the provider from the
+//! model name and reads the matching API key, e.g. `DEEPSEEK_API_KEY`. The
+//! harness runs in a hakoniwa container (see `sandbox.rs`) unless `--no-sandbox`
+//! is given. Settings may also come from a config file (see `config.rs`).
 
 mod config;
 mod sandbox;
 
-use std::io::Write;
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
 use harness_core::tools::ToolContext;
 use harness_core::{Agent, Error, Event};
+use harness_tui::{summary, Status};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-/// Longest tool argument or result shown, in characters.
-const SUMMARY_LEN: usize = 120;
-
-/// Line-based command-line coding agent.
+/// Terminal coding agent with native sandboxing.
 #[derive(Parser)]
 #[command(version)]
 pub struct Args {
@@ -167,24 +166,20 @@ async fn run(args: Args, tools: ToolContext) -> Result<(), Error> {
         return Ok(());
     }
 
-    let sandbox = if args.no_sandbox {
-        "no sandbox"
-    } else if args.strict {
-        "strict sandbox"
-    } else {
-        "sandboxed"
-    };
-    // Commands can reach the network: worth knowing.
-    let network = if args.network && !args.no_sandbox {
-        ", network"
-    } else {
-        ""
-    };
-    println!("kluis ({}, {sandbox}{network}), Ctrl-D to quit", args.model);
+    let sandbox = sandbox_label(&args);
+    if io::stdin().is_terminal() && io::stdout().is_terminal() {
+        let status = Status {
+            sandbox,
+            folder: current_folder(),
+        };
+        return harness_tui::run(agent, status).await;
+    }
+
+    println!("kluis ({}, {sandbox}), Ctrl-D to quit", args.model);
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     loop {
         print!("> ");
-        std::io::stdout().flush()?;
+        io::stdout().flush()?;
 
         let Some(line) = lines.next_line().await? else {
             println!();
@@ -202,12 +197,44 @@ async fn run(args: Args, tools: ToolContext) -> Result<(), Error> {
     }
 }
 
+fn sandbox_label(args: &Args) -> String {
+    let base = if args.no_sandbox {
+        "no sandbox"
+    } else if args.strict {
+        "strict sandbox"
+    } else {
+        "sandboxed"
+    };
+    // Commands can reach the network: worth knowing.
+    if args.network && !args.no_sandbox {
+        format!("{base}, network")
+    } else {
+        base.to_owned()
+    }
+}
+
+fn current_folder() -> String {
+    let Ok(cwd) = std::env::current_dir() else {
+        return ".".to_owned();
+    };
+    if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
+        if let Ok(rel) = cwd.strip_prefix(&home) {
+            return if rel.as_os_str().is_empty() {
+                "~".to_owned()
+            } else {
+                format!("~/{}", rel.display())
+            };
+        }
+    }
+    cwd.display().to_string()
+}
+
 fn print_event(event: Event<'_>) {
     match event {
         Event::TextDelta(text) => {
             print!("{text}");
             // Show the text as it comes, not line by line.
-            let _ = std::io::stdout().flush();
+            let _ = io::stdout().flush();
         }
         // Already printed piece by piece: end its line.
         Event::Text(_) => println!(),
@@ -218,14 +245,5 @@ fn print_event(event: Event<'_>) {
             summary(&call.fn_arguments.to_string())
         ),
         Event::ToolResult(resp, _) => println!("← {}", summary(&resp.content)),
-    }
-}
-
-/// First line of `text`, cut to [`SUMMARY_LEN`] characters.
-fn summary(text: &str) -> String {
-    let line = text.lines().next().unwrap_or_default();
-    match line.char_indices().nth(SUMMARY_LEN) {
-        Some((end, _)) => format!("{}…", &line[..end]),
-        None => line.to_owned(),
     }
 }
