@@ -8,3 +8,4 @@
 - tests must stay in a separate folder
 - make sure we don't leak any memory
 - don't duplicate code
+- after an implementation, make sure it's elegant and well written
