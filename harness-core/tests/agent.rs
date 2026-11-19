@@ -626,3 +626,50 @@ fn system_prompt_includes_context_and_truncates_large_agents_file() {
     assert!(!text.contains("empty.md"), "{text}");
     assert!(!text.contains("missing.md"), "{text}");
 }
+
+#[tokio::test]
+async fn parallel_read_only_calls_preserve_paired_events_and_order() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "alpha\n").unwrap();
+    std::fs::write(dir.path().join("b.txt"), "beta\n").unwrap();
+
+    let calls = [
+        ("c1", "read", json!({ "path": "a.txt" })),
+        ("c2", "read", json!({ "path": "b.txt" })),
+        (
+            "c3",
+            "write",
+            json!({ "path": "c.txt", "content": "gamma\n" }),
+        ),
+        ("c4", "read", json!({ "path": "c.txt" })),
+    ];
+    let model = MockModel::start(vec![tool_calls(&calls), text("all done")]).await;
+    let mut agent = Agent::with_client(model.client(), "test-model").with_executor(
+        harness_core::tools::Executor::Local(ToolContext {
+            cwd: dir.path().to_owned(),
+            ..ToolContext::default()
+        }),
+    );
+
+    let mut events = Vec::new();
+    let answer = agent
+        .prompt("inspect and write", |ev| match ev {
+            Event::ToolCall(c) => events.push(format!("call:{}", c.call_id)),
+            Event::ToolResult(r, _) => events.push(format!("res:{}", r.call_id)),
+            _ => {}
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(answer, "all done");
+    assert_eq!(
+        events,
+        vec!["call:c1", "res:c1", "call:c2", "res:c2", "call:c3", "res:c3", "call:c4", "res:c4",]
+    );
+    // `c4` ran after `c3` (mutating boundary), so it observed the newly written file.
+    let sent_tools = sent(&model.requests()[1], "tool");
+    assert_eq!(sent_tools.len(), 4);
+    assert!(sent_tools[0]["content"].as_str().unwrap().contains("alpha"));
+    assert!(sent_tools[1]["content"].as_str().unwrap().contains("beta"));
+    assert!(sent_tools[3]["content"].as_str().unwrap().contains("gamma"));
+}

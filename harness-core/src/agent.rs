@@ -16,7 +16,7 @@ use genai::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::tools::{self, ToolContext};
+use crate::tools::{self, Executor, ToolContext};
 use crate::Event;
 
 /// Error returned by the agent.
@@ -100,7 +100,7 @@ pub struct Agent {
     model: String,
     thinking: Thinking,
     req: ChatRequest,
-    tools: ToolContext,
+    executor: Executor,
 }
 
 impl Agent {
@@ -117,7 +117,7 @@ impl Agent {
             model: model.into(),
             thinking: Thinking::Default,
             req: ChatRequest::default().with_tools(tools::definitions()),
-            tools: ToolContext::default(),
+            executor: Executor::default(),
         }
     }
 
@@ -137,9 +137,15 @@ impl Agent {
         self.thinking = thinking;
     }
 
-    /// Set how tools run, e.g. a sandbox for commands.
+    /// Set the tool executor used to run model tool calls.
+    pub fn with_executor(mut self, executor: Executor) -> Self {
+        self.executor = executor;
+        self
+    }
+
+    /// Set how local tools run (shorthand for `with_executor(Executor::Local(tools))`).
     pub fn with_tool_context(mut self, tools: ToolContext) -> Self {
-        self.tools = tools;
+        self.executor = Executor::Local(tools);
         self
     }
 
@@ -232,18 +238,45 @@ impl Agent {
                 calls: &calls,
                 answered: 0,
             };
-            for call in &calls {
-                on_event(Event::ToolCall(call));
-                let (resp, details) = if turn.truncated {
-                    (error_response(call, TRUNCATED), None)
+            let mut idx = 0;
+            while idx < calls.len() {
+                // Batch consecutive read-only calls (`read`, `ls`, `find`, `grep`)
+                // and run them concurrently while emitting paired events and
+                // tool responses in original call order.
+                let batch_end = if turn.truncated {
+                    idx + 1
                 } else {
-                    tools::execute_streaming(call, &self.tools, |chunk| {
-                        on_event(Event::ToolOutput(chunk));
-                    })
-                    .await
+                    let mut end = idx;
+                    while end < calls.len() && tools::is_read_only(&calls[end].fn_name) {
+                        end += 1;
+                    }
+                    end.max(idx + 1)
                 };
-                on_event(Event::ToolResult(&resp, details.as_ref()));
-                pending.answer(resp);
+                let batch = &calls[idx..batch_end];
+                if batch.len() == 1 {
+                    let call = &batch[0];
+                    on_event(Event::ToolCall(call));
+                    let (resp, details) = if turn.truncated {
+                        (error_response(call, TRUNCATED), None)
+                    } else {
+                        self.executor
+                            .execute(call, |chunk| on_event(Event::ToolOutput(chunk)))
+                            .await
+                    };
+                    on_event(Event::ToolResult(&resp, details.as_ref()));
+                    pending.answer(resp);
+                } else {
+                    let results = futures_util::future::join_all(
+                        batch.iter().map(|call| self.executor.execute(call, |_| {})),
+                    )
+                    .await;
+                    for (call, (resp, details)) in batch.iter().zip(results) {
+                        on_event(Event::ToolCall(call));
+                        on_event(Event::ToolResult(&resp, details.as_ref()));
+                        pending.answer(resp);
+                    }
+                }
+                idx = batch_end;
             }
         }
     }

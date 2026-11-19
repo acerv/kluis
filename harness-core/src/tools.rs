@@ -5,5 +5,6 @@
 
 pub use harness_exec::{
     definitions, execute, execute_streaming, is_read_only, run, run_with, BashContext, Diff,
-    DiffHunk, DiffLine, PreExec, ToolContext, ToolDetails,
+    DiffHunk, DiffLine, ExecError, Executor, PreExec, SandboxConfig, SandboxExecutor, ToolContext,
+    ToolDetails,
 };
