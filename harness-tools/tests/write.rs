@@ -147,3 +147,87 @@ async fn relative_path_starts_at_cwd() {
         "inside"
     );
 }
+
+#[tokio::test]
+async fn atomic_overwrite_preserves_mode_and_replaces_inode() {
+    use std::fs::Permissions;
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("script.sh");
+    std::fs::write(&f, "old content").unwrap();
+    std::fs::set_permissions(&f, Permissions::from_mode(0o750)).unwrap();
+
+    let mut old_reader = std::fs::File::open(&f).unwrap();
+    let old_ino = std::fs::metadata(&f).unwrap().ino();
+
+    call(p(&f), "new content").run().await.unwrap();
+
+    let meta = std::fs::metadata(&f).unwrap();
+    assert_eq!(meta.permissions().mode() & 0o7777, 0o750);
+    assert_ne!(meta.ino(), old_ino);
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "new content");
+
+    // Existing open descriptor still sees the old inode untouched.
+    let mut old = String::new();
+    old_reader.read_to_string(&mut old).unwrap();
+    assert_eq!(old, "old content");
+
+    // No temp files left behind.
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+#[tokio::test]
+async fn follows_symlink_and_keeps_link_intact() {
+    use std::fs::Permissions;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("real.txt");
+    let link = dir.path().join("link.txt");
+    std::fs::write(&target, "before").unwrap();
+    std::fs::set_permissions(&target, Permissions::from_mode(0o600)).unwrap();
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+
+    call(p(&link), "after").run().await.unwrap();
+
+    assert!(std::fs::symlink_metadata(&link)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "after");
+    assert_eq!(
+        std::fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
+        0o600
+    );
+}
+
+#[tokio::test]
+async fn read_only_file_is_not_overwritten_and_read_only_dir_falls_back() {
+    use std::fs::Permissions;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let ro = dir.path().join("ro.txt");
+    std::fs::write(&ro, "keep").unwrap();
+    std::fs::set_permissions(&ro, Permissions::from_mode(0o444)).unwrap();
+
+    let err = call(p(&ro), "overwrite").run().await.unwrap_err();
+    assert!(err.message.contains("Permission denied"), "{err}");
+    assert_eq!(std::fs::read_to_string(&ro).unwrap(), "keep");
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+
+    // Writable file inside a read-only directory falls back to writing in place.
+    let ro_dir = dir.path().join("ro_dir");
+    std::fs::create_dir(&ro_dir).unwrap();
+    let f = ro_dir.join("writable.txt");
+    std::fs::write(&f, "before").unwrap();
+    std::fs::set_permissions(&ro_dir, Permissions::from_mode(0o555)).unwrap();
+
+    call(p(&f), "after").run().await.unwrap();
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "after");
+
+    std::fs::set_permissions(&ro_dir, Permissions::from_mode(0o755)).unwrap();
+    std::fs::set_permissions(&ro, Permissions::from_mode(0o644)).unwrap();
+}

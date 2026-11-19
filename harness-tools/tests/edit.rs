@@ -230,3 +230,22 @@ async fn relative_path_starts_at_cwd() {
     assert_eq!(out.replacements, 1);
     assert_eq!(read(&f), "new\n");
 }
+
+#[tokio::test]
+async fn preserves_mode_and_replaces_atomically() {
+    use std::fs::Permissions;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let (dir, f) = file("old\n");
+    std::fs::set_permissions(&f, Permissions::from_mode(0o755)).unwrap();
+    let old_ino = std::fs::metadata(&f).unwrap().ino();
+
+    let out = call(&f, vec![edit("old", "new")]).run().await.unwrap();
+    assert_eq!(out.replacements, 1);
+
+    let meta = std::fs::metadata(&f).unwrap();
+    assert_eq!(meta.permissions().mode() & 0o7777, 0o755);
+    assert_ne!(meta.ino(), old_ino);
+    assert_eq!(read(&f), "new\n");
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+}

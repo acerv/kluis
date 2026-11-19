@@ -26,7 +26,7 @@
 Same set as pi: `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`.
 
 - [ ] `read`/`edit`: do not load huge files whole into memory
-- [ ] `write`/`edit`: atomic writes (temp file + rename, keep mode)
+- [x] `write`/`edit`: atomic writes (temp file + rename, keep mode)
 - [ ] `edit`: return a diff for the TUI
 - [ ] `read`: images as attachments
 - [ ] `bash`: save the full output to a file when truncated

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
 use std::borrow::Cow;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use genai::chat::Tool;
@@ -10,6 +11,7 @@ use serde_json::{json, Value};
 
 use crate::error::ToolError;
 use crate::path::resolve;
+use crate::write::atomic_write;
 
 const BOM: &str = "\u{feff}";
 
@@ -117,7 +119,7 @@ impl EditTool {
         let edited = apply(&self.path, bom, text, &self.edits)?;
 
         let replacements = self.edits.len();
-        tokio::fs::write(&path, edited)
+        atomic_write(path, edited, Some(meta.permissions().mode()))
             .await
             .map_err(|e| ToolError::io(&self.path, e))?;
 
