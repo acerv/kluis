@@ -37,3 +37,4 @@ similar = "3"
 tempfile = "3"
 toml = { version = "1", default-features = false, features = ["display", "parse", "serde", "std"] }
 tokio = "1"
+tui-markdown = "0.3"

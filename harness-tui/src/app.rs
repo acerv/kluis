@@ -12,6 +12,7 @@ use ratatui::Frame;
 use serde_json::Value;
 
 use crate::input::Input;
+use crate::markdown::MarkdownStream;
 use crate::style::Theme;
 use crate::Status;
 
@@ -119,13 +120,10 @@ pub struct App {
     show_thinking: bool,
     spinner: usize,
     active_tool: Option<String>,
-    /// Current incomplete streaming text line (completed lines flush straight
-    /// to scrollback so output flows naturally above the editor).
-    live_text: String,
+    /// Incremental Markdown stream for the current assistant turn.
+    markdown: MarkdownStream,
     /// Current incomplete streaming reasoning line.
     live_reasoning: String,
-    /// Whether any `TextDelta` arrived during the current turn.
-    streamed_text: bool,
     /// Whether any reasoning lines were emitted during the current turn.
     emitted_reasoning: bool,
     input_tokens: u64,
@@ -145,9 +143,8 @@ impl App {
             show_thinking: true,
             spinner: 0,
             active_tool: None,
-            live_text: String::new(),
+            markdown: MarkdownStream::default(),
             live_reasoning: String::new(),
-            streamed_text: false,
             emitted_reasoning: false,
             input_tokens: 0,
             output_tokens: 0,
@@ -240,25 +237,17 @@ impl App {
             }
             AgentUpdate::TextDelta(delta) => {
                 self.flush_reasoning();
-                self.streamed_text = true;
-                stream_lines(
-                    &mut self.live_text,
-                    &delta,
-                    Style::default(),
-                    &mut self.scrollback,
-                );
+                self.markdown
+                    .push_delta(&delta, self.theme.color, &mut self.scrollback);
             }
             AgentUpdate::Text(text) => {
                 self.flush_reasoning();
-                if self.streamed_text {
-                    self.flush_text();
-                } else {
-                    for line in text.lines() {
-                        self.scrollback.push(Line::raw(line.to_owned()));
-                    }
+                if self
+                    .markdown
+                    .finish(Some(&text), self.theme.color, &mut self.scrollback)
+                {
+                    self.scrollback.push(Line::raw(String::new()));
                 }
-                self.scrollback.push(Line::raw(String::new()));
-                self.streamed_text = false;
             }
             AgentUpdate::TurnEnd {
                 input_tokens,
@@ -399,9 +388,8 @@ impl App {
     }
 
     fn clear_live(&mut self) {
-        self.live_text.clear();
+        self.markdown.clear();
         self.live_reasoning.clear();
-        self.streamed_text = false;
         self.emitted_reasoning = false;
     }
 
@@ -418,9 +406,11 @@ impl App {
     }
 
     fn flush_text(&mut self) {
-        if !self.live_text.is_empty() {
-            let tail = std::mem::take(&mut self.live_text);
-            self.scrollback.push(Line::raw(tail));
+        if self
+            .markdown
+            .finish(None, self.theme.color, &mut self.scrollback)
+        {
+            self.scrollback.push(Line::raw(String::new()));
         }
     }
 
@@ -464,11 +454,16 @@ impl App {
         if area.height == 0 || area.width == 0 {
             return;
         }
-        let line = if !self.live_text.is_empty() {
-            Line::raw(tail_to_width(&self.live_text, area.width as usize))
+        let width = area.width as usize;
+        let line = if let Some(md_line) = self.markdown.live_line(self.theme.color) {
+            if md_line.width() <= width {
+                md_line
+            } else {
+                Line::raw(tail_to_width(&md_line.to_string(), width))
+            }
         } else if self.show_thinking && !self.live_reasoning.is_empty() {
             Line::styled(
-                tail_to_width(&self.live_reasoning, area.width as usize),
+                tail_to_width(&self.live_reasoning, width),
                 self.theme.reasoning,
             )
         } else {

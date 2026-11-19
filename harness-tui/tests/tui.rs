@@ -293,3 +293,67 @@ fn resize_and_no_color() {
     let screen = render_text(&term);
     assert!(screen.contains("error: boom"), "{screen}");
 }
+
+#[test]
+fn markdown_rendering_and_code_highlighting() {
+    let mut app = App::new("model", status(), Theme::new(true));
+    app.start_prompt("show rust");
+    let _ = app.take_scrollback();
+
+    // Code lines inside an unclosed fence commit to scrollback as `\n` arrives,
+    // without committing a premature closing fence.
+    app.apply_update(AgentUpdate::TextDelta(
+        "# Heading\n\n- item 1\n- item 2\n\n```rust\nfn main() {\n".into(),
+    ));
+    let mid_lines = app.take_scrollback();
+    let mid_plain: String = mid_lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(mid_plain.contains("# Heading"), "{mid_plain}");
+    assert!(mid_plain.contains("item 1"), "{mid_plain}");
+    assert!(mid_plain.contains("fn main() {"), "{mid_plain}");
+    assert!(!mid_plain.ends_with("```"), "{mid_plain}");
+
+    // Finish the code block (including an empty line and 4-space indented fence inside).
+    let rest = "\n    let x = 42;\n    ```\n}\n```\n";
+    let full = format!("# Heading\n\n- item 1\n- item 2\n\n```rust\nfn main() {{\n{rest}");
+    app.apply_update(AgentUpdate::TextDelta(rest.into()));
+    app.apply_update(AgentUpdate::Text(full.clone()));
+    app.finish_prompt(Ok(()));
+
+    let mut all_lines = mid_lines;
+    all_lines.extend(app.take_scrollback());
+    let plain: String = all_lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(plain.contains("let x = 42;"), "{plain}");
+
+    // Syntax highlighting must apply non-default styles to code spans when color is enabled.
+    let has_colored_span = all_lines
+        .iter()
+        .flat_map(|l| &l.spans)
+        .any(|s| s.style.fg.is_some_and(|c| c != Color::Reset));
+    assert!(
+        has_colored_span,
+        "expected syntax-highlighted spans: {all_lines:?}"
+    );
+
+    // Under NO_COLOR, markdown rendering strips all styles and modifiers.
+    let mut plain_app = App::new("model", status(), Theme::new(false));
+    plain_app.start_prompt("show rust");
+    let _ = plain_app.take_scrollback();
+    plain_app.apply_update(AgentUpdate::Text(full));
+    plain_app.finish_prompt(Ok(()));
+    for line in plain_app.take_scrollback() {
+        assert_eq!(line.style.fg, None);
+        assert!(line.style.add_modifier.is_empty());
+        for span in line.spans {
+            assert_eq!(span.style.fg, None);
+            assert!(span.style.add_modifier.is_empty());
+        }
+    }
+}

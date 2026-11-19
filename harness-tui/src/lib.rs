@@ -11,6 +11,7 @@ compile_error!("harness-tui only supports Linux");
 
 mod app;
 mod input;
+mod markdown;
 mod style;
 mod terminal;
 

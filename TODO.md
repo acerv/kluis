@@ -39,7 +39,7 @@ scrollback, falling back to line mode when not on a terminal.
 
 - [x] Event loop over keys, agent updates (channel) and the prompt
 - [x] Multiline input with history and bracketed paste
-- [ ] Markdown rendering with code highlighting
+- [x] Markdown rendering with code highlighting
 - [x] Status bar: model, sandbox mode, tokens, folder
 - [x] Ctrl-C/Esc cancels the prompt, Ctrl-D quits
 - [x] Slash commands (`/model`, `/clear`, `/quit`)
