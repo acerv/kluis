@@ -1,6 +1,6 @@
 [package]
-name = "harness-tools"
-description = "Minimal serde-friendly tools for LLM harnesses"
+name = "harness-exec"
+description = "Tools and sandboxed tool executor for LLM harnesses"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

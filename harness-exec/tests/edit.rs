@@ -6,7 +6,7 @@ mod common;
 use std::path::Path;
 
 use common::p;
-use harness_tools::{DiffHunk, DiffLine, Edit, EditTool, MAX_DIFF_BYTES, MAX_EDIT_BYTES};
+use harness_exec::{DiffHunk, DiffLine, Edit, EditTool, MAX_DIFF_BYTES, MAX_EDIT_BYTES};
 
 fn edit(old: &str, new: &str) -> Edit {
     Edit {

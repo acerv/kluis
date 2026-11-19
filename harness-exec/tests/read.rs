@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use common::p;
-use harness_tools::{ReadTool, DEFAULT_READ_LIMIT, MAX_READ_BYTES};
+use harness_exec::{ReadTool, DEFAULT_READ_LIMIT, MAX_READ_BYTES};
 
 fn call(path: &Path, offset: Option<usize>, limit: Option<usize>) -> ReadTool {
     ReadTool {

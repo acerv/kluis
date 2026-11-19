@@ -11,7 +11,7 @@
 //! Only Linux is supported.
 
 #[cfg(not(target_os = "linux"))]
-compile_error!("harness-tools only supports Linux");
+compile_error!("harness-exec only supports Linux");
 
 mod bash;
 mod diff;

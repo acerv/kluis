@@ -6,7 +6,7 @@ mod common;
 use std::path::Path;
 
 use common::p;
-use harness_tools::{FindTool, MAX_FIND_BYTES};
+use harness_exec::{FindTool, MAX_FIND_BYTES};
 
 fn call(pattern: &str, path: &Path) -> FindTool {
     FindTool {

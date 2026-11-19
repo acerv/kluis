@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use harness_tools::{
+use harness_exec::{
     BashContext, BashTool, DEFAULT_BASH_TIMEOUT, MAX_BASH_LINES, MAX_BASH_LOG_BYTES,
     MAX_BASH_OUTPUT,
 };

@@ -7,7 +7,7 @@ use std::fs::Permissions;
 use std::os::unix::fs::PermissionsExt;
 
 use common::p;
-use harness_tools::{LsTool, MAX_LS_BYTES};
+use harness_exec::{LsTool, MAX_LS_BYTES};
 
 fn call(path: impl Into<String>) -> LsTool {
     LsTool {

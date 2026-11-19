@@ -6,7 +6,7 @@ mod common;
 use std::path::Path;
 
 use common::p;
-use harness_tools::{GrepTool, MAX_GREP_BYTES, MAX_GREP_LINE_CHARS};
+use harness_exec::{GrepTool, MAX_GREP_BYTES, MAX_GREP_LINE_CHARS};
 
 fn call(pattern: &str, path: &Path) -> GrepTool {
     GrepTool {

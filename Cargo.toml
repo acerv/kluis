@@ -2,8 +2,8 @@
 resolver = "2"
 members = [
     "harness-core",
+    "harness-exec",
     "harness-sandbox",
-    "harness-tools",
     "harness-tui",
 ]
 
@@ -15,8 +15,8 @@ authors = ["Andrea Cervesato <andrea.cervesato@linux.dev>"]
 
 [workspace.dependencies]
 harness-core = { path = "harness-core" }
+harness-exec = { path = "harness-exec" }
 harness-sandbox = { path = "harness-sandbox" }
-harness-tools = { path = "harness-tools" }
 harness-tui = { path = "harness-tui" }
 
 genai = "0.7.5"

@@ -4,7 +4,7 @@
 mod common;
 
 use common::p;
-use harness_tools::WriteTool;
+use harness_exec::WriteTool;
 
 fn call(path: impl Into<String>, content: &str) -> WriteTool {
     WriteTool {

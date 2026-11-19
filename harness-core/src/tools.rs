@@ -6,11 +6,11 @@
 use std::path::PathBuf;
 
 use genai::chat::{Tool, ToolCall, ToolResponse};
-use harness_tools::{BashTool, EditTool, FindTool, GrepTool, LsTool, ReadTool, WriteTool};
+use harness_exec::{BashTool, EditTool, FindTool, GrepTool, LsTool, ReadTool, WriteTool};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-pub use harness_tools::{BashContext, Diff, DiffHunk, DiffLine, PreExec};
+pub use harness_exec::{BashContext, Diff, DiffHunk, DiffLine, PreExec};
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
