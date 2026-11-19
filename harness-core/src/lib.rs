@@ -13,3 +13,4 @@ pub mod tools;
 
 pub use agent::{Agent, Error, DEFAULT_MAX_TURNS};
 pub use event::Event;
+pub use tools::ToolDetails;

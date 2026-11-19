@@ -112,8 +112,8 @@ impl Agent {
             };
             for call in &calls {
                 on_event(Event::ToolCall(call));
-                let resp = tools::run_with(call, &self.tools).await;
-                on_event(Event::ToolResult(&resp));
+                let (resp, details) = tools::execute(call, &self.tools).await;
+                on_event(Event::ToolResult(&resp, details.as_ref()));
                 pending.answer(resp);
             }
         }

@@ -217,7 +217,7 @@ fn print_event(event: Event<'_>) {
             call.fn_name,
             summary(&call.fn_arguments.to_string())
         ),
-        Event::ToolResult(resp) => println!("← {}", summary(&resp.content)),
+        Event::ToolResult(resp, _) => println!("← {}", summary(&resp.content)),
     }
 }
 

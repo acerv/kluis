@@ -27,7 +27,7 @@ Same set as pi: `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`.
 
 - [x] `read`/`edit`: do not load huge files whole into memory
 - [x] `write`/`edit`: atomic writes (temp file + rename, keep mode)
-- [ ] `edit`: return a diff for the TUI
+- [x] `edit`: return a diff for the TUI
 - [ ] `read`: images as attachments
 - [ ] `bash`: save the full output to a file when truncated
 - [x] Move `path.rs` unit tests to `tests/`

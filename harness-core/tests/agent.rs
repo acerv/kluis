@@ -10,7 +10,7 @@ use common::{text, thinking, tool_calls, MockModel, Reply};
 use genai::adapter::AdapterKind;
 use genai::chat::{ChatMessage, ChatRole};
 use harness_core::tools::ToolContext;
-use harness_core::{Agent, Event};
+use harness_core::{Agent, Event, ToolDetails};
 use serde_json::{json, Value};
 use tokio::sync::Notify;
 
@@ -109,7 +109,7 @@ async fn tool_call_round_trip() {
                 Event::TextDelta(text) => format!("delta {text}"),
                 Event::Text(text) => format!("text {text}"),
                 Event::ToolCall(call) => format!("call {}", call.fn_name),
-                Event::ToolResult(resp) => format!("result {}", resp.call_id),
+                Event::ToolResult(resp, _) => format!("result {}", resp.call_id),
             })
         })
         .await
@@ -371,4 +371,43 @@ async fn reasoning_goes_back_to_providers_needing_it() {
 async fn reasoning_stays_out_for_other_providers() {
     let message = reasoning_sent_back(AdapterKind::OpenAI).await;
     assert!(message.get("reasoning_content").is_none(), "{message}");
+}
+
+#[tokio::test]
+async fn edit_tool_emits_diff_details_without_sending_to_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "hello\n").unwrap();
+
+    let call = (
+        "call_1",
+        "edit",
+        json!({ "path": "a.txt", "edits": [{ "oldText": "hello", "newText": "world" }] }),
+    );
+    let model = MockModel::start(vec![tool_calls(&[call]), text("done")]).await;
+    let mut agent = agent(&model, dir.path());
+
+    let mut seen_details = Vec::new();
+    let answer = agent
+        .prompt("change it", |event| {
+            if let Event::ToolResult(_, details) = event {
+                seen_details.push(details.cloned());
+            }
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(answer, "done");
+    assert_eq!(seen_details.len(), 1);
+    let Some(ToolDetails::Edit(diff)) = &seen_details[0] else {
+        panic!("expected edit diff details, got {:?}", seen_details[0]);
+    };
+    assert_eq!(diff.first_changed_line, Some(1));
+    assert_eq!(diff.to_string(), "@@ -1 +1 @@\n-hello\n+world\n");
+
+    // The model only receives the compact JSON output, not the UI diff.
+    let tool_msgs = sent(&model.requests()[1], "tool");
+    assert_eq!(tool_msgs.len(), 1);
+    let payload: Value = serde_json::from_str(tool_msgs[0]["content"].as_str().unwrap()).unwrap();
+    assert_eq!(payload, json!({ "replacements": 1 }));
 }

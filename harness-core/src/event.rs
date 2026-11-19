@@ -5,6 +5,8 @@
 
 use genai::chat::{ToolCall, ToolResponse, Usage};
 
+use crate::tools::ToolDetails;
+
 /// Progress reported by [`Agent::prompt`](crate::Agent::prompt).
 ///
 /// Events borrow from the agent's history to avoid copies; clone what you
@@ -25,6 +27,7 @@ pub enum Event<'a> {
     TurnEnd(Option<&'a Usage>),
     /// A tool call the model made, before it runs.
     ToolCall(&'a ToolCall),
-    /// The result of a tool call, as sent back to the model.
-    ToolResult(&'a ToolResponse),
+    /// The result of a tool call, as sent back to the model, with optional
+    /// UI-only details (such as a diff for `edit`).
+    ToolResult(&'a ToolResponse, Option<&'a ToolDetails>),
 }
