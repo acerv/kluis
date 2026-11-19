@@ -15,7 +15,6 @@ fn status() -> Status {
     Status {
         sandbox: "sandboxed".into(),
         folder: "~/project".into(),
-        git_branch: Some("main".into()),
     }
 }
 
@@ -57,32 +56,40 @@ fn render_text(terminal: &Terminal<TestBackend>) -> String {
 }
 
 #[test]
-fn footer_shows_folder_branch_sandbox_tokens_and_model() {
+fn footer_shows_sandbox_folder_model_and_scaled_tokens() {
     let mut term = inline_terminal(80, 14);
     let mut app = App::new("deepseek-chat", status(), Theme::new(true));
 
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
-    assert!(screen.contains("~/project (main)"), "{screen}");
-    assert!(screen.contains("sandboxed"), "{screen}");
-    assert!(screen.contains("↑0 ↓0"), "{screen}");
-    assert!(screen.contains("deepseek-chat"), "{screen}");
-    // Editor is framed by horizontal rules.
+    assert!(screen.contains("sandboxed · ~/project"), "{screen}");
+    assert!(screen.contains("deepseek-chat · 0"), "{screen}");
     assert!(screen.contains("────────"), "{screen}");
 
+    // 1,200 + 300 = 1,500 -> 1.5K
     app.apply_update(AgentUpdate::TurnEnd {
-        input_tokens: 120,
-        output_tokens: 45,
+        input_tokens: 1_200,
+        output_tokens: 300,
     });
     app.set_model("gpt-4o");
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
-    let model_pos = screen.find("gpt-4o").expect("model in footer");
-    let tokens_pos = screen.find("↑120 ↓45").expect("tokens in footer");
-    assert!(
-        model_pos < tokens_pos,
-        "model should precede tokens: {screen}"
-    );
+    let left_pos = screen
+        .find("gpt-4o · 1.5K")
+        .expect("model · tokens in footer");
+    let right_pos = screen
+        .find("sandboxed · ~/project")
+        .expect("sandbox · folder in footer");
+    assert!(left_pos < right_pos, "{screen}");
+
+    // +2,350,000 -> 2,351,500 -> 2.3M
+    app.apply_update(AgentUpdate::TurnEnd {
+        input_tokens: 2_000_000,
+        output_tokens: 350_000,
+    });
+    term.draw(|f| app.render(f)).unwrap();
+    let screen = render_text(&term);
+    assert!(screen.contains("gpt-4o · 2.3M"), "{screen}");
 }
 
 #[test]

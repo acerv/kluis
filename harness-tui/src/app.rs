@@ -35,8 +35,8 @@ const MAX_EDITOR_ROWS: u16 = 8;
 
 /// Non-editor chrome rows in the inline viewport:
 /// 1 live streaming line + 1 status/spinner line + top rule + bottom rule +
-/// 2 footer lines.
-const CHROME_ROWS: u16 = 6;
+/// 1 footer line.
+const CHROME_ROWS: u16 = 5;
 
 /// Initial height of the inline viewport (1-row editor + chrome).
 pub const VIEWPORT_HEIGHT: u16 = CHROME_ROWS + 1;
@@ -569,32 +569,23 @@ impl App {
             return;
         }
         let width = area.width as usize;
+        let tokens = format_tokens(self.input_tokens.saturating_add(self.output_tokens));
+        let dot = " · ";
+        let right = format!("{} · {}", self.status.sandbox, self.status.folder);
+        let left_w = Span::raw(self.model.as_str()).width()
+            + Span::raw(dot).width()
+            + Span::raw(tokens.as_str()).width();
+        let right_w = Span::raw(right.as_str()).width();
+        let gap = width.saturating_sub(left_w + right_w).max(2);
 
-        let left_top = match &self.status.git_branch {
-            Some(branch) => format!("{} ({branch})", self.status.folder),
-            None => self.status.folder.clone(),
-        };
-        let row1 = split_footer_line(
-            &left_top,
-            self.theme.status_bar,
-            &self.status.sandbox,
-            self.theme.status_bar,
-            width,
-        );
-
-        let tokens = format!("↑{} ↓{}", self.input_tokens, self.output_tokens);
-        let row2 = Line::from(vec![
+        let line = Line::from(vec![
             Span::styled(self.model.clone(), self.theme.status_accent),
-            Span::styled("  ", self.theme.status_bar),
+            Span::styled(dot, self.theme.status_bar),
             Span::styled(tokens, self.theme.status_bar),
+            Span::raw(" ".repeat(gap)),
+            Span::styled(right, self.theme.status_bar),
         ]);
-
-        let lines = if area.height >= 2 {
-            vec![row1, row2]
-        } else {
-            vec![row2]
-        };
-        frame.render_widget(Paragraph::new(lines), area);
+        frame.render_widget(Paragraph::new(line), area);
     }
 }
 
@@ -791,28 +782,24 @@ fn render_diff(diff: &Diff, theme: Theme, out: &mut Vec<Line<'static>>) {
     }
 }
 
-fn split_footer_line(
-    left: &str,
-    left_style: Style,
-    right: &str,
-    right_style: Style,
-    width: usize,
-) -> Line<'static> {
-    let left_w = Span::raw(left).width();
-    let right_w = Span::raw(right).width();
-    let gap = width.saturating_sub(left_w + right_w);
-    if gap >= 2 {
-        Line::from(vec![
-            Span::styled(left.to_owned(), left_style),
-            Span::raw(" ".repeat(gap)),
-            Span::styled(right.to_owned(), right_style),
-        ])
+fn format_tokens(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        format_scaled(tokens, 100_000, 'M')
+    } else if tokens >= 1_000 {
+        format_scaled(tokens, 100, 'K')
     } else {
-        Line::from(vec![
-            Span::styled(left.to_owned(), left_style),
-            Span::raw("  "),
-            Span::styled(right.to_owned(), right_style),
-        ])
+        tokens.to_string()
+    }
+}
+
+fn format_scaled(tokens: u64, tenth_unit: u64, suffix: char) -> String {
+    let tenths = tokens / tenth_unit;
+    let whole = tenths / 10;
+    let frac = tenths % 10;
+    if frac == 0 {
+        format!("{whole}{suffix}")
+    } else {
+        format!("{whole}.{frac}{suffix}")
     }
 }
 

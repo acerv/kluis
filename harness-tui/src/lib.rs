@@ -36,8 +36,6 @@ pub struct Status {
     pub sandbox: String,
     /// Working folder label shown in the status bar.
     pub folder: String,
-    /// Current git branch when inside a repository.
-    pub git_branch: Option<String>,
 }
 
 /// Run the interactive inline TUI until the user quits (`Ctrl-D` or `/quit`).
