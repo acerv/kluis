@@ -10,7 +10,9 @@ use common::{text, thinking, tool_calls, MockModel, Reply};
 use genai::adapter::AdapterKind;
 use genai::chat::{ChatMessage, ChatRole};
 use harness_core::tools::ToolContext;
-use harness_core::{Agent, Event, ToolDetails};
+use harness_core::{
+    find_agents_files, system_prompt, Agent, Event, ToolDetails, AGENTS_FILE, MAX_AGENTS_BYTES,
+};
 use serde_json::{json, Value};
 use tokio::sync::Notify;
 
@@ -438,4 +440,88 @@ async fn edit_tool_emits_diff_details_without_sending_to_model() {
     assert_eq!(tool_msgs.len(), 1);
     let payload: Value = serde_json::from_str(tool_msgs[0]["content"].as_str().unwrap()).unwrap();
     assert_eq!(payload, json!({ "replacements": 1 }));
+}
+
+#[tokio::test]
+async fn system_prompt_sent_and_preserved_across_clear() {
+    let model = MockModel::start(vec![text("one"), text("two")]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = agent(&model, dir.path()).with_system("be concise");
+    assert_eq!(agent.system(), Some("be concise"));
+
+    assert_eq!(prompt(&mut agent, "first").await.unwrap(), "one");
+    agent.clear();
+    assert_eq!(agent.system(), Some("be concise"));
+    assert_eq!(prompt(&mut agent, "second").await.unwrap(), "two");
+
+    let reqs = model.requests();
+    for req in &reqs {
+        let sys = sent(req, "system");
+        assert_eq!(sys.len(), 1);
+        assert_eq!(sys[0]["content"], "be concise");
+    }
+}
+
+#[test]
+fn find_agents_files_orders_global_repo_root_and_subdir_and_deduplicates() {
+    let tmp = tempfile::tempdir().unwrap();
+    let global_dir = tmp.path().join("home");
+    let repo = tmp.path().join("repo");
+    let sub = repo.join("crates").join("pkg");
+    std::fs::create_dir_all(&global_dir).unwrap();
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    std::fs::create_dir_all(&sub).unwrap();
+
+    // An AGENTS.md above the git root must NOT be picked up.
+    std::fs::write(tmp.path().join(AGENTS_FILE), "outside repo").unwrap();
+    let global = global_dir.join(AGENTS_FILE);
+    let root_agents = repo.join(AGENTS_FILE);
+    let sub_agents = sub.join(AGENTS_FILE);
+    std::fs::write(&global, "global rules").unwrap();
+    std::fs::write(&root_agents, "repo rules").unwrap();
+    std::fs::write(&sub_agents, "subdir rules").unwrap();
+
+    let found = find_agents_files(&sub, Some(&global));
+    assert_eq!(found, vec![global.clone(), root_agents, sub_agents]);
+
+    // When cwd is the global directory itself, the file is only listed once.
+    let dedup = find_agents_files(&global_dir, Some(&global));
+    assert_eq!(dedup, vec![global]);
+
+    // Outside a git repo, only cwd/AGENTS.md is checked (not parent folders).
+    let non_git_parent = tmp.path().join("plain");
+    let non_git_child = non_git_parent.join("child");
+    std::fs::create_dir_all(&non_git_child).unwrap();
+    std::fs::write(non_git_parent.join(AGENTS_FILE), "parent").unwrap();
+    assert!(find_agents_files(&non_git_child, None).is_empty());
+}
+
+#[test]
+fn system_prompt_includes_context_and_truncates_large_agents_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path();
+    let empty = cwd.join("empty.md");
+    let rules = cwd.join(AGENTS_FILE);
+    let huge = cwd.join("huge.md");
+    std::fs::write(&empty, "   \n\t\n").unwrap();
+    std::fs::write(&rules, "- format code\n- run clippy\n").unwrap();
+    // Place a 3-byte UTF-8 character straddling the MAX_AGENTS_BYTES boundary.
+    let mut big = "a".repeat(MAX_AGENTS_BYTES - 1);
+    big.push('…');
+    big.push_str("tail");
+    std::fs::write(&huge, big).unwrap();
+
+    let missing = cwd.join("missing.md");
+    let text = system_prompt(cwd, &[missing, empty, rules.clone(), huge.clone()]);
+
+    assert!(text.contains(&cwd.display().to_string()), "{text}");
+    assert!(text.contains("OS: linux"), "{text}");
+    assert!(text.contains("## Instructions"), "{text}");
+    assert!(text.contains(&rules.display().to_string()), "{text}");
+    assert!(text.contains("- format code"), "{text}");
+    assert!(text.contains(&huge.display().to_string()), "{text}");
+    assert!(text.contains("… (truncated)"), "{text}");
+    assert!(!text.contains("tail"), "{text}");
+    assert!(!text.contains("empty.md"), "{text}");
+    assert!(!text.contains("missing.md"), "{text}");
 }

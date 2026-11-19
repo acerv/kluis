@@ -51,6 +51,19 @@ impl Agent {
         self
     }
 
+    /// Set the system prompt sent with every request. An empty string clears
+    /// it.
+    pub fn with_system(mut self, system: impl Into<String>) -> Self {
+        let system = system.into();
+        self.req.system = (!system.is_empty()).then_some(system);
+        self
+    }
+
+    /// The system prompt currently configured for requests, if any.
+    pub fn system(&self) -> Option<&str> {
+        self.req.system.as_deref()
+    }
+
     /// The model name currently used for requests.
     pub fn model(&self) -> &str {
         &self.model
