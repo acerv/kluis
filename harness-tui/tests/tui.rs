@@ -4,7 +4,7 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use genai::chat::{ChatMessage, ContentPart, MessageContent, ToolCall, ToolResponse};
 use harness_core::tools::{Diff, DiffHunk, DiffLine};
-use harness_core::ToolDetails;
+use harness_core::{TokenUsage, ToolDetails};
 use harness_tui::{
     flush_scrollback, Action, AgentUpdate, App, SlashCommand, Status, Theme, VIEWPORT_HEIGHT,
 };
@@ -76,33 +76,39 @@ fn footer_shows_sandbox_folder_model_and_scaled_tokens() {
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
     assert!(screen.contains("sandboxed · ~/project"), "{screen}");
-    assert!(screen.contains("deepseek-chat (default) · 0"), "{screen}");
+    assert!(
+        screen.contains("deepseek-chat (default) · ↑0 in ↓0 out ↻0 cached"),
+        "{screen}"
+    );
     assert!(screen.contains("────────"), "{screen}");
 
-    // 1,200 + 300 = 1,500 -> 1.5K
-    app.apply_update(AgentUpdate::TurnEnd {
-        input_tokens: 1_200,
-        output_tokens: 300,
-    });
+    app.apply_update(AgentUpdate::TurnEnd(TokenUsage {
+        input: 1_200,
+        output: 300,
+        cached: 800,
+    }));
     app.set_model("gpt-4o");
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
     let left_pos = screen
-        .find("gpt-4o (default) · 1.5K")
+        .find("gpt-4o (default) · ↑1.2K in ↓300 out ↻800 cached")
         .expect("model (thinking) · tokens in footer");
     let right_pos = screen
         .find("sandboxed · ~/project")
         .expect("sandbox · folder in footer");
     assert!(left_pos < right_pos, "{screen}");
 
-    // +2,350,000 -> 2,351,500 -> 2.3M
-    app.apply_update(AgentUpdate::TurnEnd {
-        input_tokens: 2_000_000,
-        output_tokens: 350_000,
-    });
+    app.apply_update(AgentUpdate::TurnEnd(TokenUsage {
+        input: 2_000_000,
+        output: 350_000,
+        cached: 1_500_000,
+    }));
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
-    assert!(screen.contains("gpt-4o (default) · 2.3M"), "{screen}");
+    assert!(
+        screen.contains("gpt-4o (default) · ↑2M in ↓350.3K out ↻1.5M cached"),
+        "{screen}"
+    );
 }
 
 #[test]
@@ -462,7 +468,11 @@ fn markdown_rendering_and_code_highlighting() {
 fn replay_history_and_restore_tokens() {
     let mut term = inline_terminal(80, 14);
     let mut app = App::new("deepseek-chat", status(), Theme::new(true));
-    app.set_tokens(1_200, 300);
+    app.set_tokens(TokenUsage {
+        input: 1_200,
+        output: 300,
+        cached: 800,
+    });
 
     let history = vec![
         ChatMessage::user("check main"),
@@ -494,7 +504,7 @@ fn replay_history_and_restore_tokens() {
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
     assert!(
-        screen.contains("deepseek-chat (default) · 1.5K"),
+        screen.contains("deepseek-chat (default) · ↑1.2K in ↓300 out ↻800 cached"),
         "{screen}"
     );
 }
@@ -716,7 +726,10 @@ fn thinking_effort_slash_keybinding_and_footer() {
 
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
-    assert!(screen.contains("claude-sonnet-4-5 (low) · 0"), "{screen}");
+    assert!(
+        screen.contains("claude-sonnet-4-5 (low) · ↑0 in ↓0 out ↻0 cached"),
+        "{screen}"
+    );
     assert!(screen.contains("Thinking: low"), "{screen}");
 
     // Footer model color changes by thinking effort when color is enabled.

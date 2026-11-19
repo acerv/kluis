@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use genai::chat::ChatMessage;
 use harness_core::{
-    Agent, Error, SessionData, SessionStore, SessionSummary, SessionWriter, Thinking,
+    Agent, Error, SessionData, SessionStore, SessionSummary, SessionWriter, Thinking, TokenUsage,
 };
 use tokio::sync::mpsc;
 use tokio::time::{interval_at, Instant, MissedTickBehavior};
@@ -50,32 +50,22 @@ pub struct Status {
 pub struct Session {
     store: SessionStore,
     writer: SessionWriter,
-    initial_tokens: (u64, u64),
+    initial_tokens: TokenUsage,
 }
 
 impl Session {
-    pub fn new(
-        store: SessionStore,
-        writer: SessionWriter,
-        input_tokens: u64,
-        output_tokens: u64,
-    ) -> Self {
+    pub fn new(store: SessionStore, writer: SessionWriter, initial_tokens: TokenUsage) -> Self {
         Self {
             store,
             writer,
-            initial_tokens: (input_tokens, output_tokens),
+            initial_tokens,
         }
     }
 
     /// Persist messages added during a prompt and any accumulated token usage.
-    pub fn record_prompt(
-        &mut self,
-        messages: &[ChatMessage],
-        input_tokens: u64,
-        output_tokens: u64,
-    ) -> io::Result<()> {
+    pub fn record_prompt(&mut self, messages: &[ChatMessage], usage: TokenUsage) -> io::Result<()> {
         self.writer.append_messages(messages)?;
-        self.writer.append_usage(input_tokens, output_tokens)
+        self.writer.append_usage(usage)
     }
 
     /// Persist a model change.
@@ -101,14 +91,14 @@ impl Session {
     /// append to it.
     pub fn activate(&mut self, data: &SessionData) {
         self.writer = self.store.open(data);
-        self.initial_tokens = (data.input_tokens, data.output_tokens);
+        self.initial_tokens = data.usage;
     }
 
     /// Start a fresh lazy session file (e.g. after `/new`), leaving the
     /// previous session file intact on disk.
     pub fn rotate(&mut self, model: &str) {
         self.writer = self.store.create(model);
-        self.initial_tokens = (0, 0);
+        self.initial_tokens = TokenUsage::default();
     }
 }
 
@@ -134,7 +124,7 @@ pub async fn run(mut agent: Agent, status: Status, opts: RunOptions) -> Result<(
         app.set_history(h.entries());
     }
     if let Some(ref s) = session {
-        app.set_tokens(s.initial_tokens.0, s.initial_tokens.1);
+        app.set_tokens(s.initial_tokens);
     }
     if !agent.history().is_empty() {
         app.push_info(format!(
@@ -282,7 +272,7 @@ fn resume_session(id: &str, agent: &mut Agent, app: &mut App, session: Option<&m
     session.activate(&data);
     agent.set_model(&data.meta.model);
     app.set_model(&data.meta.model);
-    app.set_tokens(data.input_tokens, data.output_tokens);
+    app.set_tokens(data.usage);
     agent.set_history(data.messages);
     let short = data.meta.id.get(..15).unwrap_or(&data.meta.id);
     app.push_info(format!(
@@ -307,7 +297,7 @@ async fn run_turn(
     let mut cancelled = false;
     let mut quit = false;
     let mut outcome: Option<Result<String, Error>> = None;
-    let mut prompt_usage = (0u64, 0u64);
+    let mut prompt_usage = TokenUsage::default();
 
     // Scope `prompt_fut` so dropping it on exit runs `Agent::prompt`'s cancel
     // cleanup and closes `tx` before we drain `rx`.
@@ -372,7 +362,7 @@ async fn run_turn(
 
     if let Some(session) = session {
         let added = &agent.history()[prev_len..];
-        if let Err(err) = session.record_prompt(added, prompt_usage.0, prompt_usage.1) {
+        if let Err(err) = session.record_prompt(added, prompt_usage) {
             app.push_info(format!("[session save error: {err}]"));
         }
     }
@@ -419,7 +409,7 @@ fn drain_updates(
     first: AgentUpdate,
     rx: &mut mpsc::UnboundedReceiver<AgentUpdate>,
     app: &mut App,
-    prompt_usage: &mut (u64, u64),
+    prompt_usage: &mut TokenUsage,
 ) {
     let mut pending = first;
     while let Ok(next) = rx.try_recv() {
@@ -437,14 +427,9 @@ fn drain_updates(
     apply_and_track(pending, app, prompt_usage);
 }
 
-fn apply_and_track(update: AgentUpdate, app: &mut App, prompt_usage: &mut (u64, u64)) {
-    if let AgentUpdate::TurnEnd {
-        input_tokens,
-        output_tokens,
-    } = &update
-    {
-        prompt_usage.0 = prompt_usage.0.saturating_add(*input_tokens);
-        prompt_usage.1 = prompt_usage.1.saturating_add(*output_tokens);
+fn apply_and_track(update: AgentUpdate, app: &mut App, prompt_usage: &mut TokenUsage) {
+    if let AgentUpdate::TurnEnd(usage) = update {
+        *prompt_usage += usage;
     }
     app.apply_update(update);
 }

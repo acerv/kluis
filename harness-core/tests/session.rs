@@ -8,9 +8,12 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 
 use common::{text, MockModel};
-use genai::chat::{ChatMessage, ChatRole, ContentPart, MessageContent, ToolCall, ToolResponse};
+use genai::chat::{
+    ChatMessage, ChatRole, ContentPart, MessageContent, PromptTokensDetails, ToolCall,
+    ToolResponse, Usage,
+};
 use harness_core::tools::ToolContext;
-use harness_core::{Agent, SessionStore};
+use harness_core::{Agent, SessionStore, TokenUsage};
 use serde_json::json;
 
 #[test]
@@ -21,7 +24,13 @@ fn lazy_writer_creates_no_file_until_first_message() {
 
     let mut writer = store.create("deepseek-chat");
     writer.append_model("gpt-4o").unwrap();
-    writer.append_usage(10, 5).unwrap();
+    writer
+        .append_usage(TokenUsage {
+            input: 10,
+            output: 5,
+            cached: 2,
+        })
+        .unwrap();
     assert!(!writer.path().exists());
     assert!(store.latest().unwrap().is_none());
 
@@ -71,15 +80,33 @@ fn round_trip_preserves_messages_tools_reasoning_usage_and_model() {
             final_turn,
         ])
         .unwrap();
-    writer.append_usage(1_200, 350).unwrap();
+    writer
+        .append_usage(TokenUsage {
+            input: 1_200,
+            output: 350,
+            cached: 400,
+        })
+        .unwrap();
     writer.append_model("claude-sonnet-4-5").unwrap();
-    writer.append_usage(800, 150).unwrap();
+    writer
+        .append_usage(TokenUsage {
+            input: 800,
+            output: 150,
+            cached: 600,
+        })
+        .unwrap();
 
     let loaded = store.latest().unwrap().expect("session");
     assert_eq!(loaded.meta.id, writer.id());
     assert_eq!(loaded.meta.model, "claude-sonnet-4-5");
-    assert_eq!(loaded.input_tokens, 2_000);
-    assert_eq!(loaded.output_tokens, 500);
+    assert_eq!(
+        loaded.usage,
+        TokenUsage {
+            input: 2_000,
+            output: 500,
+            cached: 1_000,
+        }
+    );
     assert_eq!(loaded.messages.len(), 4);
     assert_eq!(loaded.messages[0].role, ChatRole::User);
     assert_eq!(loaded.messages[1].role, ChatRole::Assistant);
@@ -234,4 +261,67 @@ fn list_and_load_by_id_or_prefix_and_skip_corrupt_files() {
         .to_string()
         .contains("not found"));
     assert!(store.load("   ").unwrap_err().to_string().contains("empty"));
+}
+
+#[test]
+fn token_usage_separates_cached_and_loads_legacy_entries() {
+    let genai_usage = Usage {
+        prompt_tokens: Some(1_000),
+        prompt_tokens_details: Some(PromptTokensDetails {
+            cached_tokens: Some(750),
+            ..Default::default()
+        }),
+        completion_tokens: Some(200),
+        ..Default::default()
+    };
+    assert_eq!(
+        TokenUsage::from_genai(&genai_usage),
+        TokenUsage {
+            input: 250,
+            output: 200,
+            cached: 750,
+        }
+    );
+
+    // Defensive clamp if a provider reports cached > prompt.
+    let odd_usage = Usage {
+        prompt_tokens: Some(100),
+        prompt_tokens_details: Some(PromptTokensDetails {
+            cached_tokens: Some(150),
+            ..Default::default()
+        }),
+        completion_tokens: Some(50),
+        ..Default::default()
+    };
+    assert_eq!(
+        TokenUsage::from_genai(&odd_usage),
+        TokenUsage {
+            input: 0,
+            output: 50,
+            cached: 150,
+        }
+    );
+
+    // Older session files without `cached_tokens` still deserialize cleanly.
+    let root = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(root.path(), cwd.path());
+    let mut writer = store.create("deepseek-chat");
+    writer.append_messages(&[ChatMessage::user("hi")]).unwrap();
+    let mut file = OpenOptions::new().append(true).open(writer.path()).unwrap();
+    writeln!(
+        file,
+        r#"{{"type":"usage","input_tokens":500,"output_tokens":120}}"#
+    )
+    .unwrap();
+
+    let loaded = store.latest().unwrap().expect("legacy session");
+    assert_eq!(
+        loaded.usage,
+        TokenUsage {
+            input: 500,
+            output: 120,
+            cached: 0,
+        }
+    );
 }

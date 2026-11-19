@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use genai::chat::{ChatMessage, ChatRole, ContentPart};
 use harness_core::tools::{Diff, DiffLine};
-use harness_core::{Event as AgentEvent, SessionSummary, Thinking, ToolDetails};
+use harness_core::{Event as AgentEvent, SessionSummary, Thinking, TokenUsage, ToolDetails};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -65,10 +65,7 @@ pub enum AgentUpdate {
     ReasoningDelta(String),
     TextDelta(String),
     Text(String),
-    TurnEnd {
-        input_tokens: u64,
-        output_tokens: u64,
-    },
+    TurnEnd(TokenUsage),
     ToolCall {
         name: String,
         args: String,
@@ -88,13 +85,7 @@ impl AgentUpdate {
             AgentEvent::ReasoningDelta(text) => Self::ReasoningDelta(text.to_owned()),
             AgentEvent::TextDelta(text) => Self::TextDelta(text.to_owned()),
             AgentEvent::Text(text) => Self::Text(text.to_owned()),
-            AgentEvent::TurnEnd(usage) => {
-                let usage = usage?;
-                Self::TurnEnd {
-                    input_tokens: usage.prompt_tokens.unwrap_or(0).max(0) as u64,
-                    output_tokens: usage.completion_tokens.unwrap_or(0).max(0) as u64,
-                }
-            }
+            AgentEvent::TurnEnd(usage) => Self::TurnEnd(TokenUsage::from_genai(usage?)),
             AgentEvent::ToolCall(call) => Self::ToolCall {
                 name: call.fn_name.clone(),
                 args: call.fn_arguments.to_string(),
@@ -158,8 +149,7 @@ pub struct App {
     hidden_reasoning: String,
     /// Whether any reasoning lines were emitted during the current turn.
     emitted_reasoning: bool,
-    input_tokens: u64,
-    output_tokens: u64,
+    tokens: TokenUsage,
     notice: Option<String>,
     picker: Option<SessionPicker>,
     completion: CommandCompletion,
@@ -186,8 +176,7 @@ impl App {
             live_reasoning: String::new(),
             hidden_reasoning: String::new(),
             emitted_reasoning: false,
-            input_tokens: 0,
-            output_tokens: 0,
+            tokens: TokenUsage::default(),
             notice: None,
             picker: None,
             completion: CommandCompletion::default(),
@@ -258,16 +247,15 @@ impl App {
 
     /// Reset displayed token counters and drop pending scrollback (e.g. on `/new`).
     pub fn reset_session(&mut self) {
-        self.set_tokens(0, 0);
+        self.set_tokens(TokenUsage::default());
         self.clear_live();
         self.scrollback.clear();
         self.notice = None;
     }
 
     /// Set displayed token counters (e.g. when restoring a persisted session).
-    pub fn set_tokens(&mut self, input: u64, output: u64) {
-        self.input_tokens = input;
-        self.output_tokens = output;
+    pub fn set_tokens(&mut self, usage: TokenUsage) {
+        self.tokens = usage;
     }
 
     /// Replay a restored conversation history into scrollback.
@@ -401,12 +389,8 @@ impl App {
                     self.scrollback.push(Line::raw(String::new()));
                 }
             }
-            AgentUpdate::TurnEnd {
-                input_tokens,
-                output_tokens,
-            } => {
-                self.input_tokens = self.input_tokens.saturating_add(input_tokens);
-                self.output_tokens = self.output_tokens.saturating_add(output_tokens);
+            AgentUpdate::TurnEnd(usage) => {
+                self.tokens += usage;
             }
             AgentUpdate::ToolCall { name, args } => {
                 self.flush_reasoning();
@@ -923,7 +907,7 @@ impl App {
         }
         let width = area.width as usize;
         let model_label = format!("{} ({})", self.model, self.thinking);
-        let tokens = format_tokens(self.input_tokens.saturating_add(self.output_tokens));
+        let tokens = format_usage(self.tokens);
         let dot = " · ";
         let right = format!("{} · {}", self.status.sandbox, self.status.folder);
         let left_w = model_label.width() + dot.width() + tokens.width();
@@ -1280,25 +1264,34 @@ fn format_elapsed(secs: u64) -> String {
     }
 }
 
-fn format_tokens(tokens: u64) -> String {
-    if tokens >= 1_000_000 {
-        format_scaled(tokens, 100_000, 'M')
-    } else if tokens >= 1_000 {
-        format_scaled(tokens, 100, 'K')
-    } else {
-        tokens.to_string()
+struct ScaledTokens(u64);
+
+impl std::fmt::Display for ScaledTokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (tenth_unit, suffix) = if self.0 >= 1_000_000 {
+            (100_000, 'M')
+        } else if self.0 >= 1_000 {
+            (100, 'K')
+        } else {
+            return write!(f, "{}", self.0);
+        };
+        let tenths = self.0 / tenth_unit;
+        let (whole, frac) = (tenths / 10, tenths % 10);
+        if frac == 0 {
+            write!(f, "{whole}{suffix}")
+        } else {
+            write!(f, "{whole}.{frac}{suffix}")
+        }
     }
 }
 
-fn format_scaled(tokens: u64, tenth_unit: u64, suffix: char) -> String {
-    let tenths = tokens / tenth_unit;
-    let whole = tenths / 10;
-    let frac = tenths % 10;
-    if frac == 0 {
-        format!("{whole}{suffix}")
-    } else {
-        format!("{whole}.{frac}{suffix}")
-    }
+fn format_usage(usage: TokenUsage) -> String {
+    format!(
+        "↑{} in ↓{} out ↻{} cached",
+        ScaledTokens(usage.input),
+        ScaledTokens(usage.output),
+        ScaledTokens(usage.cached),
+    )
 }
 
 struct EditorLayout {

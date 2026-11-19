@@ -9,6 +9,7 @@ use std::ffi::OsString;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::hash::Hasher;
 use std::io::{self, BufRead, BufReader, BufWriter, ErrorKind, Read, Write};
+use std::ops::AddAssign;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
@@ -16,7 +17,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::Utc;
 use fnv::FnvHasher;
-use genai::chat::{ChatMessage, ChatRole};
+use genai::chat::{ChatMessage, ChatRole, Usage};
 use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -52,6 +53,8 @@ pub enum SessionEntry {
     Usage {
         input_tokens: u64,
         output_tokens: u64,
+        #[serde(default)]
+        cached_tokens: u64,
     },
 }
 
@@ -75,7 +78,55 @@ enum SessionEntryRef<'a> {
     Usage {
         input_tokens: u64,
         output_tokens: u64,
+        cached_tokens: u64,
     },
+}
+
+/// Token counts for a turn or session.
+///
+/// `input` holds non-cached prompt tokens (`prompt_tokens - cached`), `output`
+/// holds completion tokens (including reasoning), and `cached` holds prompt
+/// tokens served from cache.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct TokenUsage {
+    pub input: u64,
+    pub output: u64,
+    pub cached: u64,
+}
+
+impl TokenUsage {
+    /// Extract normalized token counts from a provider [`Usage`] record.
+    pub fn from_genai(usage: &Usage) -> Self {
+        let prompt = non_negative(usage.prompt_tokens);
+        let output = non_negative(usage.completion_tokens);
+        let cached = non_negative(
+            usage
+                .prompt_tokens_details
+                .as_ref()
+                .and_then(|d| d.cached_tokens),
+        );
+        Self {
+            input: prompt.saturating_sub(cached),
+            output,
+            cached,
+        }
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.input == 0 && self.output == 0 && self.cached == 0
+    }
+}
+
+fn non_negative(value: Option<i32>) -> u64 {
+    value.and_then(|n| u64::try_from(n).ok()).unwrap_or(0)
+}
+
+impl AddAssign for TokenUsage {
+    fn add_assign(&mut self, rhs: Self) {
+        self.input = self.input.saturating_add(rhs.input);
+        self.output = self.output.saturating_add(rhs.output);
+        self.cached = self.cached.saturating_add(rhs.cached);
+    }
 }
 
 /// Summary metadata of a persisted session.
@@ -106,8 +157,7 @@ pub struct SessionSummary {
 pub struct SessionData {
     pub meta: SessionMeta,
     pub messages: Vec<ChatMessage>,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
+    pub usage: TokenUsage,
     /// If the file had a truncated trailing line or lacked a final newline,
     /// the byte length of the valid prefix to repair before appending.
     repair_len: Option<u64>,
@@ -260,16 +310,17 @@ impl SessionWriter {
 
     /// Record token usage for a completed turn (ignored if the session has no
     /// persisted messages yet).
-    pub fn append_usage(&mut self, input_tokens: u64, output_tokens: u64) -> io::Result<()> {
-        if !self.initialized || (input_tokens == 0 && output_tokens == 0) {
+    pub fn append_usage(&mut self, usage: TokenUsage) -> io::Result<()> {
+        if !self.initialized || usage.is_empty() {
             return Ok(());
         }
         let writer = self.writer()?;
         write_entry(
             writer,
             &SessionEntryRef::Usage {
-                input_tokens,
-                output_tokens,
+                input_tokens: usage.input,
+                output_tokens: usage.output,
+                cached_tokens: usage.cached,
             },
         )?;
         writer.flush()
@@ -567,8 +618,7 @@ fn load_file(path: &Path) -> Result<SessionData, Error> {
     }
 
     let mut messages = Vec::new();
-    let mut input_tokens = 0u64;
-    let mut output_tokens = 0u64;
+    let mut usage = TokenUsage::default();
     let mut last_valid_end = first_end;
     let mut truncated_tail = false;
 
@@ -581,11 +631,15 @@ fn load_file(path: &Path) -> Result<SessionData, Error> {
                 last_valid_end = line_end;
             }
             Ok(SessionEntry::Usage {
-                input_tokens: inp,
-                output_tokens: out,
+                input_tokens,
+                output_tokens,
+                cached_tokens,
             }) => {
-                input_tokens = input_tokens.saturating_add(inp);
-                output_tokens = output_tokens.saturating_add(out);
+                usage += TokenUsage {
+                    input: input_tokens,
+                    output: output_tokens,
+                    cached: cached_tokens,
+                };
                 last_valid_end = line_end;
             }
             Ok(SessionEntry::Model { model: next }) => {
@@ -620,8 +674,7 @@ fn load_file(path: &Path) -> Result<SessionData, Error> {
             created_at,
         },
         messages,
-        input_tokens,
-        output_tokens,
+        usage,
         repair_len,
     })
 }

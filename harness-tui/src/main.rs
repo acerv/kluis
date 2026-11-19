@@ -24,7 +24,7 @@ use std::process::ExitCode;
 use clap::Parser;
 use genai::chat::ChatMessage;
 use harness_core::tools::ToolContext;
-use harness_core::{Agent, Error, Event, SessionData, SessionStore, Thinking};
+use harness_core::{Agent, Error, Event, SessionData, SessionStore, Thinking, TokenUsage};
 use harness_tui::{summary, History, RunOptions, Session, Status};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -223,7 +223,11 @@ async fn run(args: Args, config_model: Option<String>, tools: ToolContext) -> Re
             picker_entries = entries;
             let model = default_model.to_owned();
             let writer = store.create(&model);
-            (model, Vec::new(), Some(Session::new(store, writer, 0, 0)))
+            (
+                model,
+                Vec::new(),
+                Some(Session::new(store, writer, TokenUsage::default())),
+            )
         } else {
             let data = store.load(query)?;
             open_loaded_session(store, data, args.model.as_deref())?
@@ -232,7 +236,7 @@ async fn run(args: Args, config_model: Option<String>, tools: ToolContext) -> Re
         let model = default_model.to_owned();
         let session = store.map(|store| {
             let writer = store.create(&model);
-            Session::new(store, writer, 0, 0)
+            Session::new(store, writer, TokenUsage::default())
         });
         (model, Vec::new(), session)
     };
@@ -303,7 +307,7 @@ fn open_loaded_session(
     if model_override.is_some() && model != data.meta.model {
         writer.append_model(&model)?;
     }
-    let session = Session::new(store, writer, data.input_tokens, data.output_tokens);
+    let session = Session::new(store, writer, data.usage);
     Ok((model, data.messages, Some(session)))
 }
 
@@ -313,23 +317,18 @@ async fn prompt_and_persist(
     text: &str,
 ) -> Result<(), Error> {
     let prev_len = agent.history().len();
-    let mut usage = (0u64, 0u64);
+    let mut usage = TokenUsage::default();
     let res = agent
         .prompt(text, |event| {
             if let Event::TurnEnd(Some(u)) = event {
-                usage.0 = usage
-                    .0
-                    .saturating_add(u.prompt_tokens.unwrap_or(0).max(0) as u64);
-                usage.1 = usage
-                    .1
-                    .saturating_add(u.completion_tokens.unwrap_or(0).max(0) as u64);
+                usage += TokenUsage::from_genai(u);
             }
             print_event(event);
         })
         .await;
     if let Some(session) = session {
         let added = &agent.history()[prev_len..];
-        if let Err(err) = session.record_prompt(added, usage.0, usage.1) {
+        if let Err(err) = session.record_prompt(added, usage) {
             eprintln!("warning: could not save session: {err}");
         }
     }
