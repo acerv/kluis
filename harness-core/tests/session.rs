@@ -167,3 +167,71 @@ async fn agent_with_history_sends_restored_turns_to_model() {
     let contents: Vec<&str> = msgs.iter().filter_map(|m| m["content"].as_str()).collect();
     assert_eq!(contents, vec!["remember 42", "remembered", "what number?"]);
 }
+
+#[test]
+fn list_and_load_by_id_or_prefix_and_skip_corrupt_files() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(root.path(), cwd.path());
+
+    assert!(store.list().unwrap().is_empty());
+
+    let mut w1 = store.create("model-one");
+    w1.append_messages(&[
+        ChatMessage::user("first\n  multiline\tprompt"),
+        ChatMessage::assistant("reply 1"),
+    ])
+    .unwrap();
+
+    // Exact 120-char prompt with trailing whitespace must not get a spurious ellipsis.
+    let exact_120 = format!("{}\n", "a".repeat(120));
+    let mut w2 = store.create("model-two");
+    w2.append_messages(&[
+        ChatMessage::user(exact_120),
+        ChatMessage::assistant("reply 2"),
+    ])
+    .unwrap();
+    w2.append_model("model-two-updated").unwrap();
+
+    // A corrupt file alongside valid sessions must not break `list()`.
+    std::fs::write(store.project_dir().join("broken.jsonl"), "not json\n").unwrap();
+
+    let list = store.list().unwrap();
+    assert_eq!(list.len(), 2);
+    let s1 = list.iter().find(|s| s.id == w1.id()).expect("session 1");
+    assert_eq!(s1.model, "model-one");
+    assert_eq!(s1.message_count, 2);
+    assert_eq!(s1.first_prompt.as_deref(), Some("first multiline prompt"));
+
+    let s2 = list.iter().find(|s| s.id == w2.id()).expect("session 2");
+    assert_eq!(s2.model, "model-two-updated");
+    assert_eq!(s2.message_count, 2);
+    assert_eq!(s2.first_prompt.as_deref(), Some("a".repeat(120).as_str()));
+
+    // Exact ID load.
+    let loaded = store.load(w1.id()).unwrap();
+    assert_eq!(loaded.meta.id, w1.id());
+    assert_eq!(loaded.messages.len(), 2);
+
+    // Unique prefix load (timestamp + first 8 chars of UUID).
+    let prefix = &w2.id()[..20];
+    let by_prefix = store.load(prefix).unwrap();
+    assert_eq!(by_prefix.meta.id, w2.id());
+
+    // Ambiguous prefix (shared date prefix "20").
+    let err = store.load("20").unwrap_err().to_string();
+    assert!(err.contains("ambiguous"), "unexpected error: {err}");
+
+    // Missing ID & path-traversal attempts fail safely.
+    assert!(store
+        .load("nonexistent")
+        .unwrap_err()
+        .to_string()
+        .contains("not found"));
+    assert!(store
+        .load("../../etc/passwd")
+        .unwrap_err()
+        .to_string()
+        .contains("not found"));
+    assert!(store.load("   ").unwrap_err().to_string().contains("empty"));
+}

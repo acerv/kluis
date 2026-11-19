@@ -5,17 +5,19 @@
 //!
 //! Only Linux is supported.
 
+use std::ffi::OsString;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::hash::Hasher;
-use std::io::{self, BufWriter, ErrorKind, Read, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, ErrorKind, Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::Utc;
 use fnv::FnvHasher;
-use genai::chat::ChatMessage;
+use genai::chat::{ChatMessage, ChatRole};
+use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -26,6 +28,9 @@ const FORMAT_VERSION: u32 = 1;
 
 /// Maximum bytes read when loading a single session file.
 pub const MAX_SESSION_BYTES: usize = 16 * 1024 * 1024;
+
+/// Maximum characters stored for [`SessionSummary::first_prompt`].
+const MAX_PROMPT_PREVIEW_CHARS: usize = 120;
 
 /// One line in a `.jsonl` session file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +88,19 @@ pub struct SessionMeta {
     pub created_at: u64,
 }
 
+/// Lightweight entry shown in session lists and pickers without keeping full
+/// conversation payloads in memory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionSummary {
+    pub id: String,
+    pub path: PathBuf,
+    pub model: String,
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub message_count: usize,
+    pub first_prompt: Option<String>,
+}
+
 /// Loaded session ready to resume in an [`crate::Agent`].
 #[derive(Debug, Clone)]
 pub struct SessionData {
@@ -126,32 +144,51 @@ impl SessionStore {
 
     /// Load the most recently modified session for this workspace, if any.
     pub fn latest(&self) -> Result<Option<SessionData>, Error> {
-        let entries = match fs::read_dir(&self.dir) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e.into()),
-        };
-
-        let mut candidates = Vec::new();
-        for entry in entries {
-            let Ok(entry) = entry else { continue };
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                continue;
-            }
-            let Ok(meta) = entry.metadata() else { continue };
-            if !meta.is_file() {
-                continue;
-            }
-            let modified = meta.modified().unwrap_or(UNIX_EPOCH);
-            candidates.push((modified, entry.file_name(), path));
-        }
-
-        candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
-        let Some((_, _, path)) = candidates.into_iter().next() else {
+        let Some((_, _, path)) = session_files(&self.dir)?.into_iter().next() else {
             return Ok(None);
         };
         load_file(&path).map(Some)
+    }
+
+    /// List valid persisted sessions for this workspace, newest first.
+    ///
+    /// Corrupt or unreadable files are skipped so one damaged file does not
+    /// block resuming other sessions.
+    pub fn list(&self) -> Result<Vec<SessionSummary>, Error> {
+        let files = session_files(&self.dir)?;
+        let mut out = Vec::with_capacity(files.len());
+        for (modified, _, path) in files {
+            if let Some(summary) = summarize_file(&path, modified) {
+                out.push(summary);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Load a session by its exact ID or a unique ID prefix.
+    pub fn load(&self, id: &str) -> Result<SessionData, Error> {
+        let query = id.trim();
+        if query.is_empty() {
+            return Err("session id cannot be empty".into());
+        }
+        let files = session_files(&self.dir)?;
+        let mut prefix_matches = Vec::new();
+        for (_, _, path) in &files {
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if stem == query {
+                return load_file(path);
+            }
+            if stem.starts_with(query) {
+                prefix_matches.push(path);
+            }
+        }
+        match prefix_matches.as_slice() {
+            [] => Err(format!("session not found: {query}").into()),
+            [path] => load_file(path),
+            many => Err(format!("ambiguous session id '{query}' ({} matches)", many.len()).into()),
+        }
     }
 
     /// Start a new lazy session writer; no file is created until the first
@@ -290,6 +327,187 @@ impl SessionWriter {
 
 fn create_dir_private(path: &Path) -> io::Result<()> {
     DirBuilder::new().recursive(true).mode(0o700).create(path)
+}
+
+/// Regular `.jsonl` files inside `dir`, sorted newest-first by mtime then name.
+fn session_files(dir: &Path) -> io::Result<Vec<(SystemTime, OsString, PathBuf)>> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+
+    let mut candidates = Vec::new();
+    for entry in entries {
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let modified = meta.modified().unwrap_or(UNIX_EPOCH);
+        candidates.push((modified, entry.file_name(), path));
+    }
+
+    candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    Ok(candidates)
+}
+
+/// Zero-allocation entry view used by [`summarize_file`] once `first_prompt`
+/// has already been extracted, avoiding full [`ChatMessage`] deserialization
+/// for the rest of the file while still validating JSON structure.
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum SummaryEntryLight {
+    Header {},
+    Model {
+        model: String,
+    },
+    Message {
+        #[allow(dead_code)]
+        message: IgnoredAny,
+    },
+    Usage {},
+}
+
+/// Stream a single session file line by line to extract its [`SessionSummary`]
+/// without retaining full message payloads in memory.
+fn summarize_file(path: &Path, modified: SystemTime) -> Option<SessionSummary> {
+    if !path.is_file() {
+        return None;
+    }
+    let file = File::open(path).ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || meta.len() > MAX_SESSION_BYTES as u64 {
+        return None;
+    }
+
+    let mut reader = BufReader::new(file.take(MAX_SESSION_BYTES as u64 + 1));
+    let mut buf = Vec::new();
+    let mut total_read = 0usize;
+
+    let (id, mut model, created_at) = loop {
+        buf.clear();
+        let n = reader.read_until(b'\n', &mut buf).ok()?;
+        if n == 0 {
+            return None;
+        }
+        total_read += n;
+        if total_read > MAX_SESSION_BYTES {
+            return None;
+        }
+        if !buf.iter().any(|b| !b.is_ascii_whitespace()) {
+            continue;
+        }
+        let line = String::from_utf8_lossy(&buf);
+        let SessionEntry::Header {
+            version,
+            id,
+            model,
+            created_at,
+            ..
+        } = serde_json::from_str(line.trim()).ok()?
+        else {
+            return None;
+        };
+        if version != FORMAT_VERSION {
+            return None;
+        }
+        break (id, model, created_at);
+    };
+
+    let mut message_count = 0usize;
+    let mut first_prompt = None;
+    let mut saw_error = false;
+
+    loop {
+        buf.clear();
+        let n = reader.read_until(b'\n', &mut buf).ok()?;
+        if n == 0 {
+            break;
+        }
+        total_read += n;
+        if total_read > MAX_SESSION_BYTES {
+            return None;
+        }
+        if !buf.iter().any(|b| !b.is_ascii_whitespace()) {
+            continue;
+        }
+        // Only a corrupt final line (crash tail) is recoverable.
+        if saw_error {
+            return None;
+        }
+        let line = String::from_utf8_lossy(&buf);
+        let trimmed = line.trim();
+        if first_prompt.is_some() {
+            match serde_json::from_str::<SummaryEntryLight>(trimmed) {
+                Ok(SummaryEntryLight::Message { .. }) => message_count += 1,
+                Ok(SummaryEntryLight::Model { model: next }) => model = next,
+                Ok(SummaryEntryLight::Usage {} | SummaryEntryLight::Header {}) => {}
+                Err(_) => saw_error = true,
+            }
+        } else {
+            match serde_json::from_str::<SessionEntry>(trimmed) {
+                Ok(SessionEntry::Message { message }) => {
+                    message_count += 1;
+                    if message.role == ChatRole::User {
+                        if let Some(text) = message.content.joined_texts() {
+                            let preview = prompt_preview(&text);
+                            if !preview.is_empty() {
+                                first_prompt = Some(preview);
+                            }
+                        }
+                    }
+                }
+                Ok(SessionEntry::Model { model: next }) => model = next,
+                Ok(SessionEntry::Usage { .. } | SessionEntry::Header { .. }) => {}
+                Err(_) => saw_error = true,
+            }
+        }
+    }
+
+    let updated_at = modified
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(created_at);
+
+    Some(SessionSummary {
+        id,
+        path: path.to_path_buf(),
+        model,
+        created_at,
+        updated_at,
+        message_count,
+        first_prompt,
+    })
+}
+
+fn prompt_preview(text: &str) -> String {
+    let mut out = String::new();
+    let mut count = 0usize;
+    for word in text.split_whitespace() {
+        let need_space = !out.is_empty();
+        if count + usize::from(need_space) >= MAX_PROMPT_PREVIEW_CHARS {
+            out.push('…');
+            return out;
+        }
+        if need_space {
+            out.push(' ');
+            count += 1;
+        }
+        for ch in word.chars() {
+            if count >= MAX_PROMPT_PREVIEW_CHARS {
+                out.push('…');
+                return out;
+            }
+            out.push(ch);
+            count += 1;
+        }
+    }
+    out
 }
 
 fn write_entry(writer: &mut BufWriter<File>, entry: &SessionEntryRef<'_>) -> io::Result<()> {
