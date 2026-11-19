@@ -2,7 +2,11 @@
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use harness_tui::{flush_scrollback, Action, AgentUpdate, App, Status, Theme, VIEWPORT_HEIGHT};
+use harness_core::tools::{Diff, DiffHunk, DiffLine};
+use harness_core::ToolDetails;
+use harness_tui::{
+    flush_scrollback, Action, AgentUpdate, App, SlashCommand, Status, Theme, VIEWPORT_HEIGHT,
+};
 use ratatui::backend::TestBackend;
 use ratatui::style::Color;
 use ratatui::{Terminal, TerminalOptions, Viewport};
@@ -11,11 +15,16 @@ fn status() -> Status {
     Status {
         sandbox: "sandboxed".into(),
         folder: "~/project".into(),
+        git_branch: Some("main".into()),
     }
 }
 
 fn key(code: KeyCode) -> Event {
     Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+}
+
+fn shift(code: KeyCode) -> Event {
+    Event::Key(KeyEvent::new(code, KeyModifiers::SHIFT))
 }
 
 fn ctrl(c: char) -> Event {
@@ -48,16 +57,18 @@ fn render_text(terminal: &Terminal<TestBackend>) -> String {
 }
 
 #[test]
-fn status_bar_shows_model_sandbox_tokens_and_folder() {
-    let mut term = inline_terminal(80, 10);
+fn footer_shows_folder_branch_sandbox_tokens_and_model() {
+    let mut term = inline_terminal(80, 14);
     let mut app = App::new("deepseek-chat", status(), Theme::new(true));
 
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
-    assert!(screen.contains("deepseek-chat"), "{screen}");
+    assert!(screen.contains("~/project (main)"), "{screen}");
     assert!(screen.contains("sandboxed"), "{screen}");
     assert!(screen.contains("↑0 ↓0"), "{screen}");
-    assert!(screen.contains("~/project"), "{screen}");
+    assert!(screen.contains("deepseek-chat"), "{screen}");
+    // Editor is framed by horizontal rules.
+    assert!(screen.contains("────────"), "{screen}");
 
     app.apply_update(AgentUpdate::TurnEnd {
         input_tokens: 120,
@@ -66,31 +77,114 @@ fn status_bar_shows_model_sandbox_tokens_and_folder() {
     app.set_model("gpt-4o");
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
-    assert!(screen.contains("gpt-4o"), "{screen}");
-    assert!(screen.contains("↑120 ↓45"), "{screen}");
+    let model_pos = screen.find("gpt-4o").expect("model in footer");
+    let tokens_pos = screen.find("↑120 ↓45").expect("tokens in footer");
+    assert!(
+        model_pos < tokens_pos,
+        "model should precede tokens: {screen}"
+    );
 }
 
 #[test]
-fn input_editing_and_submit() {
+fn viewport_height_grows_with_newlines_and_wrapping() {
     let mut app = App::new("model", status(), Theme::new(true));
-    for c in "helo".chars() {
-        assert_eq!(app.handle_event(key(KeyCode::Char(c))), Action::Redraw);
+    assert_eq!(app.viewport_height(20), VIEWPORT_HEIGHT);
+
+    // Explicit newline adds a row.
+    app.handle_event(Event::Paste("line 1\nline 2".into()));
+    assert_eq!(app.viewport_height(20), VIEWPORT_HEIGHT + 1);
+
+    // Soft-wrapping past width - 2 (18 cols) adds rows too.
+    app.handle_event(Event::Paste("\n".into()));
+    app.handle_event(Event::Paste("a".repeat(40)));
+    assert_eq!(app.viewport_height(20), VIEWPORT_HEIGHT + 4);
+
+    // Submitting shrinks back to 1 editor row.
+    app.handle_event(key(KeyCode::Enter));
+    assert_eq!(app.viewport_height(20), VIEWPORT_HEIGHT);
+}
+
+#[test]
+fn multiline_input_history_and_bracketed_paste() {
+    let mut app = App::new("model", status(), Theme::new(true));
+
+    // Type line 1, Shift+Enter for newline, type line 2, submit.
+    for c in "first".chars() {
+        app.handle_event(key(KeyCode::Char(c)));
     }
-    // Move left once and insert 'l' -> "hello".
-    assert_eq!(app.handle_event(key(KeyCode::Left)), Action::Redraw);
-    assert_eq!(app.handle_event(key(KeyCode::Char('l'))), Action::Redraw);
-    // Enter submits trimmed text and clears input.
+    assert_eq!(app.handle_event(shift(KeyCode::Enter)), Action::Redraw);
+    for c in "second".chars() {
+        app.handle_event(key(KeyCode::Char(c)));
+    }
     assert_eq!(
         app.handle_event(key(KeyCode::Enter)),
-        Action::Submit("hello".into())
+        Action::Submit("first\nsecond".into())
     );
-    // Submitting empty input does not emit Submit.
+
+    // Bracketed paste normalizes CRLF and inserts at cursor.
+    assert_eq!(
+        app.handle_event(Event::Paste("a\r\nb".into())),
+        Action::Redraw
+    );
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Submit("a\nb".into())
+    );
+
+    // Draft is preserved while navigating history with Up/Down.
+    for c in "draft".chars() {
+        app.handle_event(key(KeyCode::Char(c)));
+    }
+    assert_eq!(app.handle_event(key(KeyCode::Up)), Action::Redraw);
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Submit("a\nb".into())
+    );
+    // Walk back through history, then forward to empty draft.
+    assert_eq!(app.handle_event(key(KeyCode::Up)), Action::Redraw);
+    assert_eq!(app.handle_event(key(KeyCode::Up)), Action::Redraw);
+    assert_eq!(app.handle_event(key(KeyCode::Down)), Action::Redraw);
+    assert_eq!(app.handle_event(key(KeyCode::Down)), Action::Redraw);
     assert_eq!(app.handle_event(key(KeyCode::Enter)), Action::Redraw);
 }
 
 #[test]
-fn ctrl_c_esc_and_ctrl_d_behavior() {
+fn slash_commands() {
     let mut app = App::new("model", status(), Theme::new(true));
+
+    for (input, expected) in [
+        ("/model", Action::Slash(SlashCommand::Model(None))),
+        (
+            "/model gpt-4o",
+            Action::Slash(SlashCommand::Model(Some("gpt-4o".into()))),
+        ),
+        ("/clear", Action::Slash(SlashCommand::Clear)),
+        ("/quit", Action::Slash(SlashCommand::Quit)),
+        ("/help", Action::Slash(SlashCommand::Help)),
+    ] {
+        app.handle_event(Event::Paste(input.into()));
+        assert_eq!(app.handle_event(key(KeyCode::Enter)), expected, "{input}");
+    }
+
+    // Unknown slash command prints a local hint instead of submitting.
+    app.handle_event(Event::Paste("/nope".into()));
+    assert_eq!(app.handle_event(key(KeyCode::Enter)), Action::Redraw);
+    let lines = app.take_scrollback();
+    assert!(lines
+        .iter()
+        .any(|l| l.to_string().contains("unknown command")));
+}
+
+#[test]
+fn ctrl_c_esc_ctrl_t_and_ctrl_d_behavior() {
+    let mut app = App::new("model", status(), Theme::new(true));
+
+    // Ctrl-T toggles thinking visibility.
+    assert!(app.show_thinking());
+    assert_eq!(app.handle_event(ctrl('t')), Action::Redraw);
+    assert!(!app.show_thinking());
+    assert_eq!(app.handle_event(ctrl('t')), Action::Redraw);
+    assert!(app.show_thinking());
 
     // Idle with non-empty input: Ctrl-C clears it; Ctrl-D does not quit.
     app.handle_event(key(KeyCode::Char('a')));
@@ -110,50 +204,79 @@ fn ctrl_c_esc_and_ctrl_d_behavior() {
 }
 
 #[test]
-fn streaming_updates_and_scrollback_commit() {
-    let mut term = inline_terminal(60, 12);
+fn streaming_lines_thinking_and_tool_diff() {
+    let mut term = inline_terminal(70, 20);
     let mut app = App::new("model", status(), Theme::new(true));
 
-    app.start_prompt("check status");
+    app.start_prompt("fix it");
     flush_scrollback(&mut term, app.take_scrollback()).unwrap();
 
+    // Thinking streams line-by-line into scrollback.
     app.apply_update(AgentUpdate::TurnStart);
+    app.apply_update(AgentUpdate::ReasoningDelta("checking file\n".into()));
+    let thought_lines = app.take_scrollback();
+    assert!(thought_lines
+        .iter()
+        .any(|l| l.to_string().contains("checking file")));
+    flush_scrollback(&mut term, thought_lines).unwrap();
+
+    // Tool call shows clean pi-style header + colored edit diff.
     app.apply_update(AgentUpdate::ToolCall {
-        name: "bash".into(),
-        args: r#"{"command":"ls"}"#.into(),
+        name: "edit".into(),
+        args: r#"{"path":"src/main.rs","edits":[]}"#.into(),
     });
-    flush_scrollback(&mut term, app.take_scrollback()).unwrap();
-    term.draw(|f| app.render(f)).unwrap();
-    let screen = render_text(&term);
-    assert!(screen.contains("Running bash"), "{screen}");
-    assert!(screen.contains("> check status"), "{screen}");
-    assert!(screen.contains("→ bash"), "{screen}");
-
+    let diff = Diff {
+        hunks: vec![DiffHunk {
+            old_start: 1,
+            old_lines: 1,
+            new_start: 1,
+            new_lines: 1,
+            lines: vec![
+                DiffLine::Removed("old".into()),
+                DiffLine::Added("new".into()),
+            ],
+        }],
+        first_changed_line: Some(1),
+        truncated: false,
+    };
     app.apply_update(AgentUpdate::ToolResult {
-        content: r#"{"exit_code":0,"output":"ok"}"#.into(),
-        details: None,
+        content: r#"{"replacements":1}"#.into(),
+        details: Some(ToolDetails::Edit(diff)),
     });
-    app.apply_update(AgentUpdate::TextDelta("All good".into()));
-    flush_scrollback(&mut term, app.take_scrollback()).unwrap();
-    term.draw(|f| app.render(f)).unwrap();
-    let screen = render_text(&term);
-    assert!(screen.contains("All good"), "{screen}");
+    let tool_lines = app.take_scrollback();
+    let joined: String = tool_lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(joined.contains("edit src/main.rs"), "{joined}");
+    assert!(joined.contains("-old"), "{joined}");
+    assert!(joined.contains("+new"), "{joined}");
+    flush_scrollback(&mut term, tool_lines).unwrap();
 
-    app.apply_update(AgentUpdate::Text("All good".into()));
-    app.finish_prompt(Ok(()));
-    assert!(!app.is_busy());
+    // Text streams line-by-line above the editor, with partial line live.
+    app.apply_update(AgentUpdate::TextDelta("Line one\nLine tw".into()));
     flush_scrollback(&mut term, app.take_scrollback()).unwrap();
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
-    assert!(screen.contains("All good"), "{screen}");
-    assert!(!screen.contains("Thinking"), "{screen}");
+    assert!(screen.contains("Line one"), "{screen}");
+    assert!(screen.contains("Line tw"), "{screen}");
+
+    app.apply_update(AgentUpdate::TextDelta("o".into()));
+    app.apply_update(AgentUpdate::Text("Line one\nLine two".into()));
+    app.finish_prompt(Ok(()));
+    flush_scrollback(&mut term, app.take_scrollback()).unwrap();
+    term.draw(|f| app.render(f)).unwrap();
+    let screen = render_text(&term);
+    assert!(screen.contains("Line two"), "{screen}");
+    assert!(!screen.contains("Working"), "{screen}");
 }
 
 #[test]
 fn resize_and_no_color() {
-    let mut term = inline_terminal(40, 8);
+    let mut term = inline_terminal(45, 14);
     let mut app = App::new("model", status(), Theme::new(false));
-    assert_eq!(app.handle_event(Event::Resize(40, 8)), Action::Redraw);
+    assert_eq!(app.handle_event(Event::Resize(45, 14)), Action::Redraw);
 
     app.start_prompt("hello");
     app.finish_prompt(Err("boom".into()));

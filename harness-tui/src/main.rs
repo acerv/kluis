@@ -171,6 +171,7 @@ async fn run(args: Args, tools: ToolContext) -> Result<(), Error> {
         let status = Status {
             sandbox,
             folder: current_folder(),
+            git_branch: current_git_branch(),
         };
         return harness_tui::run(agent, status).await;
     }
@@ -227,6 +228,22 @@ fn current_folder() -> String {
         }
     }
     cwd.display().to_string()
+}
+
+fn current_git_branch() -> Option<String> {
+    let cwd = std::env::current_dir().ok()?;
+    for dir in cwd.ancestors() {
+        let head_path = dir.join(".git").join("HEAD");
+        let Ok(head) = std::fs::read_to_string(&head_path) else {
+            continue;
+        };
+        let head = head.trim();
+        if let Some(branch) = head.strip_prefix("ref: refs/heads/") {
+            return Some(branch.to_owned());
+        }
+        return Some(head.chars().take(7).collect());
+    }
+    None
 }
 
 fn print_event(event: Event<'_>) {

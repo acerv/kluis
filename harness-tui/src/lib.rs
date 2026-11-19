@@ -20,7 +20,7 @@ use harness_core::{Agent, Error};
 use tokio::sync::mpsc;
 use tokio::time::interval;
 
-pub use app::{summary, Action, AgentUpdate, App, VIEWPORT_HEIGHT};
+pub use app::{summary, Action, AgentUpdate, App, SlashCommand, VIEWPORT_HEIGHT};
 pub use style::Theme;
 pub use terminal::flush_scrollback;
 
@@ -35,9 +35,11 @@ pub struct Status {
     pub sandbox: String,
     /// Working folder label shown in the status bar.
     pub folder: String,
+    /// Current git branch when inside a repository.
+    pub git_branch: Option<String>,
 }
 
-/// Run the interactive inline TUI until the user quits (`Ctrl-D`).
+/// Run the interactive inline TUI until the user quits (`Ctrl-D` or `/quit`).
 pub async fn run(mut agent: Agent, status: Status) -> Result<(), Error> {
     let mut term = InlineTerminal::enter(VIEWPORT_HEIGHT)?;
     let mut app = App::new(agent.model().to_owned(), status, Theme::from_env());
@@ -51,10 +53,15 @@ pub async fn run(mut agent: Agent, status: Status) -> Result<(), Error> {
         };
         let ev = next?;
         match app.handle_event(ev) {
-            Action::None => {}
+            Action::None | Action::Cancel => {}
             Action::Redraw => draw(&mut term, &mut app)?,
             Action::Quit => break,
-            Action::Cancel => {}
+            Action::Slash(cmd) => {
+                if handle_slash(cmd, &mut agent, &mut app) {
+                    break;
+                }
+                draw(&mut term, &mut app)?;
+            }
             Action::Submit(prompt) => {
                 app.start_prompt(&prompt);
                 draw(&mut term, &mut app)?;
@@ -66,6 +73,32 @@ pub async fn run(mut agent: Agent, status: Status) -> Result<(), Error> {
     }
 
     Ok(())
+}
+
+/// Execute a slash command. Returns `true` when the user requested to quit.
+fn handle_slash(cmd: SlashCommand, agent: &mut Agent, app: &mut App) -> bool {
+    match cmd {
+        SlashCommand::Quit => return true,
+        SlashCommand::Clear => {
+            agent.clear();
+            app.reset_tokens();
+            app.push_info("[conversation cleared]");
+        }
+        SlashCommand::Model(Some(name)) => {
+            agent.set_model(&name);
+            app.set_model(&name);
+            app.push_info(format!("model: {name}"));
+        }
+        SlashCommand::Model(None) => {
+            app.push_info(format!("model: {}", agent.model()));
+        }
+        SlashCommand::Help => {
+            app.push_info(
+                "commands: /model [name], /clear, /quit · keys: Enter send, Shift/Alt+Enter newline, Up/Down history, Ctrl-T toggle thinking, Esc/Ctrl-C cancel, Ctrl-D quit",
+            );
+        }
+    }
+    false
 }
 
 /// Run one agent prompt while keeping the UI responsive to keys, resize and
@@ -109,7 +142,7 @@ async fn run_turn(
                                 break;
                             }
                             Action::Redraw => draw(term, app)?,
-                            Action::None | Action::Submit(_) => {}
+                            Action::None | Action::Submit(_) | Action::Slash(_) => {}
                         },
                         Some(Err(err)) => return Err(err.into()),
                         None => {
@@ -151,8 +184,6 @@ async fn run_turn(
 }
 
 fn draw(term: &mut InlineTerminal, app: &mut App) -> Result<(), Error> {
-    let lines = app.take_scrollback();
-    flush_scrollback(term.inner_mut(), lines)?;
-    term.inner_mut().draw(|frame| app.render(frame))?;
+    term.draw_app(app)?;
     Ok(())
 }

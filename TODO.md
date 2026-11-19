@@ -38,13 +38,13 @@ Same set as pi: `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`.
 scrollback, falling back to line mode when not on a terminal.
 
 - [x] Event loop over keys, agent updates (channel) and the prompt
-- [ ] Multiline input with history and bracketed paste
+- [x] Multiline input with history and bracketed paste
 - [ ] Markdown rendering with code highlighting
 - [x] Status bar: model, sandbox mode, tokens, folder
 - [x] Ctrl-C/Esc cancels the prompt, Ctrl-D quits
-- [ ] Slash commands (`/model`, `/clear`, `/quit`)
+- [x] Slash commands (`/model`, `/clear`, `/quit`)
 - [x] Restore the terminal on panic, handle resize, `NO_COLOR`
-- [ ] Tests with ratatui's `TestBackend`
+- [x] Tests with ratatui's `TestBackend`
 
 ## CLI
 

@@ -7,17 +7,19 @@ use std::sync::{Arc, Once};
 use std::thread;
 use std::time::Duration;
 
-use crossterm::cursor::Show;
+use crossterm::cursor::{MoveTo, Show};
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste, Event};
 use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType};
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 use tokio::sync::mpsc;
 
-const EVENT_POLL: Duration = Duration::from_millis(25);
+use crate::app::App;
+
+const EVENT_POLL: Duration = Duration::from_millis(10);
 
 static PANIC_HOOK: Once = Once::new();
 
@@ -83,6 +85,8 @@ impl Drop for EventReader {
 /// on drop or panic.
 pub struct InlineTerminal {
     terminal: Terminal<CrosstermBackend<Stdout>>,
+    height: u16,
+    last_top: u16,
 }
 
 impl InlineTerminal {
@@ -99,7 +103,11 @@ impl InlineTerminal {
             viewport: Viewport::Inline(height),
         };
         match Terminal::with_options(backend, options) {
-            Ok(terminal) => Ok(Self { terminal }),
+            Ok(terminal) => Ok(Self {
+                terminal,
+                height,
+                last_top: 0,
+            }),
             Err(err) => {
                 restore_terminal();
                 Err(err)
@@ -107,8 +115,29 @@ impl InlineTerminal {
         }
     }
 
-    pub fn inner_mut(&mut self) -> &mut Terminal<CrosstermBackend<Stdout>> {
-        &mut self.terminal
+    /// Resize the inline viewport if the editor grew or shrank, flush pending
+    /// scrollback lines above it, and redraw `app`.
+    pub fn draw_app(&mut self, app: &mut App) -> io::Result<()> {
+        let size = self.terminal.size()?;
+        let desired = app.viewport_height(size.width).min(size.height.max(1));
+        if desired != self.height {
+            let top = self.last_top.min(size.height.saturating_sub(1));
+            let mut stdout = io::stdout();
+            execute!(stdout, MoveTo(0, top), Clear(ClearType::FromCursorDown))?;
+            let backend = CrosstermBackend::new(stdout);
+            let options = TerminalOptions {
+                viewport: Viewport::Inline(desired),
+            };
+            self.terminal = Terminal::with_options(backend, options)?;
+            self.height = desired;
+        }
+        let lines = app.take_scrollback();
+        flush_scrollback(&mut self.terminal, lines)?;
+        self.terminal.draw(|frame| {
+            self.last_top = frame.area().y;
+            app.render(frame);
+        })?;
+        Ok(())
     }
 }
 
