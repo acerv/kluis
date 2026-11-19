@@ -32,6 +32,7 @@ use std::path::{Component, Path, PathBuf};
 
 use hakoniwa::landlock::{CompatMode, Resource, Ruleset};
 use hakoniwa::{Container, MountOptions, Rlimit, Runctl};
+use walkdir::WalkDir;
 
 /// Folders and network the harness may use.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -441,37 +442,37 @@ fn collect_git(
     denied: &[(PathBuf, bool)],
 ) -> Vec<PathBuf> {
     let mut found = Vec::new();
-    let Ok(meta) = std::fs::metadata(root) else {
-        return found;
-    };
-    if !meta.is_dir() {
+    if !std::fs::metadata(root).is_ok_and(|m| m.is_dir()) {
         return found;
     }
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
+    let mut it = WalkDir::new(root).into_iter();
+    while let Some(entry) = it.next() {
+        let Ok(entry) = entry else {
             continue;
         };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if entry.file_name() == ".git" {
-                if path.exists() && !writable.iter().any(|w| w.starts_with(&path)) {
-                    found.push(path);
-                }
-                continue;
+        if entry.depth() == 0 {
+            continue;
+        }
+        let path = entry.path();
+        if entry.file_name() == ".git" {
+            if path.exists() && !writable.iter().any(|w| w.starts_with(path)) {
+                found.push(path.to_path_buf());
             }
-            if entry.file_type().is_ok_and(|ft| ft.is_dir()) {
-                // `entry` is a real directory (not a symlink), so its
-                // canonical path under `canon_root` needs no syscall.
-                let is_denied = !denied.is_empty()
-                    && path.strip_prefix(root).is_ok_and(|rel| {
-                        let canon = canon_root.join(rel);
-                        path_or_canon_denied(&path, &canon, denied)
-                    });
-                if !is_denied {
-                    stack.push(path);
-                }
+            if entry.file_type().is_dir() {
+                it.skip_current_dir();
             }
+            continue;
+        }
+        // Real directories (not symlinks) have canonical paths under
+        // `canon_root` without needing another syscall.
+        if entry.file_type().is_dir()
+            && !denied.is_empty()
+            && path.strip_prefix(root).is_ok_and(|rel| {
+                let canon = canon_root.join(rel);
+                path_or_canon_denied(path, &canon, denied)
+            })
+        {
+            it.skip_current_dir();
         }
     }
     found

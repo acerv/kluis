@@ -10,6 +10,7 @@ authors.workspace = true
 hakoniwa.workspace = true
 libc.workspace = true
 openssl-probe.workspace = true
+walkdir.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
