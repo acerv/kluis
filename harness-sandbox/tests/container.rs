@@ -826,3 +826,29 @@ fn bind_needs_any_network() {
     assert_eq!(bind(&Sandbox::new().allow_connect(port), port), 1);
     assert_eq!(bind(&Sandbox::new().allow_any_network(), port), 0);
 }
+
+#[test]
+fn no_network_isolates_container_network() {
+    let (_server, port) = server();
+    let sandbox = system().no_network();
+
+    let out = run(&sandbox, &connect(port));
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("Network is unreachable"),
+        "{}",
+        stderr(&out)
+    );
+
+    let out = run(&sandbox, &format!("echo hi >/dev/udp/127.0.0.1/{port}"));
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("Network is unreachable"),
+        "{}",
+        stderr(&out)
+    );
+
+    // Calling `allow_connect` after `no_network` switches to port-filtered mode.
+    let out = run(&sandbox.allow_connect(port), &connect(port));
+    assert!(out.status.success(), "{}", stderr(&out));
+}

@@ -31,7 +31,7 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use hakoniwa::landlock::{CompatMode, Resource, Ruleset};
-use hakoniwa::{Container, MountOptions, Rlimit, Runctl};
+use hakoniwa::{Container, MountOptions, Namespace, Rlimit, Runctl};
 use indexmap::IndexSet;
 use thiserror::Error;
 use walkdir::WalkDir;
@@ -50,6 +50,8 @@ pub struct Sandbox {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Network {
+    /// Private network namespace (`CLONE_NEWNET`) with no interfaces up.
+    None,
     /// Only connections to these TCP ports, and no bind.
     Ports(Vec<u16>),
     /// No TCP filtering.
@@ -113,10 +115,19 @@ impl Sandbox {
         self
     }
 
+    /// Isolate the container in an empty network namespace (`CLONE_NEWNET`)
+    /// so no TCP, UDP, or host abstract Unix sockets are reachable.
+    pub fn no_network(mut self) -> Self {
+        self.network = Network::None;
+        self
+    }
+
     /// Allow TCP connections to `port` on any host.
     pub fn allow_connect(mut self, port: u16) -> Self {
-        if let Network::Ports(ports) = &mut self.network {
-            ports.push(port);
+        match &mut self.network {
+            Network::Ports(ports) => ports.push(port),
+            Network::None => self.network = Network::Ports(vec![port]),
+            Network::Any => {}
         }
         self
     }
@@ -203,15 +214,21 @@ impl Sandbox {
             }
             container.setrlimit(Rlimit::Nproc, max, max);
         }
-        if let Network::Ports(ports) = &self.network {
-            let mut ruleset = Ruleset::default();
-            ruleset
-                .restrict(Resource::NET_TCP_CONNECT, CompatMode::Enforce)
-                .restrict(Resource::NET_TCP_BIND, CompatMode::Enforce);
-            for &port in ports {
-                ruleset.allow_tcp_connect(port);
+        match &self.network {
+            Network::None => {
+                container.unshare(Namespace::Network);
             }
-            container.landlock_ruleset(ruleset);
+            Network::Ports(ports) => {
+                let mut ruleset = Ruleset::default();
+                ruleset
+                    .restrict(Resource::NET_TCP_CONNECT, CompatMode::Enforce)
+                    .restrict(Resource::NET_TCP_BIND, CompatMode::Enforce);
+                for &port in ports {
+                    ruleset.allow_tcp_connect(port);
+                }
+                container.landlock_ruleset(ruleset);
+            }
+            Network::Any => {}
         }
         Ok(container)
     }
