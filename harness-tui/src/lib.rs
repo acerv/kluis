@@ -21,7 +21,9 @@ use std::io;
 use std::time::Duration;
 
 use genai::chat::ChatMessage;
-use harness_core::{Agent, Error, SessionData, SessionStore, SessionSummary, SessionWriter};
+use harness_core::{
+    Agent, Error, SessionData, SessionStore, SessionSummary, SessionWriter, Thinking,
+};
 use tokio::sync::mpsc;
 use tokio::time::{interval_at, Instant, MissedTickBehavior};
 
@@ -126,6 +128,7 @@ pub async fn run(mut agent: Agent, status: Status, opts: RunOptions) -> Result<(
     } = opts;
     let mut term = InlineTerminal::enter(VIEWPORT_HEIGHT)?;
     let mut app = App::new(agent.model().to_owned(), status, Theme::from_env());
+    app.set_thinking(agent.thinking());
     if let Some(ref h) = history {
         app.set_history(h.entries());
     }
@@ -161,6 +164,10 @@ pub async fn run(mut agent: Agent, status: Status, opts: RunOptions) -> Result<(
             }
             Action::ResumeSession(id) => {
                 resume_session(&id, &mut agent, &mut app, session.as_mut());
+                draw(&mut term, &mut app)?;
+            }
+            Action::SetThinking(level) => {
+                agent.set_thinking(level);
                 draw(&mut term, &mut app)?;
             }
             Action::Submit(prompt) => {
@@ -218,6 +225,17 @@ fn handle_slash(
         SlashCommand::Model(None) => {
             app.push_info(format!("model: {}", agent.model()));
         }
+        SlashCommand::Thinking(Some(arg)) => match arg.parse::<Thinking>() {
+            Ok(level) => {
+                agent.set_thinking(level);
+                app.set_thinking(level);
+                app.push_info(format!("thinking: {level}"));
+            }
+            Err(err) => app.push_info(err),
+        },
+        SlashCommand::Thinking(None) => {
+            app.push_info(format!("thinking: {}", agent.thinking()));
+        }
         SlashCommand::Resume(Some(id)) => {
             resume_session(&id, agent, app, session);
         }
@@ -237,7 +255,7 @@ fn handle_slash(
         },
         SlashCommand::Help => {
             app.push_info(
-                "commands: /model [name], /resume [id], /clear, /quit · keys: Enter send, Shift/Alt+Enter newline, Up/Down history, Ctrl-O toggle thinking, Esc/Ctrl-C cancel, Ctrl-D quit",
+                "commands: /model [name], /thinking [level], /resume [id], /clear, /quit · keys: Enter send, Shift/Alt+Enter newline, Shift+Tab cycle thinking, Up/Down history, Ctrl-O toggle thinking, Esc/Ctrl-C cancel, Ctrl-D quit",
             );
         }
     }
@@ -321,7 +339,8 @@ async fn run_turn(
                             Action::None
                             | Action::Submit(_)
                             | Action::Slash(_)
-                            | Action::ResumeSession(_) => {}
+                            | Action::ResumeSession(_)
+                            | Action::SetThinking(_) => {}
                         },
                         Some(Err(err)) => return Err(err.into()),
                         None => {

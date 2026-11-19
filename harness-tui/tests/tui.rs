@@ -76,7 +76,7 @@ fn footer_shows_sandbox_folder_model_and_scaled_tokens() {
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
     assert!(screen.contains("sandboxed · ~/project"), "{screen}");
-    assert!(screen.contains("deepseek-chat · 0"), "{screen}");
+    assert!(screen.contains("deepseek-chat (default) · 0"), "{screen}");
     assert!(screen.contains("────────"), "{screen}");
 
     // 1,200 + 300 = 1,500 -> 1.5K
@@ -88,8 +88,8 @@ fn footer_shows_sandbox_folder_model_and_scaled_tokens() {
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
     let left_pos = screen
-        .find("gpt-4o · 1.5K")
-        .expect("model · tokens in footer");
+        .find("gpt-4o (default) · 1.5K")
+        .expect("model (thinking) · tokens in footer");
     let right_pos = screen
         .find("sandboxed · ~/project")
         .expect("sandbox · folder in footer");
@@ -102,7 +102,7 @@ fn footer_shows_sandbox_folder_model_and_scaled_tokens() {
     });
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
-    assert!(screen.contains("gpt-4o · 2.3M"), "{screen}");
+    assert!(screen.contains("gpt-4o (default) · 2.3M"), "{screen}");
 }
 
 #[test]
@@ -493,7 +493,10 @@ fn replay_history_and_restore_tokens() {
 
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
-    assert!(screen.contains("deepseek-chat · 1.5K"), "{screen}");
+    assert!(
+        screen.contains("deepseek-chat (default) · 1.5K"),
+        "{screen}"
+    );
 }
 
 #[test]
@@ -671,4 +674,48 @@ fn persistent_history_round_trip_multiline_dedup_and_compaction() {
     // Oversized prompts are ignored rather than bloating or evicting history.
     h.record(&"x".repeat(32 * 1024)).unwrap();
     assert_eq!(History::load(&compact_path).entries(), final_entries);
+}
+
+#[test]
+fn thinking_effort_slash_keybinding_and_footer() {
+    use harness_core::Thinking;
+
+    let mut term = inline_terminal(80, 14);
+    let mut app = App::new("claude-sonnet-4-5", status(), Theme::new(false));
+
+    // `/thinking` and `/thinking <level>` parse into `SlashCommand::Thinking`.
+    for ch in "/thinking".chars() {
+        app.handle_event(key(KeyCode::Char(ch)));
+    }
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Slash(SlashCommand::Thinking(None))
+    );
+    for ch in "/thinking high".chars() {
+        app.handle_event(key(KeyCode::Char(ch)));
+    }
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Slash(SlashCommand::Thinking(Some("high".into())))
+    );
+
+    // Shift+Tab cycles default -> low -> medium -> high -> default -> low and updates footer.
+    for expected in [
+        Thinking::Low,
+        Thinking::Medium,
+        Thinking::High,
+        Thinking::Default,
+        Thinking::Low,
+    ] {
+        assert_eq!(
+            app.handle_event(shift(KeyCode::BackTab)),
+            Action::SetThinking(expected)
+        );
+        assert_eq!(app.thinking(), expected);
+    }
+
+    term.draw(|f| app.render(f)).unwrap();
+    let screen = render_text(&term);
+    assert!(screen.contains("claude-sonnet-4-5 (low) · 0"), "{screen}");
+    assert!(screen.contains("Thinking: low"), "{screen}");
 }

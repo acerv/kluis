@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use genai::chat::{ChatMessage, ChatRole, ContentPart};
 use harness_core::tools::{Diff, DiffLine};
-use harness_core::{Event as AgentEvent, SessionSummary, ToolDetails};
+use harness_core::{Event as AgentEvent, SessionSummary, Thinking, ToolDetails};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -105,6 +105,7 @@ impl AgentUpdate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlashCommand {
     Model(Option<String>),
+    Thinking(Option<String>),
     Resume(Option<String>),
     Clear,
     Quit,
@@ -119,6 +120,7 @@ pub enum Action {
     Submit(String),
     Slash(SlashCommand),
     ResumeSession(String),
+    SetThinking(Thinking),
     Cancel,
     Quit,
 }
@@ -127,6 +129,7 @@ pub enum Action {
 /// directly with ratatui's `TestBackend`.
 pub struct App {
     model: String,
+    thinking: Thinking,
     status: Status,
     theme: Theme,
     width: Cell<u16>,
@@ -156,6 +159,7 @@ impl App {
     pub fn new(model: impl Into<String>, status: Status, theme: Theme) -> Self {
         Self {
             model: model.into(),
+            thinking: Thinking::Default,
             status,
             theme,
             width: Cell::new(DEFAULT_WIDTH),
@@ -201,6 +205,14 @@ impl App {
 
     pub fn set_model(&mut self, model: impl Into<String>) {
         self.model = model.into();
+    }
+
+    pub fn thinking(&self) -> Thinking {
+        self.thinking
+    }
+
+    pub fn set_thinking(&mut self, thinking: Thinking) {
+        self.thinking = thinking;
     }
 
     /// Seed the editor's prompt history (oldest first).
@@ -496,6 +508,13 @@ impl App {
             return Action::None;
         }
 
+        if key.code == KeyCode::BackTab {
+            let next = self.thinking.next();
+            self.thinking = next;
+            self.notice = Some(format!("Thinking: {next} (Shift+Tab to cycle)"));
+            return Action::SetThinking(next);
+        }
+
         self.notice = None;
         if key.code == KeyCode::Enter && key.modifiers.is_empty() {
             let text = self.input.submit();
@@ -786,15 +805,16 @@ impl App {
             return;
         }
         let width = area.width as usize;
+        let model_label = format!("{} ({})", self.model, self.thinking);
         let tokens = format_tokens(self.input_tokens.saturating_add(self.output_tokens));
         let dot = " · ";
         let right = format!("{} · {}", self.status.sandbox, self.status.folder);
-        let left_w = self.model.width() + dot.width() + tokens.width();
+        let left_w = model_label.width() + dot.width() + tokens.width();
         let right_w = right.width();
         let gap = width.saturating_sub(left_w + right_w).max(2);
 
         let line = Line::from(vec![
-            Span::styled(self.model.clone(), self.theme.status_accent),
+            Span::styled(model_label, self.theme.status_accent),
             Span::styled(dot, self.theme.status_bar),
             Span::styled(tokens, self.theme.status_bar),
             Span::raw(" ".repeat(gap)),
@@ -910,6 +930,7 @@ fn parse_slash(input: &str) -> Option<Result<SlashCommand, String>> {
         .map(str::to_owned);
     Some(match cmd {
         "/model" => Ok(SlashCommand::Model(arg)),
+        "/thinking" => Ok(SlashCommand::Thinking(arg)),
         "/resume" => Ok(SlashCommand::Resume(arg)),
         "/clear" => Ok(SlashCommand::Clear),
         "/quit" | "/exit" => Ok(SlashCommand::Quit),

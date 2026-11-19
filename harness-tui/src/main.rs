@@ -24,7 +24,7 @@ use std::process::ExitCode;
 use clap::Parser;
 use genai::chat::ChatMessage;
 use harness_core::tools::ToolContext;
-use harness_core::{Agent, Error, Event, SessionData, SessionStore};
+use harness_core::{Agent, Error, Event, SessionData, SessionStore, Thinking};
 use harness_tui::{summary, History, RunOptions, Session, Status};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -37,6 +37,10 @@ pub struct Args {
     /// Model to use; the provider is picked from its name [default: deepseek-chat].
     #[arg(long, env = "HARNESS_MODEL")]
     model: Option<String>,
+
+    /// Thinking effort: default, low, medium, or high.
+    #[arg(long, env = "HARNESS_THINKING", value_name = "LEVEL")]
+    thinking: Option<Thinking>,
 
     /// Continue the most recent session for the current folder.
     #[arg(short = 'c', long = "continue", conflicts_with = "no_session")]
@@ -122,36 +126,38 @@ fn main() -> ExitCode {
 }
 
 fn launch(mut args: Args) -> Result<ExitCode, Error> {
-    apply_config(&mut args)?;
+    let config_model = apply_config(&mut args)?;
     if args.no_sandbox {
-        start(args, ToolContext::default())?;
+        start(args, config_model, ToolContext::default())?;
     } else if sandbox::inside() {
         let tools = sandbox::tools(&args);
-        start(args, tools)?;
+        start(args, config_model, tools)?;
     } else {
         return sandbox::run(&args);
     }
     Ok(ExitCode::SUCCESS)
 }
 
-/// Add the settings of the config file to `args`, and leave in
-/// `args.config` the path of the file used, if any.
-fn apply_config(args: &mut Args) -> Result<(), Error> {
+/// Add the settings of the config file to `args`, leave in `args.config` the
+/// path of the file used (if any), and return the config's default model so
+/// resumed sessions keep their own model unless `--model` was explicitly set.
+fn apply_config(args: &mut Args) -> Result<Option<String>, Error> {
     let (path, required) = if !args.no_sandbox && sandbox::inside() {
         match std::env::var_os(config::ENV) {
             Some(path) => (PathBuf::from(path), true),
-            None => return Ok(()),
+            None => return Ok(None),
         }
     } else {
         match args.config.take() {
             Some(path) => (std::path::absolute(path)?, true),
             None => match config::default_path() {
                 Some(path) => (path, false),
-                None => return Ok(()),
+                None => return Ok(None),
             },
         }
     };
     let config = config::load(&path, required)?;
+    args.thinking = args.thinking.or(config.thinking);
     args.allow_read.extend(config.sandbox.read);
     args.allow_write.extend(config.sandbox.write);
     args.deny_read.extend(config.sandbox.deny);
@@ -162,10 +168,10 @@ fn apply_config(args: &mut Args) -> Result<(), Error> {
     args.max_memory = args.max_memory.or(config.sandbox.max_memory);
     args.pass_env.extend(config.sandbox.env);
     args.config = Some(path);
-    Ok(())
+    Ok(config.model)
 }
 
-fn start(args: Args, mut tools: ToolContext) -> Result<(), Error> {
+fn start(args: Args, config_model: Option<String>, mut tools: ToolContext) -> Result<(), Error> {
     // Commands run as the same user: keep them away from the API keys in
     // our memory and environment.
     harness_sandbox::protect_self()?;
@@ -177,16 +183,21 @@ fn start(args: Args, mut tools: ToolContext) -> Result<(), Error> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(run(args, tools))
+        .block_on(run(args, config_model, tools))
 }
 
-async fn run(args: Args, tools: ToolContext) -> Result<(), Error> {
+async fn run(args: Args, config_model: Option<String>, tools: ToolContext) -> Result<(), Error> {
     let cwd = std::env::current_dir()?;
     let system = harness_core::system_prompt(&cwd, &agents_files(&args, &cwd));
     let store = (!args.no_session)
         .then(config::sessions_dir)
         .flatten()
         .map(|root| SessionStore::new(root, &cwd));
+    let default_model = args
+        .model
+        .as_deref()
+        .or(config_model.as_deref())
+        .unwrap_or(DEFAULT_MODEL);
 
     let mut picker_entries = Vec::new();
     let (model, history, mut session) = if args.continue_session {
@@ -210,7 +221,7 @@ async fn run(args: Args, tools: ToolContext) -> Result<(), Error> {
                 return Err(format!("no sessions to resume for {}", cwd.display()).into());
             }
             picker_entries = entries;
-            let model = args.model.as_deref().unwrap_or(DEFAULT_MODEL).to_owned();
+            let model = default_model.to_owned();
             let writer = store.create(&model);
             (model, Vec::new(), Some(Session::new(store, writer, 0, 0)))
         } else {
@@ -218,7 +229,7 @@ async fn run(args: Args, tools: ToolContext) -> Result<(), Error> {
             open_loaded_session(store, data, args.model.as_deref())?
         }
     } else {
-        let model = args.model.as_deref().unwrap_or(DEFAULT_MODEL).to_owned();
+        let model = default_model.to_owned();
         let session = store.map(|store| {
             let writer = store.create(&model);
             Session::new(store, writer, 0, 0)
@@ -227,6 +238,7 @@ async fn run(args: Args, tools: ToolContext) -> Result<(), Error> {
     };
 
     let mut agent = Agent::new(&model)?
+        .with_thinking(args.thinking.unwrap_or_default())
         .with_system(system)
         .with_history(history)
         .with_tool_context(tools);
@@ -255,7 +267,11 @@ async fn run(args: Args, tools: ToolContext) -> Result<(), Error> {
         .await;
     }
 
-    println!("kluis ({}, {sandbox}), Ctrl-D to quit", agent.model());
+    println!(
+        "kluis ({} ({}), {sandbox}), Ctrl-D to quit",
+        agent.model(),
+        agent.thinking()
+    );
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     loop {
         print!("> ");

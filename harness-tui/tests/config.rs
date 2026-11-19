@@ -369,3 +369,44 @@ fn max_memory_is_accepted_and_validated() {
     assert!(!out.status.success());
     assert!(stderr(&out).contains("--max-memory"), "{}", stderr(&out));
 }
+
+#[test]
+fn model_and_thinking_defaults_are_loaded_and_overridden() {
+    let home = tempdir();
+    write_default(
+        home.path(),
+        "model = \"claude-sonnet-4-5\"\nthinking = \"medium\"\n",
+    );
+    let out = run_cli(home.path(), &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("claude-sonnet-4-5 (medium)"),
+        "{}",
+        stdout(&out)
+    );
+
+    // CLI flags override config defaults.
+    let out = run_cli(home.path(), &["--model", "gpt-4o", "--thinking", "high"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("gpt-4o (high)"), "{}", stdout(&out));
+
+    // Invalid config values and invalid CLI thinking levels are rejected.
+    write_default(home.path(), "model = \"   \"\n");
+    let out = run_cli(home.path(), &["--no-sandbox"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("model"), "{}", stderr(&out));
+
+    write_default(home.path(), "thinking = \"turbo\"\n");
+    let out = run_cli(home.path(), &["--no-sandbox"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("turbo"), "{}", stderr(&out));
+
+    write_default(home.path(), "");
+    let out = run_cli(home.path(), &["--no-sandbox", "--thinking", "turbo"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("invalid thinking effort"),
+        "{}",
+        stderr(&out)
+    );
+}

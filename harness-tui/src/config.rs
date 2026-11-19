@@ -4,6 +4,11 @@
 //! Config file, `~/.kluis/config.toml` by default:
 //!
 //! ```toml
+//! # Default model when `--model` / `HARNESS_MODEL` is not set.
+//! model = "deepseek-chat"
+//! # Default thinking effort: "default", "low", "medium", or "high".
+//! thinking = "medium"
+//!
 //! [sandbox]
 //! # Also allow reading, or changing, these paths; `~` is $HOME.
 //! read = ["/etc/ssl"]
@@ -30,7 +35,7 @@
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
-use harness_core::Error;
+use harness_core::{Error, Thinking};
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// Environment variable naming the config file, like `--config`. Also how
@@ -41,6 +46,12 @@ pub const ENV: &str = "HARNESS_CONFIG";
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// Default model when `--model` / `HARNESS_MODEL` is not set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Default thinking effort (`default`, `low`, `medium`, `high`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<Thinking>,
     #[serde(default)]
     pub sandbox: SandboxConfig,
 }
@@ -123,6 +134,15 @@ pub fn load(path: &Path, required: bool) -> Result<Config, Error> {
         Err(e) => return Err(error(&e).into()),
     };
     let mut config: Config = toml::from_str(&text).map_err(|e| error(&e))?;
+    if let Some(model) = &mut config.model {
+        let trimmed = model.trim();
+        if trimmed.is_empty() {
+            return Err(error(&"model: must not be empty").into());
+        }
+        if trimmed.len() != model.len() {
+            *model = trimmed.to_owned();
+        }
+    }
     let sandbox = &mut config.sandbox;
     for paths in [&mut sandbox.read, &mut sandbox.write] {
         for path in paths {

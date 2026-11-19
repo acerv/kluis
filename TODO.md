@@ -20,7 +20,7 @@
 - [x] Session picker with `/resume` and `--resume`
 - [ ] Auto-compaction when `input_tokens` approaches the model's context limit
 - [x] Fail tool calls of a truncated response, telling the model to re-issue them, instead of running incomplete arguments
-- [ ] Model and thinking defaults in `~/.kluis/config.toml`
+- [x] Model and thinking defaults in `~/.kluis/config.toml`
 
 ## TUI
 
@@ -33,7 +33,7 @@
 - [ ] Live `bash` stdout/stderr preview and elapsed timer on the spinner (`⠋ Running bash… 12s`)
 - [x] Real-time multi-line thinking and text streaming, toggled with `Ctrl-O`
 - [ ] Show hunk line numbers in `edit` diffs and expand full tool output
-- [ ] Thinking effort (`off`, `low`, `medium`, `high`) via `/thinking`, keybinding and CLI/config
+- [x] Thinking effort (`default`, `low`, `medium`, `high`) via `/thinking`, keybinding and CLI/config
 - [ ] Session commands: `/compact`, `/undo`, `/retry`, `/diff`, `/copy`, `/status`, `/export`
 - [ ] Context window usage (`<tokens>/<limit>`) for known models in the status bar
 - [ ] Update terminal title with activity state and ring bell on long turns
