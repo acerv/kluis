@@ -43,6 +43,7 @@ fn config(server: &WebServer, flow: Flow) -> FlowConfig {
         token_url: server.url("/token"),
         scopes: vec!["a".into(), "b".into()],
         auth_params: vec![("code".into(), "true".into())],
+        verifier_as_state: false,
         body: BodyFormat::Json,
         flow,
     }
@@ -130,6 +131,40 @@ async fn paste_login_builds_pkce_url_and_exchanges_code() {
     assert_eq!(body["client_id"], "cid");
     assert_eq!(body["redirect_uri"], "https://auth.example/callback");
     assert!(body["code_verifier"].as_str().unwrap().len() >= 43);
+}
+
+#[tokio::test]
+async fn paste_login_accepts_redirect_url_and_verifier_state() {
+    let server = WebServer::start(vec![token_reply(), token_reply()]).await;
+    let flow = Flow::Paste {
+        auth_url: "https://auth.example/authorize".into(),
+        redirect_uri: "https://auth.example/callback".into(),
+    };
+    let mut cfg = config(&server, flow);
+    cfg.verifier_as_state = true;
+
+    let Login::Paste(login) = flow::start(&cfg).await.unwrap() else {
+        panic!("expected a paste login");
+    };
+    let state = query(login.url(), "state").unwrap();
+    let input = format!("https://auth.example/callback?code=c-url&state={state}");
+    login.finish(&input).await.unwrap();
+
+    let Login::Paste(login) = flow::start(&cfg).await.unwrap() else {
+        panic!("expected a paste login");
+    };
+    let state = query(login.url(), "state").unwrap();
+    login
+        .finish(&format!("code=c-query&state={state}"))
+        .await
+        .unwrap();
+
+    let reqs = server.requests();
+    let (first, second) = (reqs[0].json(), reqs[1].json());
+    assert_eq!(first["code"], "c-url");
+    assert_eq!(first["state"], first["code_verifier"]);
+    assert_eq!(second["code"], "c-query");
+    assert_eq!(second["state"], second["code_verifier"]);
 }
 
 #[tokio::test]
@@ -281,6 +316,7 @@ fn anthropic(server: &WebServer) -> Anthropic {
         token_url: server.url("/token"),
         scopes: vec!["a".into()],
         auth_params: vec![],
+        verifier_as_state: true,
         body: BodyFormat::Json,
         flow: Flow::Paste {
             auth_url: "https://auth.example/authorize".into(),
@@ -486,10 +522,11 @@ async fn oauth_login_overrides_anthropic_api_key() {
             .map(|(_, v)| v.clone())
     };
     assert_eq!(header("authorization").as_deref(), Some("Bearer at-1"));
-    assert_eq!(
-        header("anthropic-beta").as_deref(),
-        Some("oauth-2025-04-20")
-    );
+    assert!(header("anthropic-beta")
+        .unwrap()
+        .contains("oauth-2025-04-20"));
+    assert!(header("user-agent").unwrap().starts_with("claude-cli/"));
+    assert_eq!(header("x-app").as_deref(), Some("cli"));
     assert!(header("anthropic-version").is_some());
     assert!(header("x-api-key").is_none());
 }
@@ -568,6 +605,9 @@ async fn oauth_login_lists_models() {
     assert_eq!(req.method, "GET");
     assert_eq!(req.path, "/v1/models?limit=1000");
     assert_eq!(req.header("authorization"), Some("Bearer at-1"));
-    assert_eq!(req.header("anthropic-beta"), Some("oauth-2025-04-20"));
+    assert!(req
+        .header("anthropic-beta")
+        .unwrap()
+        .contains("oauth-2025-04-20"));
     assert_eq!(req.header("x-api-key"), None);
 }

@@ -15,13 +15,22 @@ use crate::Error;
 
 const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const AUTH_URL: &str = "https://claude.ai/oauth/authorize";
-const TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
-const REDIRECT_URI: &str = "https://console.anthropic.com/oauth/code/callback";
-const SCOPES: &[&str] = &["org:create_api_key", "user:profile", "user:inference"];
+const TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
+const REDIRECT_URI: &str = "https://platform.claude.com/oauth/code/callback";
+const SCOPES: &[&str] = &[
+    "org:create_api_key",
+    "user:profile",
+    "user:inference",
+    "user:sessions:claude_code",
+    "user:mcp_servers",
+    "user:file_upload",
+];
 const API_URL: &str = "https://api.anthropic.com/v1/";
 const API_VERSION: &str = "2023-06-01";
-/// Beta flag enabling OAuth access tokens on the Messages API.
-const OAUTH_BETA: &str = "oauth-2025-04-20";
+/// Beta flags enabling OAuth access tokens on the Messages API.
+const OAUTH_BETA: &str = "claude-code-20250219,oauth-2025-04-20";
+/// Client identity expected with OAuth access tokens.
+const USER_AGENT: &str = "claude-cli/2.1.322";
 
 /// Anthropic login settings.
 #[derive(Debug, Clone)]
@@ -37,6 +46,7 @@ impl Default for Anthropic {
             scopes: SCOPES.iter().map(|&s| s.into()).collect(),
             // Ask the callback page to show the code for pasting.
             auth_params: vec![("code".into(), "true".into())],
+            verifier_as_state: true,
             body: BodyFormat::Json,
             flow: Flow::Paste {
                 auth_url: AUTH_URL.into(),
@@ -117,5 +127,7 @@ fn headers(access_token: &str) -> Headers {
         ("authorization", format!("Bearer {access_token}")),
         ("anthropic-version", API_VERSION.to_owned()),
         ("anthropic-beta", OAUTH_BETA.to_owned()),
+        ("user-agent", USER_AGENT.to_owned()),
+        ("x-app", "cli".to_owned()),
     ])
 }

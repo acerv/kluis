@@ -10,7 +10,7 @@ use std::error::Error as StdError;
 use std::time::Duration;
 
 use oauth2::basic::{BasicClient, BasicTokenResponse};
-use oauth2::url::Url;
+use oauth2::url::{form_urlencoded, Url};
 use oauth2::{
     AuthUrl, AuthorizationCode, ClientId, CsrfToken, DeviceAuthorizationUrl, EndpointNotSet,
     EndpointSet, ErrorResponse, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, RefreshToken,
@@ -64,6 +64,9 @@ pub struct FlowConfig {
     pub scopes: Vec<String>,
     /// Extra parameters added to the authorization URL.
     pub auth_params: Vec<(String, String)>,
+    /// Send the PKCE verifier as `state` instead of a random value, for
+    /// providers that expect it.
+    pub verifier_as_state: bool,
     pub body: BodyFormat,
     pub flow: Flow,
 }
@@ -183,8 +186,13 @@ impl AuthCode {
             .set_auth_uri(AuthUrl::new(auth_url.to_owned())?)
             .set_redirect_uri(RedirectUrl::new(redirect_uri)?);
         let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
+        let state = if config.verifier_as_state {
+            CsrfToken::new(verifier.secret().clone())
+        } else {
+            CsrfToken::new_random()
+        };
         let mut request = client
-            .authorize_url(CsrfToken::new_random)
+            .authorize_url(|| state)
             .add_scopes(config.scopes())
             .set_pkce_challenge(challenge);
         for (name, value) in &config.auth_params {
@@ -234,15 +242,32 @@ impl PasteLogin {
         self.code.url.as_str()
     }
 
-    /// Finish with the pasted `input`: `code` or `code#state`.
+    /// Finish with the pasted `input`: the code, `code#state`, a
+    /// `code=…&state=…` query, or the whole redirect URL.
     pub async fn finish(self, input: &str) -> Result<Token, Error> {
-        let input = input.trim();
-        let (code, state) = match input.split_once('#') {
-            Some((code, state)) => (code, Some(state)),
-            None => (input, None),
-        };
-        self.code.exchange(code, state).await
+        let (code, state) = parse_code(input)?;
+        self.code.exchange(&code, state.as_deref()).await
     }
+}
+
+/// Split pasted login `input` into its code and optional state.
+fn parse_code(input: &str) -> Result<(String, Option<String>), Error> {
+    let input = input.trim();
+    let query = if input.starts_with("http://") || input.starts_with("https://") {
+        Url::parse(input)?.query().unwrap_or_default().to_owned()
+    } else if let Some((code, state)) = input.split_once('#') {
+        return Ok((code.to_owned(), Some(state.to_owned())));
+    } else if input.contains("code=") {
+        input.to_owned()
+    } else {
+        return Ok((input.to_owned(), None));
+    };
+    let param = |name: &str| {
+        form_urlencoded::parse(query.as_bytes())
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.into_owned())
+    };
+    Ok((param("code").unwrap_or_default(), param("state")))
 }
 
 /// Login where the browser comes back to a local HTTP server.
