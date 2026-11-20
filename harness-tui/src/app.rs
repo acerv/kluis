@@ -1174,6 +1174,13 @@ fn format_tool_call(name: &str, args: &str, theme: Theme) -> Line<'static> {
         }
         "ls" => Some(v["path"].as_str().unwrap_or(".").to_owned()),
         "ask_user" => v["question"].as_str().map(summary),
+        "web_fetch" => {
+            let url = v["url"].as_str()?;
+            match v["offset"].as_u64() {
+                Some(offset) => Some(format!("{url} @{offset}")),
+                None => Some(url.to_owned()),
+            }
+        }
         "todo" => {
             let todos = v["todos"].as_array()?;
             let done = todos.iter().filter(|t| t["status"] == "completed").count();
@@ -1264,6 +1271,18 @@ fn format_tool_result(
         Some("grep") => {
             let total = v["total"].as_u64().unwrap_or(0);
             out.push(Line::styled(format!("  {total} matches"), theme.muted));
+        }
+        Some("web_fetch") => {
+            let total = v["total_bytes"].as_u64().unwrap_or(0);
+            let suffix = if v["truncated"].as_bool() == Some(true) {
+                " (truncated)"
+            } else {
+                ""
+            };
+            out.push(Line::styled(
+                format!("  {total} bytes{suffix}"),
+                theme.muted,
+            ));
         }
         Some("ask_user") => {
             let answer = v["answer"].as_str().unwrap_or_default();

@@ -8,10 +8,12 @@ authors.workspace = true
 
 [dependencies]
 chrono.workspace = true
+encoding_rs.workspace = true
 fnv.workspace = true
 futures-util.workspace = true
 genai.workspace = true
 harness-exec.workspace = true
+htmd.workspace = true
 memchr.workspace = true
 oauth2.workspace = true
 reqwest.workspace = true

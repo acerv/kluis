@@ -6,12 +6,11 @@
 //! It runs on the host, not in the sandbox: the agent sends a [`Question`]
 //! through an [`Asker`] and waits for the UI to answer it.
 
-use genai::chat::{Tool, ToolCall, ToolResponse};
+use genai::chat::Tool;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::agent::error_response;
 use crate::tools::ToolError;
 
 /// Name of the tool.
@@ -106,18 +105,5 @@ impl AskTool {
             .await
             .map_err(|_| ToolError::new("the user did not answer"))?;
         Ok(AskOutput { answer })
-    }
-}
-
-/// Run an `ask_user` call and build the response to send back, with
-/// `{"error": "..."}` when it fails.
-pub(crate) async fn respond(call: &ToolCall, asker: Option<&Asker>) -> ToolResponse {
-    let result = match AskTool::deserialize(&call.fn_arguments) {
-        Ok(tool) => tool.run(asker).await,
-        Err(err) => Err(ToolError::new(err.to_string())),
-    };
-    match result {
-        Ok(out) => ToolResponse::from_tool_call(call, json!(out).to_string()),
-        Err(err) => error_response(call, &err.message),
     }
 }

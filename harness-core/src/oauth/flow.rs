@@ -20,6 +20,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
 use super::http::{BodyFormat, HttpClient};
+use crate::error::chain;
 use crate::Error;
 
 /// Tokens returned by a successful login or refresh.
@@ -397,16 +398,7 @@ where
 {
     match err {
         RequestTokenError::ServerResponse(resp) => format!("login rejected: {resp}").into(),
-        RequestTokenError::Request(err) => {
-            let mut msg = String::from("request failed");
-            let mut source: Option<&dyn StdError> = Some(&err);
-            while let Some(err) = source {
-                msg.push_str(": ");
-                msg.push_str(&err.to_string());
-                source = err.source();
-            }
-            msg.into()
-        }
+        RequestTokenError::Request(err) => format!("request failed: {}", chain(&err)).into(),
         RequestTokenError::Parse(err, body) => {
             let body = String::from_utf8_lossy(&body);
             let body: String = body.chars().take(200).collect();

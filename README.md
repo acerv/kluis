@@ -103,12 +103,16 @@ precedence over `api_key`.
 
 ### Tools
 
-- `read`, `write`, `edit`, `ls`, `find`, `grep`, `bash`, `todo`, `ask_user`.
+- `read`, `write`, `edit`, `ls`, `find`, `grep`, `bash`, `todo`, `ask_user`,
+  `web_fetch`.
 - `edit` applies changes atomically and shows a unified diff.
 - `bash` streams cleaned output with a timeout and line limits.
 - `todo` keeps the plan of a multi-step task.
 - `ask_user` asks you a question mid-task, with suggested answers to pick
   from or your own text (interactive mode only).
+- `web_fetch` reads a web page as Markdown (or raw with `raw: true`), 50 KB
+  at a time. It runs outside the sandbox, so it is offered only with
+  `--network` (or `network = true`) or `--no-sandbox`.
 - Tool results are bounded JSON, with `{"error": "..."}` responses so the
   model recovers instead of derailing.
 

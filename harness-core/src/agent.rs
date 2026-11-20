@@ -16,10 +16,11 @@ use genai::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::ask;
 use crate::models::{discover_models, ModelList};
 use crate::oauth::OAuthLogins;
-use crate::tools::{self, AskTool, Asker, Executor, ToolContext, ASK_TOOL};
+use crate::tools::{
+    self, error_response, AskTool, Asker, Executor, FetchTool, HostTools, ToolContext,
+};
 use crate::Event;
 
 /// Error returned by the agent.
@@ -105,7 +106,7 @@ pub struct Agent {
     thinking: Thinking,
     req: ChatRequest,
     executor: Executor,
-    asker: Option<Asker>,
+    host: HostTools,
 }
 
 impl Agent {
@@ -124,7 +125,7 @@ impl Agent {
             thinking: Thinking::Default,
             req: ChatRequest::default().with_tools(tools::definitions()),
             executor: Executor::default(),
-            asker: None,
+            host: HostTools::default(),
         }
     }
 
@@ -159,10 +160,19 @@ impl Agent {
 
     /// Offer the `ask_user` tool, sending its questions through `asker`.
     pub fn with_asker(mut self, asker: Asker) -> Self {
-        if self.asker.replace(asker).is_none() {
+        if self.host.asker.replace(asker).is_none() {
             self.req = self.req.append_tool(AskTool::definition());
         }
         self
+    }
+
+    /// Offer the `web_fetch` tool, which reaches the network from the host.
+    pub fn with_web_fetch(mut self) -> Result<Self, Error> {
+        if self.host.fetcher.is_none() {
+            self.host.fetcher = Some(FetchTool::client()?);
+            self.req = self.req.append_tool(FetchTool::definition());
+        }
+        Ok(self)
     }
 
     /// Set how local tools run (shorthand for `with_executor(Executor::Local(tools))`).
@@ -286,8 +296,8 @@ impl Agent {
                     on_event(Event::ToolCall(call));
                     let (resp, details) = if turn.truncated {
                         (error_response(call, TRUNCATED), None)
-                    } else if call.fn_name == ASK_TOOL {
-                        (ask::respond(call, self.asker.as_ref()).await, None)
+                    } else if let Some(resp) = self.host.run(call).await {
+                        (resp, None)
                     } else {
                         self.executor
                             .execute(call, |chunk| on_event(Event::ToolOutput(chunk)))
@@ -415,11 +425,6 @@ const CANCELLED: &str = "cancelled; the call may have partly run";
 
 /// Result of a tool call from a response truncated by the token limit.
 const TRUNCATED: &str = "response was truncated at max_tokens; tool call was not executed — please re-issue it (split into smaller calls if needed)";
-
-/// A tool response carrying `message` as `{"error": "..."}`.
-pub(crate) fn error_response(call: &ToolCall, message: &str) -> ToolResponse {
-    ToolResponse::from_tool_call(call, json!({ "error": message }).to_string())
-}
 
 /// The tool calls of a turn, answered in order. Dropping it answers the
 /// ones left as cancelled, so the history never holds a call without its

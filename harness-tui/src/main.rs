@@ -341,6 +341,11 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
         .with_system(system)
         .with_history(history)
         .with_executor(executor);
+    // Fetching runs on the host: only when the model may reach the network
+    // anyway, which is always the case without the sandbox.
+    if args.network || args.no_sandbox {
+        agent = agent.with_web_fetch()?;
+    }
 
     if !args.prompt.is_empty() {
         prompt_and_persist(&mut agent, session.as_mut(), &args.prompt.join(" ")).await?;

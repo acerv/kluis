@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
-//! A fake HTTP server answering queued JSON replies, one per connection,
+//! A fake HTTP server answering queued replies, one per connection,
 //! and recording every request it receives.
 
 use std::collections::VecDeque;
@@ -35,6 +35,13 @@ impl Request {
     }
 }
 
+/// A reply of [`WebServer`].
+pub struct Reply {
+    pub status: u16,
+    pub content_type: &'static str,
+    pub body: Vec<u8>,
+}
+
 pub struct WebServer {
     addr: std::net::SocketAddr,
     requests: Arc<Mutex<Vec<Request>>>,
@@ -43,6 +50,16 @@ pub struct WebServer {
 impl WebServer {
     /// Serve `replies` (status, JSON body) in order; then answer 500.
     pub async fn start(replies: Vec<(u16, Value)>) -> Self {
+        let replies = replies.into_iter().map(|(status, body)| Reply {
+            status,
+            content_type: "application/json",
+            body: body.to_string().into_bytes(),
+        });
+        Self::serve(replies.collect()).await
+    }
+
+    /// Serve `replies` in order; then answer 500.
+    pub async fn serve(replies: Vec<Reply>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -50,7 +67,11 @@ impl WebServer {
         let mut replies = VecDeque::from(replies);
         tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
-                let reply = replies.pop_front().unwrap_or((500, Value::Null));
+                let reply = replies.pop_front().unwrap_or(Reply {
+                    status: 500,
+                    content_type: "text/plain",
+                    body: Vec::new(),
+                });
                 serve(stream, reply, &log).await;
             }
         });
@@ -66,11 +87,7 @@ impl WebServer {
     }
 }
 
-async fn serve(
-    stream: TcpStream,
-    (status, body): (u16, Value),
-    log: &Mutex<Vec<Request>>,
-) -> Option<()> {
+async fn serve(stream: TcpStream, reply: Reply, log: &Mutex<Vec<Request>>) -> Option<()> {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     reader.read_line(&mut line).await.ok()?;
@@ -104,10 +121,13 @@ async fn serve(
         body: String::from_utf8(raw).ok()?,
     });
 
-    let body = body.to_string();
-    let resp = format!(
-        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-        body.len()
+    let head = format!(
+        "HTTP/1.1 {} X\r\ncontent-type: {}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        reply.status,
+        reply.content_type,
+        reply.body.len()
     );
-    reader.get_mut().write_all(resp.as_bytes()).await.ok()
+    let stream = reader.get_mut();
+    stream.write_all(head.as_bytes()).await.ok()?;
+    stream.write_all(&reply.body).await.ok()
 }
