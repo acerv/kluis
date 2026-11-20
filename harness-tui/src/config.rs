@@ -4,6 +4,7 @@
 //! Config file, `~/.kluis/config.toml` by default:
 //!
 //! ```toml
+//! [generic]
 //! # Default model when `--model` / `HARNESS_MODEL` is not set.
 //! model = "deepseek-chat"
 //! # Default thinking effort: "default", "low", "medium", or "high".
@@ -41,18 +42,43 @@ use serde::{Deserialize, Deserializer, Serialize};
 /// Environment variable naming the config file, like `--config`.
 pub const ENV: &str = "HARNESS_CONFIG";
 
+/// Model used when neither `--model`, `HARNESS_MODEL` nor the config file
+/// names one.
+pub const DEFAULT_MODEL: &str = "deepseek-chat";
+
 /// Settings read from the config file.
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Default model when `--model` / `HARNESS_MODEL` is not set.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    /// Default thinking effort (`default`, `low`, `medium`, `high`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thinking: Option<Thinking>,
+    #[serde(default)]
+    pub generic: GenericConfig,
     #[serde(default)]
     pub sandbox: SandboxConfig,
+}
+
+impl Default for Config {
+    /// Settings written to a new config file.
+    fn default() -> Self {
+        Self {
+            generic: GenericConfig {
+                model: Some(DEFAULT_MODEL.to_owned()),
+                thinking: None,
+            },
+            sandbox: SandboxConfig::default(),
+        }
+    }
+}
+
+/// The `[generic]` section.
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GenericConfig {
+    /// Default model when `--model` / `HARNESS_MODEL` is not set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Default thinking effort (`default`, `low`, `medium`, `high`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<Thinking>,
 }
 
 /// The `[sandbox]` section.
@@ -148,7 +174,7 @@ pub fn load(path: &Path, required: bool) -> Result<Config, Error> {
         Err(e) => return Err(error(&e).into()),
     };
     let mut config: Config = toml::from_str(&text).map_err(|e| error(&e))?;
-    if let Some(model) = &mut config.model {
+    if let Some(model) = &mut config.generic.model {
         let trimmed = model.trim();
         if trimmed.is_empty() {
             return Err(error(&"model: must not be empty").into());

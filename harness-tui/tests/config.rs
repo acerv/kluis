@@ -45,6 +45,10 @@ fn missing_default_file_is_created_with_defaults() {
     let out = run_cli(home.path(), &[]);
     assert!(out.status.success(), "{}", stderr(&out));
     let text = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        text.contains("[generic]\nmodel = \"deepseek-chat\""),
+        "{text}"
+    );
     assert!(text.contains("deny = [\"~/.ssh\", \"~/.gnupg\"]"), "{text}");
     assert!(!text.contains(".pi"), "{text}");
 
@@ -372,7 +376,7 @@ fn model_and_thinking_defaults_are_loaded_and_overridden() {
     let home = tempdir();
     write_default(
         home.path(),
-        "model = \"claude-sonnet-4-5\"\nthinking = \"medium\"\n",
+        "[generic]\nmodel = \"claude-sonnet-4-5\"\nthinking = \"medium\"\n",
     );
     let out = run_cli(home.path(), &[]);
     assert!(out.status.success(), "{}", stderr(&out));
@@ -388,15 +392,21 @@ fn model_and_thinking_defaults_are_loaded_and_overridden() {
     assert!(stdout(&out).contains("gpt-4o (high)"), "{}", stdout(&out));
 
     // Invalid config values and invalid CLI thinking levels are rejected.
-    write_default(home.path(), "model = \"   \"\n");
+    write_default(home.path(), "[generic]\nmodel = \"   \"\n");
     let out = run_cli(home.path(), &["--no-sandbox"]);
     assert!(!out.status.success());
     assert!(stderr(&out).contains("model"), "{}", stderr(&out));
 
-    write_default(home.path(), "thinking = \"turbo\"\n");
+    write_default(home.path(), "[generic]\nthinking = \"turbo\"\n");
     let out = run_cli(home.path(), &["--no-sandbox"]);
     assert!(!out.status.success());
     assert!(stderr(&out).contains("turbo"), "{}", stderr(&out));
+
+    // Top-level settings are no longer accepted.
+    write_default(home.path(), "model = \"gpt-4o\"\n");
+    let out = run_cli(home.path(), &["--no-sandbox"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("model"), "{}", stderr(&out));
 
     write_default(home.path(), "");
     let out = run_cli(home.path(), &["--no-sandbox", "--thinking", "turbo"]);

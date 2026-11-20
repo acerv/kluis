@@ -34,8 +34,6 @@ use harness_core::{
 use harness_tui::{summary, History, RunOptions, Session, Status};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-const DEFAULT_MODEL: &str = "deepseek-chat";
-
 /// Terminal coding agent with native sandboxing.
 #[derive(Parser)]
 #[command(version)]
@@ -237,7 +235,7 @@ fn apply_config(args: &mut Args) -> Result<Option<String>, Error> {
         },
     };
     let config = config::load(&path, required)?;
-    args.thinking = args.thinking.or(config.thinking);
+    args.thinking = args.thinking.or(config.generic.thinking);
     args.allow_read.extend(config.sandbox.read);
     args.allow_write.extend(config.sandbox.write);
     args.deny_read.extend(config.sandbox.deny);
@@ -248,7 +246,7 @@ fn apply_config(args: &mut Args) -> Result<Option<String>, Error> {
     args.max_memory = args.max_memory.or(config.sandbox.max_memory);
     args.pass_env.extend(config.sandbox.env);
     args.config = Some(path);
-    Ok(config.model)
+    Ok(config.generic.model)
 }
 
 async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
@@ -276,7 +274,7 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
         .model
         .as_deref()
         .or(config_model.as_deref())
-        .unwrap_or(DEFAULT_MODEL);
+        .unwrap_or(config::DEFAULT_MODEL);
 
     let mut picker_entries = Vec::new();
     let (model, history, mut session) = if args.continue_session {
