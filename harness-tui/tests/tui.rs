@@ -6,11 +6,11 @@ use genai::chat::{ChatMessage, ContentPart, MessageContent, ToolCall, ToolRespon
 use harness_core::tools::{Diff, DiffHunk, DiffLine};
 use harness_core::{TokenUsage, ToolDetails};
 use harness_tui::{
-    flush_scrollback, last_assistant_text, osc52_sequence, Action, AgentUpdate, App, SlashCommand,
-    Status, Theme, VIEWPORT_HEIGHT,
+    flush_scrollback, last_assistant_text, osc52_sequence, Action, AgentUpdate, App, BannerLine,
+    SlashCommand, Status, Theme, VIEWPORT_HEIGHT,
 };
 use ratatui::backend::TestBackend;
-use ratatui::style::Color;
+use ratatui::style::{Color, Style};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
 fn status() -> Status {
@@ -1024,4 +1024,46 @@ fn model_picker_navigation_filtering_and_selection() {
     app.open_model_picker(&models);
     assert_eq!(app.handle_event(ctrl('d')), Action::Quit);
     assert!(!app.is_picker_open());
+}
+
+#[test]
+fn banner_puts_info_next_to_logo() {
+    let theme = Theme::new(true);
+    let mut app = App::new("model", status(), theme);
+    app.push_banner(&[
+        BannerLine::new("kluis v1"),
+        BannerLine::warning("openai · no credentials"),
+        BannerLine::new("sandbox: no sandbox"),
+        BannerLine::new("context: no AGENTS.md"),
+    ]);
+    let lines = app.take_scrollback();
+    let text: Vec<_> = lines.iter().map(|l| l.to_string()).collect();
+    assert_eq!(
+        text,
+        [
+            "",
+            "█ ▄▀ █     kluis v1",
+            "█▀▄  █     openai · no credentials",
+            "▀  ▀ ▀▀▀   sandbox: no sandbox",
+            "           context: no AGENTS.md",
+            "",
+        ]
+    );
+    assert_eq!(lines[1].spans[1].style, theme.muted);
+    assert_eq!(lines[2].spans[1].style, theme.error);
+    // Each logo row has its own color, plain without colors.
+    for (row, style) in theme.logo.iter().enumerate() {
+        assert_eq!(lines[row + 1].spans[0].style, *style);
+    }
+    assert_ne!(theme.logo[0], theme.logo[2]);
+    assert_eq!(Theme::new(false).logo, [Style::default(); 3]);
+
+    // Fewer lines than the logo: the logo rows stay whole, without padding.
+    app.push_banner(&[BannerLine::new("kluis v1")]);
+    let text: Vec<_> = app
+        .take_scrollback()
+        .iter()
+        .map(|l| l.to_string())
+        .collect();
+    assert_eq!(text[2..], ["█▀▄  █", "▀  ▀ ▀▀▀", ""]);
 }

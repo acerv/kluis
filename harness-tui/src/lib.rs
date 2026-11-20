@@ -32,7 +32,7 @@ use harness_core::{
 use tokio::sync::mpsc;
 use tokio::time::{interval_at, Instant, MissedTickBehavior};
 
-pub use app::{summary, Action, AgentUpdate, App, SlashCommand, VIEWPORT_HEIGHT};
+pub use app::{summary, Action, AgentUpdate, App, BannerLine, SlashCommand, VIEWPORT_HEIGHT};
 pub use clipboard::{last_assistant_text, osc52_sequence};
 pub use history::{History, MAX_HISTORY};
 pub use style::Theme;
@@ -82,6 +82,11 @@ impl Session {
         self.writer.id()
     }
 
+    /// The start of [`Self::current_id`], enough to tell sessions apart.
+    pub fn short_id(&self) -> &str {
+        short_id(self.current_id())
+    }
+
     /// List persisted sessions for the current workspace, newest first.
     pub fn list(&self) -> Result<Vec<SessionSummary>, Error> {
         self.store.list()
@@ -114,6 +119,13 @@ pub struct RunOptions {
     pub history: Option<History>,
     pub picker_entries: Vec<SessionSummary>,
     pub adapters: Vec<AdapterKind>,
+    /// Shown next to the startup logo.
+    pub banner: Vec<BannerLine>,
+}
+
+/// The start of a session `id`: its creation date and time.
+fn short_id(id: &str) -> &str {
+    id.get(..15).unwrap_or(id)
 }
 
 /// Run the interactive inline TUI until the user quits (`Ctrl-D` or `/quit`).
@@ -123,6 +135,7 @@ pub async fn run(mut agent: Agent, status: Status, opts: RunOptions) -> Result<(
         mut history,
         picker_entries,
         adapters,
+        banner,
     } = opts;
     let mut models = ModelCatalog {
         adapters,
@@ -137,11 +150,8 @@ pub async fn run(mut agent: Agent, status: Status, opts: RunOptions) -> Result<(
     if let Some(ref s) = session {
         app.set_tokens(s.initial_tokens);
     }
+    app.push_banner(&banner);
     if !agent.history().is_empty() {
-        app.push_info(format!(
-            "[continued session · {} messages]",
-            agent.history().len()
-        ));
         app.replay_history(agent.history());
     } else if !picker_entries.is_empty() {
         app.open_picker(picker_entries, None);
@@ -411,7 +421,7 @@ fn resume_session(id: &str, agent: &mut Agent, app: &mut App, session: Option<&m
     app.set_model(&data.meta.model);
     app.set_tokens(data.usage);
     agent.set_history(data.messages);
-    let short = data.meta.id.get(..15).unwrap_or(&data.meta.id);
+    let short = short_id(&data.meta.id);
     app.push_info(format!(
         "[resumed session {short} · {} messages]",
         agent.history().len()

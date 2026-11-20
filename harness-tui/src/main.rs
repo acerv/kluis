@@ -19,19 +19,21 @@ mod config;
 mod sandbox;
 
 use std::io::{self, IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::Parser;
+use genai::adapter::AdapterKind;
 use genai::chat::ChatMessage;
 use harness_core::oauth::flow::Login;
 use harness_core::oauth::{OAuthProvider, OAuthStore};
 use harness_core::tools::{run_worker, Executor, ToolContext};
 use harness_core::{
-    Agent, AuthConfig, Error, Event, SessionData, SessionStore, Thinking, TokenUsage,
+    provider_name, Agent, AuthConfig, CredentialSource, Error, Event, SessionData, SessionStore,
+    Thinking, TokenUsage,
 };
-use harness_tui::{summary, History, RunOptions, Session, Status};
+use harness_tui::{summary, BannerLine, History, RunOptions, Session, Status};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 /// Terminal coding agent with native sandboxing.
@@ -261,11 +263,8 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
     let client = auth.client()?;
     let adapters = auth.configured_adapters();
     let oauth = auth.oauth_logins();
-    drop(auth);
-    let system = harness_core::system_prompt(
-        &cwd,
-        &harness_core::find_agents_files(&cwd, config::agents_path().as_deref()),
-    );
+    let agents = harness_core::find_agents_files(&cwd, config::agents_path().as_deref());
+    let system = harness_core::system_prompt(&cwd, &agents);
     let store = (!args.no_session)
         .then(config::sessions_dir)
         .flatten()
@@ -317,6 +316,10 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
         });
         (model, Vec::new(), session)
     };
+    let credential = AdapterKind::from_model(&model)
+        .ok()
+        .map(|kind| (kind, auth.credential_source(kind)));
+    drop(auth);
 
     let executor = if args.no_sandbox {
         // Even without the container, keep local bash commands away from API
@@ -350,6 +353,13 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
             sandbox,
             folder: current_folder(),
         };
+        let banner = vec![
+            BannerLine::new(format!("kluis v{}", env!("CARGO_PKG_VERSION"))),
+            auth_line(&model, credential),
+            BannerLine::new(sandbox_details(&args, &cwd)),
+            BannerLine::new(context_line(&agents)),
+            BannerLine::new(session_line(session.as_ref(), agent.history().len())),
+        ];
         let history = config::history_path().map(History::load);
         return harness_tui::run(
             agent,
@@ -359,6 +369,7 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
                 history,
                 picker_entries,
                 adapters,
+                banner,
             },
         )
         .await;
@@ -444,12 +455,75 @@ fn sandbox_label(args: &Args) -> String {
     }
 }
 
-fn current_folder() -> String {
-    let Ok(cwd) = std::env::current_dir() else {
-        return ".".to_owned();
+/// What the sandbox lets the harness change and reach, for the banner.
+fn sandbox_details(args: &Args, cwd: &Path) -> String {
+    if args.no_sandbox {
+        return "no sandbox".to_owned();
+    }
+    let write: Vec<_> = (!args.strict)
+        .then_some(cwd)
+        .into_iter()
+        .chain(args.allow_write.iter().map(PathBuf::as_path))
+        .map(tilde)
+        .collect();
+    let access = if write.is_empty() {
+        "read-only".to_owned()
+    } else {
+        format!("write {}", write.join(", "))
     };
+    let network = if args.network {
+        "any network".to_owned()
+    } else if args.allow_connect.is_empty() {
+        "no network".to_owned()
+    } else {
+        let ports: Vec<_> = args.allow_connect.iter().map(u16::to_string).collect();
+        format!("ports {}", ports.join(", "))
+    };
+    format!("sandbox: {access} · {network}")
+}
+
+/// The provider of `model` and where its credentials come from.
+fn auth_line(model: &str, credential: Option<(AdapterKind, CredentialSource)>) -> BannerLine {
+    match credential {
+        Some((kind, source)) => {
+            let text = format!("{} · {source}", provider_name(kind));
+            if source == CredentialSource::Missing {
+                BannerLine::warning(text)
+            } else {
+                BannerLine::new(text)
+            }
+        }
+        None => BannerLine::warning(format!("{model}: unknown provider")),
+    }
+}
+
+fn context_line(agents: &[PathBuf]) -> String {
+    if agents.is_empty() {
+        return format!("context: no {}", harness_core::AGENTS_FILE);
+    }
+    let paths: Vec<_> = agents.iter().map(|p| tilde(p)).collect();
+    format!("context: {}", paths.join(", "))
+}
+
+fn session_line(session: Option<&Session>, messages: usize) -> String {
+    match session {
+        None => "sessions off".to_owned(),
+        Some(session) if messages > 0 => format!(
+            "continued session {} · {messages} messages",
+            session.short_id()
+        ),
+        Some(_) => "new session".to_owned(),
+    }
+}
+
+fn current_folder() -> String {
+    std::env::current_dir().map_or_else(|_| ".".to_owned(), |cwd| tilde(&cwd))
+}
+
+/// `path` with `$HOME` shown as `~`.
+fn tilde(path: &Path) -> String {
     if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
-        if let Ok(rel) = cwd.strip_prefix(&home) {
+        if let Ok(rel) = path.strip_prefix(&home) {
             return if rel.as_os_str().is_empty() {
                 "~".to_owned()
             } else {
@@ -457,7 +531,7 @@ fn current_folder() -> String {
             };
         }
     }
-    cwd.display().to_string()
+    path.display().to_string()
 }
 
 fn print_event(event: Event<'_>) {

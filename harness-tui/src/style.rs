@@ -22,6 +22,8 @@ pub struct Theme {
     pub muted: Style,
     pub status_bar: Style,
     pub status_accent: Style,
+    /// Startup logo rows, top to bottom.
+    pub logo: [Style; 3],
 }
 
 impl Theme {
@@ -45,6 +47,7 @@ impl Theme {
                 muted: plain,
                 status_bar: plain,
                 status_accent: plain,
+                logo: [plain; 3],
             };
         }
         Self {
@@ -71,6 +74,8 @@ impl Theme {
             muted: Style::default().fg(Color::DarkGray),
             status_bar: Style::default().fg(Color::DarkGray),
             status_accent: Style::default().fg(Color::Cyan),
+            // Cyan to blue to violet: 256-color palette #5fd7ff, #5f87ff, #af5fff.
+            logo: [81, 69, 135].map(|c| Style::default().fg(Color::Indexed(c))),
         }
     }
 

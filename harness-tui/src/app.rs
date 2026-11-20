@@ -60,6 +60,36 @@ const FIXED_CHROME_ROWS: u16 = 4;
 /// Initial height of the inline viewport (1 live row + 1-row editor + chrome).
 pub const VIEWPORT_HEIGHT: u16 = FIXED_CHROME_ROWS + 2;
 
+/// Rows of the startup logo.
+const LOGO: [&str; 3] = ["█ ▄▀ █", "█▀▄  █", "▀  ▀ ▀▀▀"];
+
+/// Columns between the logo and the banner text.
+const LOGO_GAP: usize = 3;
+
+/// One line of text shown next to the startup logo.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BannerLine {
+    pub text: String,
+    /// Shown as an error, e.g. missing credentials.
+    pub warn: bool,
+}
+
+impl BannerLine {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            warn: false,
+        }
+    }
+
+    pub fn warning(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            warn: true,
+        }
+    }
+}
+
 /// Owned agent progress update passed over the channel from [`Agent::prompt`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentUpdate {
@@ -244,6 +274,32 @@ impl App {
 
     pub fn theme(&self) -> Theme {
         self.theme
+    }
+
+    /// Push the logo into scrollback, with `info` next to it.
+    pub fn push_banner(&mut self, info: &[BannerLine]) {
+        let logo_w = LOGO.iter().map(|row| row.width()).max().unwrap_or(0);
+        self.scrollback.push(Line::raw(String::new()));
+        for row in 0..LOGO.len().max(info.len()) {
+            let logo = LOGO.get(row).copied().unwrap_or_default();
+            let logo_style = self.theme.logo.get(row).copied().unwrap_or_default();
+            let Some(line) = info.get(row) else {
+                self.scrollback
+                    .push(Line::styled(logo.to_owned(), logo_style));
+                continue;
+            };
+            let pad = " ".repeat(logo_w - logo.width() + LOGO_GAP);
+            let style = if line.warn {
+                self.theme.error
+            } else {
+                self.theme.muted
+            };
+            self.scrollback.push(Line::from(vec![
+                Span::styled(format!("{logo}{pad}"), logo_style),
+                Span::styled(line.text.clone(), style),
+            ]));
+        }
+        self.scrollback.push(Line::raw(String::new()));
     }
 
     /// Push informational muted text into scrollback (one line per `\n`).

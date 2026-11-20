@@ -138,3 +138,27 @@ fn resize_keeps_output_above_prompt() {
     unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
     child.wait().unwrap();
 }
+
+#[test]
+fn banner_shows_startup_info() {
+    let home = tempfile::tempdir().unwrap();
+    let (master, slave) = openpty(24, 100);
+    let mut child = spawn_tui(home.path(), &slave);
+    let mut term = Emulator::new(&master, 24, 100);
+
+    term.wait_for("Type a message");
+    let screen = term.rows().join("\n");
+    let version = format!("█ ▄▀ █     kluis v{}", env!("CARGO_PKG_VERSION"));
+    assert!(screen.contains(&version), "{screen}");
+    for text in [
+        "█▀▄  █     deepseek · ",
+        "▀  ▀ ▀▀▀   no sandbox",
+        "           context: ",
+        "           new session",
+    ] {
+        assert!(screen.contains(text), "{text:?} missing:\n{screen}");
+    }
+
+    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+    child.wait().unwrap();
+}
