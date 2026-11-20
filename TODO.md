@@ -11,10 +11,12 @@
 ## Tools
 
 - [ ] `read`: images as attachments
+- [ ] `ask_user` tool: pause and ask the user a question (with options) mid-task, then feed the answer back as tool output
 - [ ] `web_fetch`: let the model read documentation and issues (decide how it fits the sandbox: network is off by default)
-- [ ] Plan/todo tool so the model can keep a plan outside the context
+- [ ] Todo tool so the model can keep a plan outside the context
+- [ ] Plan mode: the model proposes a plan and the user approves it before any changes
 - [ ] Subagents for large tasks
-- [ ] Per-tool `allow`/`ask`/`deny` permissions in `config.toml`, so `--no-sandbox` is not unguarded
+- [ ] Permissions system: per-tool `allow`/`ask`/`deny` in `config.toml`, so `--no-sandbox` is not unguarded
 - [ ] File checkpoints of `edit`/`write` changes (git snapshot or per-turn backup) to make them reversible
 
 ## Agent & Session
@@ -46,4 +48,4 @@
 
 ## Docs
 
-- [ ] README: install, sandbox requirements, config, login
+- [x] README: install, sandbox requirements, config, login
