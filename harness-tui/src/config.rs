@@ -108,6 +108,11 @@ pub fn default_path() -> Option<PathBuf> {
     Some(kluis_dir()?.join("config.toml"))
 }
 
+/// Where provider credentials are looked for: `~/.kluis/auth.toml`.
+pub fn auth_path() -> Option<PathBuf> {
+    Some(kluis_dir()?.join("auth.toml"))
+}
+
 /// Where global agent instructions are looked for:
 /// `~/.kluis/AGENTS.md`.
 pub fn agents_path() -> Option<PathBuf> {

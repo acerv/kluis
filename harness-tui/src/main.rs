@@ -24,7 +24,9 @@ use std::process::ExitCode;
 use clap::Parser;
 use genai::chat::ChatMessage;
 use harness_core::tools::{run_worker, Executor, ToolContext};
-use harness_core::{Agent, Error, Event, SessionData, SessionStore, Thinking, TokenUsage};
+use harness_core::{
+    Agent, AuthConfig, Error, Event, SessionData, SessionStore, Thinking, TokenUsage,
+};
 use harness_tui::{summary, History, RunOptions, Session, Status};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -175,6 +177,11 @@ fn apply_config(args: &mut Args) -> Result<Option<String>, Error> {
 
 async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
     let cwd = std::env::current_dir()?;
+    let auth = match config::auth_path() {
+        Some(path) => AuthConfig::load(&path)?,
+        None => AuthConfig::default(),
+    };
+    let client = auth.client()?;
     let system = harness_core::system_prompt(
         &cwd,
         &harness_core::find_agents_files(&cwd, config::agents_path().as_deref()),
@@ -245,7 +252,7 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
         sandbox::executor(&args, &cwd)?
     };
 
-    let mut agent = Agent::new(&model)?
+    let mut agent = Agent::with_client(client, &model)
         .with_thinking(args.thinking.unwrap_or_default())
         .with_system(system)
         .with_history(history)

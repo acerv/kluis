@@ -141,24 +141,7 @@ fn run_bash(
 }
 
 fn read_request(stream: &TcpStream) -> Value {
-    let mut reader = BufReader::new(stream);
-    let mut length = 0usize;
-    loop {
-        let mut line = String::new();
-        reader.read_line(&mut line).unwrap();
-        let line = line.trim_end();
-        if line.is_empty() {
-            break;
-        }
-        if let Some((name, value)) = line.split_once(':') {
-            if name.eq_ignore_ascii_case("content-length") {
-                length = value.trim().parse().unwrap();
-            }
-        }
-    }
-    let mut body = vec![0u8; length];
-    reader.read_exact(&mut body).unwrap();
-    serde_json::from_slice(&body).unwrap()
+    read_request_with_headers(stream).1
 }
 
 fn write_sse(mut stream: TcpStream, chunks: &[String]) {
@@ -467,4 +450,148 @@ fn session_persists_continues_and_isolates_projects_in_sandbox() {
         stderr.contains("requires an interactive terminal"),
         "{stderr}"
     );
+}
+
+#[test]
+fn auth_toml_authenticates_host_while_hidden_in_sandbox() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let home = tempdir();
+    let cwd = tempdir();
+    let kluis = home.path().join(".kluis");
+    std::fs::create_dir_all(&kluis).unwrap();
+    let auth_path = kluis.join("auth.toml");
+
+    // Open permissions (0644) must be rejected before starting.
+    std::fs::write(&auth_path, "[mistral]\napi_key = \"sk-open\"\n").unwrap();
+    std::fs::set_permissions(&auth_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let bad = Command::new(env!("CARGO_BIN_EXE_kl"))
+        .current_dir(cwd.path())
+        .env("HOME", home.path())
+        .env_remove("HARNESS_CONFIG")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!bad.status.success());
+    let stderr = String::from_utf8_lossy(&bad.stderr);
+    assert!(stderr.contains("chmod 600"), "{stderr}");
+
+    // Start a mock OpenAI-compatible server that captures the Authorization header
+    // and runs a bash command trying to read `~/.kluis/auth.toml`.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let auth_path_str = auth_path.display().to_string();
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let (headers, _body) = read_request_with_headers(&stream);
+        let call = json!({
+            "index": 0,
+            "id": "call_1",
+            "type": "function",
+            "function": {
+                "name": "bash",
+                "arguments": json!({
+                    "command": format!(
+                        "echo AUTH=$(cat {auth_path_str} 2>&1 || true); env; cat /proc/1/environ 2>&1 || true"
+                    )
+                })
+                .to_string(),
+            }
+        });
+        write_sse(
+            stream,
+            &[
+                delta(json!({ "tool_calls": [call] }), None),
+                delta(json!({}), Some("tool_calls")),
+            ],
+        );
+
+        let (stream, _) = listener.accept().unwrap();
+        let req2 = read_request(&stream);
+        let content = req2["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == "tool")
+            .and_then(|m| m["content"].as_str())
+            .unwrap();
+        let output = serde_json::from_str::<Value>(content).unwrap()["output"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        write_sse(
+            stream,
+            &[
+                delta(json!({ "content": "done" }), None),
+                delta(json!({}), Some("stop")),
+            ],
+        );
+        (headers, output)
+    });
+
+    std::fs::write(
+        &auth_path,
+        format!(
+            "[mistral]\napi_key = \"secret-from-auth-toml\"\nendpoint = \"http://127.0.0.1:{port}/v1\"\n"
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&auth_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_kl"))
+        .args(["--model", "mistral::test-model", "run"])
+        .current_dir(cwd.path())
+        .env("HOME", home.path())
+        .env_remove("HARNESS_CONFIG")
+        .env_remove("MISTRAL_API_KEY")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let (headers, bash_output) = server.join().unwrap();
+    assert!(
+        headers
+            .to_ascii_lowercase()
+            .contains("authorization: bearer secret-from-auth-toml"),
+        "{headers}"
+    );
+    assert!(
+        !bash_output.contains("secret-from-auth-toml"),
+        "auth.toml leaked into sandbox: {bash_output}"
+    );
+    let auth_line = bash_output
+        .lines()
+        .find(|l| l.starts_with("AUTH="))
+        .unwrap();
+    assert!(auth_line.contains("Permission denied"), "{auth_line}");
+}
+
+fn read_request_with_headers(stream: &TcpStream) -> (String, Value) {
+    let mut reader = BufReader::new(stream);
+    let mut headers = String::new();
+    let mut length = 0usize;
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let trimmed = line.trim_end();
+        if trimmed.is_empty() {
+            break;
+        }
+        headers.push_str(trimmed);
+        headers.push('\n');
+        if let Some((name, value)) = trimmed.split_once(':') {
+            if name.eq_ignore_ascii_case("content-length") {
+                length = value.trim().parse().unwrap();
+            }
+        }
+    }
+    let mut body = vec![0u8; length];
+    reader.read_exact(&mut body).unwrap();
+    (headers, serde_json::from_slice(&body).unwrap())
 }
