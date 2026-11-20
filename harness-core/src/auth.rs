@@ -10,9 +10,6 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::fs::File;
-use std::io::{ErrorKind, Read};
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use genai::adapter::AdapterKind;
@@ -20,7 +17,7 @@ use genai::resolver::{AuthData, Endpoint, ProviderConfig};
 use genai::Client;
 use serde::Deserialize;
 
-use crate::Error;
+use crate::{private_file, Error};
 
 /// Maximum size of an `auth.toml` file (256 KiB).
 const MAX_AUTH_BYTES: usize = 256 * 1024;
@@ -55,36 +52,10 @@ impl AuthConfig {
     /// not exist; rejects non-regular files, oversized files, and permissions
     /// accessible by group or others (`mode & 0o077 != 0`).
     pub fn load(path: &Path) -> Result<Self, Error> {
-        let error = |e: &dyn fmt::Display| format!("{}: {e}", path.display());
-        let file = match File::open(path) {
-            Ok(file) => file,
-            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Self::default()),
-            Err(e) => return Err(error(&e).into()),
-        };
-        let meta = file.metadata().map_err(|e| error(&e))?;
-        if !meta.is_file() {
-            return Err(error(&"not a regular file").into());
+        match private_file::read(path, MAX_AUTH_BYTES)? {
+            Some(raw) => Self::parse(&raw).map_err(|e| format!("{}: {e}", path.display()).into()),
+            None => Ok(Self::default()),
         }
-        let mode = meta.permissions().mode() & 0o777;
-        if mode & 0o077 != 0 {
-            return Err(error(&format!(
-                "permissions {mode:04o} are too open; run `chmod 600 {}`",
-                path.display()
-            ))
-            .into());
-        }
-        if meta.len() > MAX_AUTH_BYTES as u64 {
-            return Err(error(&format!("file exceeds {} KiB limit", MAX_AUTH_BYTES >> 10)).into());
-        }
-
-        let mut raw = String::new();
-        file.take(MAX_AUTH_BYTES as u64 + 1)
-            .read_to_string(&mut raw)
-            .map_err(|e| error(&e))?;
-        if raw.len() > MAX_AUTH_BYTES {
-            return Err(error(&format!("file exceeds {} KiB limit", MAX_AUTH_BYTES >> 10)).into());
-        }
-        Self::parse(&raw).map_err(|e| error(&e).into())
     }
 
     /// Parse `auth.toml` contents without touching the filesystem.

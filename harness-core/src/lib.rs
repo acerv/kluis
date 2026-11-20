@@ -11,6 +11,7 @@ mod agent;
 mod auth;
 mod event;
 mod models;
+mod private_file;
 mod prompt;
 mod session;
 pub mod tools;
