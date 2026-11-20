@@ -162,12 +162,13 @@ The repository is a Cargo workspace with four crates:
 When the sandbox is on, `kl` starts a worker process (`kl --tool-executor`)
 inside the container. The host agent and the worker talk over an async NDJSON
 protocol on stdio, supporting parallel tool calls and per-call cancellation.
-Commands and file access therefore never run in the host process.
+Commands and file access therefore never run in the host process. Only
+`ask_user` and `web_fetch` run there, as they need the user and the network.
 
 The agent is a plain state machine: it keeps the conversation as a
 `ChatRequest`, reports progress through a borrowed `Event` callback, and runs
-tool calls through the `Executor` trait. This keeps the UI and persistence out
-of the core loop.
+tool calls through an `Executor`, local or sandboxed. This keeps the UI and
+persistence out of the core loop.
 
 ## Design choices
 
