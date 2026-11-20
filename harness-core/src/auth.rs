@@ -108,11 +108,12 @@ impl AuthConfig {
                 if trimmed.is_empty() {
                     return Err(format!("{name}.endpoint: must not be empty"));
                 }
-                *ep = if trimmed.ends_with('/') {
-                    trimmed.to_owned()
-                } else {
-                    format!("{trimmed}/")
-                };
+                if trimmed.len() != ep.len() {
+                    *ep = trimmed.to_owned();
+                }
+                if !ep.ends_with('/') {
+                    ep.push('/');
+                }
             }
             if entry.api_key.is_none() && entry.endpoint.is_none() {
                 return Err(format!("{name}: expected `api_key` or `endpoint`"));
@@ -174,19 +175,21 @@ impl AuthConfig {
 
     /// Return all adapters configured either in `auth.toml` or via their
     /// default environment variable, in deterministic order without duplicate
-    /// sibling adapters (`OpenAIResp` / `GeminiIx`).
+    /// sibling adapters (`OpenAIResp` / `GeminiIx` are only emitted when their
+    /// primary `OpenAI` / `Gemini` sibling is not configured).
     pub fn configured_adapters(&self) -> Vec<AdapterKind> {
         let mut out = Vec::new();
         for &kind in AdapterKind::all() {
-            if matches!(kind, AdapterKind::OpenAIResp | AdapterKind::GeminiIx) {
-                continue;
-            }
-            let sibling_present = match kind {
-                AdapterKind::OpenAI => self.providers.contains_key(&AdapterKind::OpenAIResp),
-                AdapterKind::Gemini => self.providers.contains_key(&AdapterKind::GeminiIx),
-                _ => false,
+            let configured = match kind {
+                AdapterKind::OpenAIResp => {
+                    !out.contains(&AdapterKind::OpenAI) && self.providers.contains_key(&kind)
+                }
+                AdapterKind::GeminiIx => {
+                    !out.contains(&AdapterKind::Gemini) && self.providers.contains_key(&kind)
+                }
+                _ => self.providers.contains_key(&kind) || env_key_present(kind),
             };
-            if self.providers.contains_key(&kind) || sibling_present || env_key_present(kind) {
+            if configured {
                 out.push(kind);
             }
         }

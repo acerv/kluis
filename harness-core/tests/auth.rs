@@ -105,6 +105,21 @@ endpoint = "http://127.0.0.1:9000/v1"
     assert!(!adapters.contains(&AdapterKind::OpenAIResp), "{adapters:?}");
     assert!(adapters.contains(&AdapterKind::DeepSeek), "{adapters:?}");
     assert!(adapters.contains(&AdapterKind::Custom(2)), "{adapters:?}");
+
+    // When only a sibling adapter (`[gemini_ix]`) is configured and `GEMINI_API_KEY`
+    // is unset, `configured_adapters()` must return `GeminiIx` so discovery uses its auth.
+    if std::env::var_os("GEMINI_API_KEY").is_none_or(|v| v.is_empty()) {
+        let only_ix = AuthConfig::parse("[gemini_ix]\napi_key = \"sk-ix\"\n").unwrap();
+        let ix_adapters = only_ix.configured_adapters();
+        assert!(
+            ix_adapters.contains(&AdapterKind::GeminiIx),
+            "{ix_adapters:?}"
+        );
+        assert!(
+            !ix_adapters.contains(&AdapterKind::Gemini),
+            "{ix_adapters:?}"
+        );
+    }
 }
 
 #[tokio::test]

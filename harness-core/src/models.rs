@@ -44,7 +44,14 @@ pub async fn discover_models_with_timeout(
     adapters: &[AdapterKind],
     timeout: Duration,
 ) -> ModelList {
-    let futs = adapters.iter().copied().map(|kind| async move {
+    let mut unique = Vec::with_capacity(adapters.len());
+    for &kind in adapters {
+        if !unique.contains(&kind) {
+            unique.push(kind);
+        }
+    }
+
+    let futs = unique.into_iter().map(|kind| async move {
         let provider = provider_name(kind);
         match tokio::time::timeout(timeout, client.all_model_names(kind, ())).await {
             Ok(Ok(mut raw)) => {
@@ -107,11 +114,12 @@ fn qualify_model_id(kind: AdapterKind, provider: &str, raw_id: String) -> String
 /// image/video generation, moderation, legacy base completions) that some
 /// `/models` endpoints include alongside chat models.
 pub fn is_chat_model(id: &str) -> bool {
-    let lower = id.to_ascii_lowercase();
-    let leaf = lower.rsplit('/').next().unwrap_or(&lower);
+    let leaf = id.rsplit('/').next().unwrap_or(id);
+    let leaf = leaf.rsplit("::").next().unwrap_or(leaf).trim();
     if leaf.is_empty() {
         return false;
     }
+    let lower = leaf.to_ascii_lowercase();
     const EXCLUDE_CONTAINS: &[&str] = &[
         "embedding",
         "embed-",
@@ -135,10 +143,11 @@ pub fn is_chat_model(id: &str) -> bool {
     ];
     const EXCLUDE_EXACT_OR_DASH: &[&str] = &["ada", "aqa", "tts", "veo"];
     const EXCLUDE_PREFIX: &[&str] = &["bge-", "e5-"];
-    !EXCLUDE_CONTAINS.iter().any(|pat| leaf.contains(pat))
-        && !EXCLUDE_PREFIX.iter().any(|pat| leaf.starts_with(pat))
+    !EXCLUDE_CONTAINS.iter().any(|pat| lower.contains(pat))
+        && !EXCLUDE_PREFIX.iter().any(|pat| lower.starts_with(pat))
         && !EXCLUDE_EXACT_OR_DASH.iter().any(|pat| {
-            leaf.strip_prefix(pat)
+            lower
+                .strip_prefix(pat)
                 .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
         })
 }

@@ -57,7 +57,10 @@ fn is_chat_model_keeps_chat_and_filters_non_chat() {
         "omni-moderation-latest",
         "bge-large-en-v1.5",
         "openai/whisper-large-v3",
+        "openai::tts",
+        "openai::ada",
         "rerank-english-v3.0",
+        "   ",
     ] {
         assert!(!is_chat_model(drop), "expected non-chat model: {drop}");
     }
@@ -128,6 +131,7 @@ endpoint = "http://{slow_addr}/v1"
     let list = discover_models_with_timeout(
         &client,
         &[
+            AdapterKind::OpenAI,
             AdapterKind::OpenAI,
             AdapterKind::Mistral,
             AdapterKind::Groq,
