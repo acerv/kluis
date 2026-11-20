@@ -151,9 +151,12 @@ fn main() -> ExitCode {
 }
 
 fn launch(mut args: Args) -> Result<ExitCode, Error> {
-    // Before the runtime starts its threads, though the filter covers them
-    // anyway.
     if args.tool_executor {
+        // Commands run as the same user: keep them from reading the
+        // worker's environment or writing forged results into its pipes.
+        harness_sandbox::protect_self()?;
+        // Before the runtime starts its threads, though the filter covers
+        // them anyway.
         harness_sandbox::restrict_syscalls(args.allow_unix_sockets)?;
     }
     let runtime = tokio::runtime::Builder::new_multi_thread()
