@@ -1,32 +1,48 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
-//! Unix sockets lead to programs of the host, which can reach the network.
+//! The seccomp filter of the sandbox: no user namespaces, and no Unix
+//! sockets, which lead to programs of the host that can reach the network.
 
 use std::io::ErrorKind;
 use std::net::TcpListener;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::process::Command;
 
-use harness_sandbox::block_unix_sockets;
+use harness_sandbox::restrict_syscalls;
 
-/// Set in the copy of the test process that blocks Unix sockets, which
-/// cannot be undone.
+/// Set in the copy of the test process that restricts its system calls,
+/// which cannot be undone: "sockets" when Unix sockets stay allowed.
 const CHILD: &str = "HARNESS_TEST_SECCOMP_CHILD";
 
 /// Run `body` in a copy of this test process with Unix sockets blocked.
 fn blocked(name: &str, body: fn()) {
-    if std::env::var_os(CHILD).is_some() {
-        block_unix_sockets().unwrap();
+    restricted(name, false, body);
+}
+
+/// Run `body` in a copy of this test process with its system calls
+/// restricted, Unix sockets included unless `unix_sockets`.
+fn restricted(name: &str, unix_sockets: bool, body: fn()) {
+    if let Some(mode) = std::env::var_os(CHILD) {
+        restrict_syscalls(mode == "sockets").unwrap();
         body();
         return;
     }
     let status = Command::new(std::env::current_exe().unwrap())
         .args(["--exact", name, "--nocapture"])
-        .env(CHILD, "1")
+        .env(CHILD, if unix_sockets { "sockets" } else { "none" })
         .status()
         .unwrap();
-    assert!(status.success(), "{name} failed with Unix sockets blocked");
+    assert!(
+        status.success(),
+        "{name} failed with system calls restricted"
+    );
+}
+
+/// The error of a failed raw system call.
+fn errno(res: libc::c_long) -> Option<i32> {
+    assert_eq!(res, -1);
+    std::io::Error::last_os_error().raw_os_error()
 }
 
 #[test]
@@ -67,9 +83,7 @@ fn io_uring_is_unavailable() {
         let mut params = [0u8; 120];
         // SAFETY: io_uring_setup with a zeroed parameter block.
         let res = unsafe { libc::syscall(libc::SYS_io_uring_setup, 1, params.as_mut_ptr()) };
-        assert_eq!(res, -1);
-        let errno = std::io::Error::last_os_error().raw_os_error();
-        assert_eq!(errno, Some(libc::ENOSYS));
+        assert_eq!(errno(res), Some(libc::ENOSYS));
     });
 }
 
@@ -99,4 +113,44 @@ fn unix_socket_probe() {
     let dir = tempfile::tempdir().unwrap();
     let err = UnixListener::bind(dir.path().join("app.sock")).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::PermissionDenied, "{err}");
+}
+
+#[test]
+fn unix_sockets_can_stay_allowed() {
+    restricted("unix_sockets_can_stay_allowed", true, || {
+        let dir = tempfile::tempdir().unwrap();
+        UnixListener::bind(dir.path().join("app.sock")).unwrap();
+    });
+}
+
+#[test]
+fn user_namespaces_are_refused() {
+    // With Unix sockets allowed too: the network does not matter here.
+    restricted("user_namespaces_are_refused", true, || {
+        // SAFETY: plain system calls; a clone that succeeded would leave
+        // its child at once.
+        unsafe {
+            let res = libc::syscall(libc::SYS_unshare, libc::CLONE_NEWUSER);
+            assert_eq!(errno(res), Some(libc::EPERM));
+            let flags = libc::CLONE_NEWUSER | libc::SIGCHLD;
+            let res = libc::syscall(libc::SYS_clone, flags, 0, 0, 0, 0);
+            if res == 0 {
+                libc::_exit(0);
+            }
+            assert_eq!(errno(res), Some(libc::EPERM));
+            // Its flags cannot be checked, so it is not available at all.
+            let res = libc::syscall(libc::SYS_clone3, std::ptr::null::<u8>(), 0);
+            assert_eq!(errno(res), Some(libc::ENOSYS));
+        }
+    });
+}
+
+#[test]
+fn threads_and_programs_still_start() {
+    // Without clone3, they fall back to clone.
+    restricted("threads_and_programs_still_start", false, || {
+        std::thread::spawn(|| ()).join().unwrap();
+        let status = Command::new("true").status().unwrap();
+        assert!(status.success());
+    });
 }

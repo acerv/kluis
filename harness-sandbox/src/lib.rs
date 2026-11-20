@@ -13,8 +13,9 @@
 //! Programs of the host that can reach the network are kept away too: a
 //! mount below a shown folder whose filesystem could reach the network,
 //! such as a cloud drive or a network share, is hidden unless it is
-//! allowed itself, and [`block_unix_sockets`], called inside the
-//! container, keeps commands off the Unix sockets of the host.
+//! allowed itself, and [`restrict_syscalls`], called inside the
+//! container, keeps commands off the Unix sockets of the host and out of
+//! new user namespaces.
 
 #[cfg(not(target_os = "linux"))]
 compile_error!("harness-sandbox only supports Linux");
@@ -29,7 +30,7 @@ pub use env::command_env;
 pub use network::NoNetwork;
 pub use profile::Options;
 pub use protect::protect_self;
-pub use seccomp::block_unix_sockets;
+pub use seccomp::restrict_syscalls;
 
 use std::collections::{HashMap, VecDeque};
 use std::ffi::OsString;

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
-//! A seccomp filter keeping commands away from Unix sockets of the host.
+//! A seccomp filter shrinking what commands can do to the kernel and the
+//! host.
 
 use std::io;
 
@@ -23,24 +24,30 @@ const NATIVE_ARCH: u32 = 0xC000_00B7; // AUDIT_ARCH_AARCH64
 const X32_BIT: u32 = 0x4000_0000;
 
 const ALLOW: u32 = libc::SECCOMP_RET_ALLOW;
-const DENY: u32 = libc::SECCOMP_RET_ERRNO | libc::EACCES as u32;
-const NOSYS: u32 = libc::SECCOMP_RET_ERRNO | libc::ENOSYS as u32;
+const EACCES: u32 = libc::SECCOMP_RET_ERRNO | libc::EACCES as u32;
+const EPERM: u32 = libc::SECCOMP_RET_ERRNO | libc::EPERM as u32;
+const ENOSYS: u32 = libc::SECCOMP_RET_ERRNO | libc::ENOSYS as u32;
 const KILL: u32 = libc::SECCOMP_RET_KILL_PROCESS;
 
-/// Refuse to create Unix sockets in this process and the ones it starts,
-/// failing with `EACCES`.
+/// Restrict the system calls of this process and the ones it starts.
 ///
-/// A sandbox without network still shows sockets of the host below the
+/// Creating a user namespace fails with `EPERM`: root inside one cannot
+/// undo the sandbox, but it reaches kernel code, such as the firewall,
+/// that most kernel exploits go through. `clone3`, whose flags the filter
+/// cannot read, and io_uring, as large a part of the kernel, fail with
+/// `ENOSYS`, so programs fall back to `clone` and plain system calls. A
+/// process making system calls of another architecture or ABI, which could
+/// get around the filter, is killed.
+///
+/// Unless `unix_sockets`, creating a Unix socket fails with `EACCES`: a
+/// sandbox without network still shows sockets of the host below the
 /// folders it shows, such as the ones of an editor or a chat app, and the
 /// programs behind them can reach the network. `socketpair` keeps working:
-/// its sockets only reach each other. io_uring, which could create sockets
-/// without the system call, fails with `ENOSYS`, so programs fall back to
-/// plain system calls. A process making system calls of another
-/// architecture or ABI, which could get around the filter, is killed.
+/// its sockets only reach each other.
 ///
 /// It cannot be undone, and applies to every thread of the process.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-pub fn block_unix_sockets() -> io::Result<()> {
+pub fn restrict_syscalls(unix_sockets: bool) -> io::Result<()> {
     let mut program = vec![
         load(ARCH),
         // Another architecture: it could get around the filter.
@@ -52,13 +59,26 @@ pub fn block_unix_sockets() -> io::Result<()> {
     program.extend([jump_ge(X32_BIT, 0, 1), ret(KILL)]);
     program.extend([
         jump_eq(libc::SYS_io_uring_setup as u32, 0, 1),
-        ret(NOSYS),
-        jump_eq(libc::SYS_socket as u32, 0, 3),
+        ret(ENOSYS),
+        jump_eq(libc::SYS_clone3 as u32, 0, 1),
+        ret(ENOSYS),
+        // `unshare` and `clone` take their flags first.
+        jump_eq(libc::SYS_unshare as u32, 1, 0),
+        jump_eq(libc::SYS_clone as u32, 0, 3),
         load(ARG0),
-        jump_eq(libc::AF_UNIX as u32, 0, 1),
-        ret(DENY),
-        ret(ALLOW),
+        jump_set(libc::CLONE_NEWUSER as u32, 0, 1),
+        ret(EPERM),
     ]);
+    if !unix_sockets {
+        program.extend([
+            load(NR),
+            jump_eq(libc::SYS_socket as u32, 0, 3),
+            load(ARG0),
+            jump_eq(libc::AF_UNIX as u32, 0, 1),
+            ret(EACCES),
+        ]);
+    }
+    program.push(ret(ALLOW));
     let filter = sock_fprog {
         len: program.len() as u16,
         filter: program.as_mut_ptr(),
@@ -85,13 +105,13 @@ pub fn block_unix_sockets() -> io::Result<()> {
     Ok(())
 }
 
-/// Unix sockets cannot be blocked on this architecture: refuse to run
+/// System calls cannot be restricted on this architecture: refuse to run
 /// rather than leave them open.
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-pub fn block_unix_sockets() -> io::Result<()> {
+pub fn restrict_syscalls(_unix_sockets: bool) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "blocking Unix sockets is not supported on this architecture",
+        "restricting system calls is not supported on this architecture",
     ))
 }
 
@@ -122,6 +142,11 @@ fn jump_eq(k: u32, then: u8, otherwise: u8) -> sock_filter {
 #[cfg(target_arch = "x86_64")]
 fn jump_ge(k: u32, then: u8, otherwise: u8) -> sock_filter {
     jump(libc::BPF_JGE, k, then, otherwise)
+}
+
+/// Like [`jump_eq`], testing whether any bit of `k` is set.
+fn jump_set(k: u32, then: u8, otherwise: u8) -> sock_filter {
+    jump(libc::BPF_JSET, k, then, otherwise)
 }
 
 fn jump(op: u32, k: u32, then: u8, otherwise: u8) -> sock_filter {

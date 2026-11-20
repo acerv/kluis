@@ -141,6 +141,7 @@ precedence over `api_key`.
   container uses `CLONE_NEWNET` when no network is allowed.
 - Cloud drives and network shares are hidden, and Unix sockets are blocked
   without `--network`, so commands cannot reach the network through them.
+- Commands cannot create user namespaces, which most kernel exploits rely on.
 - Private `/tmp`, process/thread limit, virtual memory limit, and chosen
   environment variables passed to commands.
 

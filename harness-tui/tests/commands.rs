@@ -664,3 +664,14 @@ fn network_allows_host_unix_sockets() {
     assert!(output.contains("UNIX=connected"), "{output}");
     assert!(received);
 }
+
+#[test]
+fn commands_cannot_create_user_namespaces() {
+    // Kernel exploits mostly go through them, network or not.
+    let home = tempdir();
+    let output = run_bash(home.path(), &["--network"], &[], |_| {
+        "unshare --user true 2>&1; echo EXIT=$?".into()
+    });
+    assert!(output.contains("Operation not permitted"), "{output}");
+    assert!(output.contains("EXIT=1"), "{output}");
+}
