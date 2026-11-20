@@ -3,8 +3,7 @@
 ## Sandbox
 
 - [ ] Protect `.git` of new `git init`
-- [ ] Deny more secrets by default (`~/.aws`, `~/.netrc`, `~/.git-credentials`, `~/.docker`, `~/.config/gh`, `~/.kube`, `~/.password-store`)
-- [ ] Count processes per container (cgroups pids) instead of `RLIMIT_NPROC`, which counts the whole user
+- [x] Count processes per container: `RLIMIT_NPROC` is per user namespace since Linux 5.14
 
 ## Compatibility
 
@@ -41,4 +40,4 @@
 - [ ] Session commands: `/compact`, `/undo`, `/retry`, `/diff`, `/status`, `/export`
 - [ ] Context window usage (`<tokens>/<limit>`) for known models in the status bar
 - [ ] Update terminal title with activity state and ring bell on long turns
-- [ ] Restore the terminal on `SIGTERM`/`SIGHUP`
+- [x] Restore the terminal on `SIGTERM`/`SIGHUP`
