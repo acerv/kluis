@@ -109,7 +109,7 @@ impl Picker {
             .iter()
             .enumerate()
             .map(|(idx, model)| {
-                let is_current = model.id == current_model;
+                let is_current = is_current_model(model, current_model);
                 if is_current {
                     initial_selected = idx;
                 }
@@ -250,7 +250,7 @@ impl Picker {
             Line::from(vec![
                 Span::styled(self.title, theme.prompt),
                 Span::styled(
-                    "  (↑/↓ select · type to filter · Enter select · Esc cancel)",
+                    "  (↑/↓ move · type to filter · Enter select · Esc cancel)",
                     theme.muted,
                 ),
             ])
@@ -306,6 +306,14 @@ impl Picker {
         }
         self.selected = 0;
     }
+}
+
+fn is_current_model(model: &ModelInfo, current: &str) -> bool {
+    model.id == current
+        || current
+            .strip_prefix(&model.provider)
+            .and_then(|s| s.strip_prefix("::"))
+            == Some(model.id.as_str())
 }
 
 fn format_row(item: &PickerItem, selected: bool, width: usize, theme: Theme) -> Line<'static> {

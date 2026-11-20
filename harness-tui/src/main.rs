@@ -183,6 +183,7 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
     };
     let client = auth.client()?;
     let adapters = auth.configured_adapters();
+    drop(auth);
     let system = harness_core::system_prompt(
         &cwd,
         &harness_core::find_agents_files(&cwd, config::agents_path().as_deref()),

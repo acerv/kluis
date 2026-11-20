@@ -1006,6 +1006,16 @@ fn model_picker_navigation_filtering_and_selection() {
     );
     assert!(!app.is_picker_open());
 
+    // Explicit `<provider>::` model name still highlights and badges the un-namespaced entry.
+    let mut namespaced = App::new("deepseek::deepseek-chat", status(), Theme::new(false));
+    namespaced.open_model_picker(&models);
+    term.draw(|f| namespaced.render(f)).unwrap();
+    assert!(
+        render_text(&term).contains("❯ deepseek-chat · deepseek (current)"),
+        "{}",
+        render_text(&term)
+    );
+
     // Esc cancels cleanly; Ctrl-D quits.
     app.open_model_picker(&models);
     assert_eq!(app.handle_event(key(KeyCode::Esc)), Action::Redraw);
