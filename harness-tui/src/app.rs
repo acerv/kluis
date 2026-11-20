@@ -1275,15 +1275,15 @@ fn format_tool_result(
         Some("todo") => {
             for todo in v["todos"].as_array().into_iter().flatten() {
                 let (mark, style) = match todo["status"].as_str() {
-                    Some("completed") => ("[x]", theme.muted),
-                    Some("in_progress") => ("[>]", theme.tool_name),
-                    _ => ("[ ]", Style::default()),
+                    Some("completed") => ("  ", theme.todo_done),
+                    Some("in_progress") => ("❯ ", Style::default()),
+                    _ => ("  ", Style::default()),
                 };
                 let content = todo["content"].as_str().unwrap_or_default();
-                out.push(Line::styled(
-                    format!("  {mark} {}", summary(content)),
-                    style,
-                ));
+                out.push(Line::from(vec![
+                    Span::styled(format!("  {mark}"), theme.prompt),
+                    Span::styled(summary(content), style),
+                ]));
             }
         }
         _ => {

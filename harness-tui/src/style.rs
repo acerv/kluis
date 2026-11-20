@@ -20,6 +20,8 @@ pub struct Theme {
     pub diff_remove: Style,
     pub error: Style,
     pub muted: Style,
+    /// A finished `todo` item.
+    pub todo_done: Style,
     pub status_bar: Style,
     pub status_accent: Style,
     /// Startup logo rows, top to bottom.
@@ -45,6 +47,7 @@ impl Theme {
                 diff_remove: plain,
                 error: plain,
                 muted: plain,
+                todo_done: plain,
                 status_bar: plain,
                 status_accent: plain,
                 logo: [plain; 3],
@@ -72,6 +75,9 @@ impl Theme {
             diff_remove: Style::default().fg(Color::Red),
             error: Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             muted: Style::default().fg(Color::DarkGray),
+            todo_done: Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::CROSSED_OUT),
             status_bar: Style::default().fg(Color::DarkGray),
             status_accent: Style::default().fg(Color::Cyan),
             // Cyan to blue to violet: 256-color palette #5fd7ff, #5f87ff, #af5fff.

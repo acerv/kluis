@@ -10,7 +10,7 @@ use harness_tui::{
     SlashCommand, Status, Theme, VIEWPORT_HEIGHT,
 };
 use ratatui::backend::TestBackend;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
 fn status() -> Status {
@@ -1144,4 +1144,36 @@ fn ask_shows_a_long_question_in_full() {
         lines.iter().any(|l| l == "  Postgres is already deployed."),
         "{lines:?}"
     );
+}
+
+#[test]
+fn todo_marks_current_and_strikes_done() {
+    let mut app = App::new("model", status(), Theme::new(true));
+    app.start_prompt("go");
+    app.take_scrollback();
+    let todos = r#"{"todos":[
+        {"content":"plan","status":"completed"},
+        {"content":"build","status":"in_progress"},
+        {"content":"test","status":"pending"}]}"#;
+    app.apply_update(AgentUpdate::ToolCall {
+        name: "todo".into(),
+        args: todos.into(),
+    });
+    app.apply_update(AgentUpdate::ToolResult {
+        content: todos.into(),
+        details: None,
+    });
+
+    let lines = app.take_scrollback();
+    let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    assert_eq!(
+        text[..4],
+        ["todo 1/3 done", "    plan", "  ❯ build", "    test"]
+    );
+    let done = &lines[1].spans[1];
+    assert!(done.style.add_modifier.contains(Modifier::CROSSED_OUT));
+    assert_eq!(done.style.fg, Some(Color::DarkGray));
+    for line in &lines[2..4] {
+        assert!(line.spans[1].style.add_modifier.is_empty());
+    }
 }
