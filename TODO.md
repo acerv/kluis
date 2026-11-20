@@ -23,6 +23,7 @@
 - [ ] Auto-compaction when `input_tokens` approaches the model's context limit
 - [x] Fail tool calls of a truncated response, telling the model to re-issue them, instead of running incomplete arguments
 - [x] Model and thinking defaults in `~/.kluis/config.toml`
+- [x] Provider credentials in `~/.kluis/auth.toml` (`0600`) and interactive `/model` picker with live discovery
 
 ## TUI
 

@@ -923,3 +923,95 @@ fn copy_command_extracts_last_assistant_reply_and_formats_osc52() {
     assert_eq!(osc52_sequence("hello"), "\x1b]52;c;aGVsbG8=\x07");
     assert_eq!(osc52_sequence("ciao ✓"), "\x1b]52;c;Y2lhbyDinJM=\x07");
 }
+
+#[test]
+fn model_picker_navigation_filtering_and_selection() {
+    use harness_core::ModelInfo;
+
+    let type_str = |app: &mut App, s: &str| {
+        for ch in s.chars() {
+            app.handle_event(key(KeyCode::Char(ch)));
+        }
+    };
+
+    let mut term = inline_terminal(90, 14);
+    let mut app = App::new("deepseek-chat", status(), Theme::new(false));
+
+    // `/model` and `/model <name>` parse into `SlashCommand::Model`.
+    type_str(&mut app, "/model");
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Slash(SlashCommand::Model(None))
+    );
+    type_str(&mut app, "/model gpt-4o");
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Slash(SlashCommand::Model(Some("gpt-4o".into())))
+    );
+
+    let models = vec![
+        ModelInfo {
+            id: "claude-sonnet-4-5".into(),
+            provider: "anthropic".into(),
+        },
+        ModelInfo {
+            id: "deepseek-chat".into(),
+            provider: "deepseek".into(),
+        },
+        ModelInfo {
+            id: "ollama::qwen2.5-coder".into(),
+            provider: "ollama".into(),
+        },
+    ];
+
+    // Opening the picker pre-selects the currently active model and marks it `(current)`.
+    app.open_model_picker(&models);
+    assert!(app.is_picker_open());
+    assert_eq!(app.viewport_height(90), 7);
+
+    term.draw(|f| app.render(f)).unwrap();
+    let screen = render_text(&term);
+    assert!(screen.contains("Select model"), "{screen}");
+    assert!(
+        screen.contains("❯ deepseek-chat · deepseek (current)"),
+        "{screen}"
+    );
+    assert!(screen.contains("claude-sonnet-4-5 · anthropic"), "{screen}");
+    for cell in term.backend().buffer().content() {
+        assert_eq!(cell.fg, Color::Reset, "fg set under NO_COLOR: {cell:?}");
+        assert!(cell.modifier.is_empty(), "modifier set: {cell:?}");
+    }
+
+    // Pressing Down selects the next model (namespaced) and Enter emits `Action::SelectModel`.
+    assert_eq!(app.handle_event(key(KeyCode::Down)), Action::Redraw);
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::SelectModel("ollama::qwen2.5-coder".into())
+    );
+    assert!(!app.is_picker_open());
+
+    // Filtering by provider name narrows results and Enter picks the filtered match.
+    app.open_model_picker(&models);
+    type_str(&mut app, "ANTHROPIC");
+    term.draw(|f| app.render(f)).unwrap();
+    let filtered = render_text(&term);
+    assert!(filtered.contains("filter: ANTHROPIC  (1/3)"), "{filtered}");
+    assert!(filtered.contains("❯ claude-sonnet-4-5"), "{filtered}");
+    assert!(!filtered.contains("deepseek-chat · deepseek"), "{filtered}");
+    assert!(!filtered.contains("ollama::qwen2.5-coder"), "{filtered}");
+
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::SelectModel("claude-sonnet-4-5".into())
+    );
+    assert!(!app.is_picker_open());
+
+    // Esc cancels cleanly; Ctrl-D quits.
+    app.open_model_picker(&models);
+    assert_eq!(app.handle_event(key(KeyCode::Esc)), Action::Redraw);
+    assert!(!app.is_picker_open());
+
+    app.open_model_picker(&models);
+    assert_eq!(app.handle_event(ctrl('d')), Action::Quit);
+    assert!(!app.is_picker_open());
+}

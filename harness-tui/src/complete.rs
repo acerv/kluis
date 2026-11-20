@@ -27,7 +27,7 @@ const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "/model",
         arg: Some("[name]"),
-        description: "show or switch the model",
+        description: "pick or switch the model",
     },
     CommandSpec {
         name: "/thinking",

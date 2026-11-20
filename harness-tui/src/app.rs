@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 use crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use genai::chat::{ChatMessage, ChatRole, ContentPart};
 use harness_core::tools::{Diff, DiffLine};
-use harness_core::{Event as AgentEvent, SessionSummary, Thinking, TokenUsage, ToolDetails};
+use harness_core::{
+    Event as AgentEvent, ModelInfo, SessionSummary, Thinking, TokenUsage, ToolDetails,
+};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -20,7 +22,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::complete::CommandCompletion;
 use crate::input::Input;
 use crate::markdown::{render_markdown, MarkdownStream};
-use crate::picker::{PickerOutcome, SessionPicker};
+use crate::picker::{Picker, PickerKind, PickerOutcome};
 use crate::style::Theme;
 use crate::terminal::{char_width, wrap_lines, wrapped_line_count};
 use crate::Status;
@@ -119,6 +121,7 @@ pub enum Action {
     Submit(String),
     Slash(SlashCommand),
     ResumeSession(String),
+    SelectModel(String),
     SetThinking(Thinking),
     Cancel,
     Quit,
@@ -152,7 +155,7 @@ pub struct App {
     emitted_reasoning: bool,
     tokens: TokenUsage,
     notice: Option<String>,
-    picker: Option<SessionPicker>,
+    picker: Option<Picker>,
     completion: CommandCompletion,
     scrollback: Vec<Line<'static>>,
 }
@@ -189,7 +192,14 @@ impl App {
     pub fn open_picker(&mut self, entries: Vec<SessionSummary>, current_id: Option<String>) {
         self.notice = None;
         self.completion.clear();
-        self.picker = Some(SessionPicker::new(entries, current_id));
+        self.picker = Some(Picker::sessions(entries, current_id));
+    }
+
+    /// Open the inline model picker with `models`.
+    pub fn open_model_picker(&mut self, models: &[ModelInfo]) {
+        self.notice = None;
+        self.completion.clear();
+        self.picker = Some(Picker::models(models, &self.model));
     }
 
     pub fn is_picker_open(&self) -> bool {
@@ -493,9 +503,12 @@ impl App {
             return match picker.handle_key(key) {
                 PickerOutcome::None => Action::None,
                 PickerOutcome::Redraw => Action::Redraw,
-                PickerOutcome::Select(id) => {
+                PickerOutcome::Select(kind, id) => {
                     self.picker = None;
-                    Action::ResumeSession(id)
+                    match kind {
+                        PickerKind::Session => Action::ResumeSession(id),
+                        PickerKind::Model => Action::SelectModel(id),
+                    }
                 }
                 PickerOutcome::Cancel => {
                     self.picker = None;

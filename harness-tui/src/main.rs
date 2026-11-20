@@ -182,6 +182,7 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
         None => AuthConfig::default(),
     };
     let client = auth.client()?;
+    let adapters = auth.configured_adapters();
     let system = harness_core::system_prompt(
         &cwd,
         &harness_core::find_agents_files(&cwd, config::agents_path().as_deref()),
@@ -277,6 +278,7 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
                 session,
                 history,
                 picker_entries,
+                adapters,
             },
         )
         .await;

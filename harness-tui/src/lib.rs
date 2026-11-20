@@ -22,9 +22,12 @@ mod terminal;
 use std::io;
 use std::time::Duration;
 
+use crossterm::event::{Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers};
+use genai::adapter::AdapterKind;
 use genai::chat::ChatMessage;
 use harness_core::{
-    Agent, Error, SessionData, SessionStore, SessionSummary, SessionWriter, Thinking, TokenUsage,
+    Agent, Error, ModelInfo, ModelList, SessionData, SessionStore, SessionSummary, SessionWriter,
+    Thinking, TokenUsage,
 };
 use tokio::sync::mpsc;
 use tokio::time::{interval_at, Instant, MissedTickBehavior};
@@ -110,6 +113,7 @@ pub struct RunOptions {
     pub session: Option<Session>,
     pub history: Option<History>,
     pub picker_entries: Vec<SessionSummary>,
+    pub adapters: Vec<AdapterKind>,
 }
 
 /// Run the interactive inline TUI until the user quits (`Ctrl-D` or `/quit`).
@@ -118,7 +122,12 @@ pub async fn run(mut agent: Agent, status: Status, opts: RunOptions) -> Result<(
         mut session,
         mut history,
         picker_entries,
+        adapters,
     } = opts;
+    let mut models = ModelCatalog {
+        adapters,
+        cached: None,
+    };
     let mut term = InlineTerminal::enter(VIEWPORT_HEIGHT)?;
     let mut app = App::new(agent.model().to_owned(), status, Theme::from_env());
     app.set_thinking(agent.thinking());
@@ -150,13 +159,27 @@ pub async fn run(mut agent: Agent, status: Status, opts: RunOptions) -> Result<(
             Action::Redraw => draw(&mut term, &mut app)?,
             Action::Quit => break,
             Action::Slash(cmd) => {
-                if handle_slash(cmd, &mut term, &mut agent, &mut app, session.as_mut()) {
+                if handle_slash(
+                    cmd,
+                    &mut term,
+                    &mut agent,
+                    &mut app,
+                    &mut events,
+                    session.as_mut(),
+                    &mut models,
+                )
+                .await?
+                {
                     break;
                 }
                 draw(&mut term, &mut app)?;
             }
             Action::ResumeSession(id) => {
                 resume_session(&id, &mut agent, &mut app, session.as_mut());
+                draw(&mut term, &mut app)?;
+            }
+            Action::SelectModel(name) => {
+                switch_model(&name, &mut agent, &mut app, session.as_mut());
                 draw(&mut term, &mut app)?;
             }
             Action::SetThinking(level) => {
@@ -188,16 +211,23 @@ pub async fn run(mut agent: Agent, status: Status, opts: RunOptions) -> Result<(
     Ok(())
 }
 
+struct ModelCatalog {
+    adapters: Vec<AdapterKind>,
+    cached: Option<Vec<ModelInfo>>,
+}
+
 /// Execute a slash command. Returns `true` when the user requested to quit.
-fn handle_slash(
+async fn handle_slash(
     cmd: SlashCommand,
     term: &mut InlineTerminal,
     agent: &mut Agent,
     app: &mut App,
+    events: &mut EventReader,
     session: Option<&mut Session>,
-) -> bool {
+    models: &mut ModelCatalog,
+) -> Result<bool, Error> {
     match cmd {
-        SlashCommand::Quit => return true,
+        SlashCommand::Quit => return Ok(true),
         SlashCommand::Copy => match clipboard::last_assistant_text(agent.history()) {
             None => app.push_info("[nothing to copy]"),
             Some(text) => match clipboard::copy(&text) {
@@ -219,17 +249,10 @@ fn handle_slash(
             app.push_info("[new session]");
         }
         SlashCommand::Model(Some(name)) => {
-            agent.set_model(&name);
-            app.set_model(&name);
-            if let Some(session) = session {
-                if let Err(err) = session.record_model(&name) {
-                    app.push_info(format!("[session save error: {err}]"));
-                }
-            }
-            app.push_info(format!("model: {name}"));
+            switch_model(&name, agent, app, session);
         }
         SlashCommand::Model(None) => {
-            app.push_info(format!("model: {}", agent.model()));
+            return open_model_picker(term, agent, app, events, models).await;
         }
         SlashCommand::Thinking(Some(arg)) => match arg.parse::<Thinking>() {
             Ok(level) => {
@@ -263,7 +286,105 @@ fn handle_slash(
             app.push_info(complete::help_text());
         }
     }
-    false
+    Ok(false)
+}
+
+fn switch_model(name: &str, agent: &mut Agent, app: &mut App, session: Option<&mut Session>) {
+    if name != agent.model() {
+        agent.set_model(name);
+        app.set_model(name);
+        if let Some(session) = session {
+            if let Err(err) = session.record_model(name) {
+                app.push_info(format!("[session save error: {err}]"));
+            }
+        }
+    }
+    app.push_info(format!("model: {name}"));
+}
+
+enum FetchOutcome {
+    Done(ModelList),
+    Cancelled,
+    Quit,
+}
+
+async fn open_model_picker(
+    term: &mut InlineTerminal,
+    agent: &Agent,
+    app: &mut App,
+    events: &mut EventReader,
+    models: &mut ModelCatalog,
+) -> Result<bool, Error> {
+    if models.adapters.is_empty() {
+        app.push_info(format!("model: {}", agent.model()));
+        app.push_info("[no configured providers — set an API key env var or ~/.kluis/auth.toml]");
+        return Ok(false);
+    }
+
+    if models.cached.is_none() {
+        app.push_info("[loading models…]");
+        draw(term, app)?;
+        match fetch_models(term, agent, app, events, &models.adapters).await? {
+            FetchOutcome::Quit => return Ok(true),
+            FetchOutcome::Cancelled => {
+                app.push_info("[cancelled]");
+                return Ok(false);
+            }
+            FetchOutcome::Done(list) => {
+                for (provider, err) in list.errors {
+                    app.push_info(format!("[models error ({provider}): {err}]"));
+                }
+                if !list.models.is_empty() {
+                    models.cached = Some(list.models);
+                }
+            }
+        }
+    }
+
+    if let Some(list) = models.cached.as_deref() {
+        app.open_model_picker(list);
+    } else {
+        app.push_info(format!("model: {}", agent.model()));
+        app.push_info("[no models returned by configured providers]");
+    }
+    Ok(false)
+}
+
+async fn fetch_models(
+    term: &mut InlineTerminal,
+    agent: &Agent,
+    app: &mut App,
+    events: &mut EventReader,
+    adapters: &[AdapterKind],
+) -> Result<FetchOutcome, Error> {
+    let fut = agent.list_models(adapters);
+    tokio::pin!(fut);
+
+    loop {
+        tokio::select! {
+            biased;
+            maybe_ev = events.next() => match maybe_ev {
+                Some(Ok(TermEvent::Key(key))) if key.kind != KeyEventKind::Release => {
+                    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                    match (key.code, ctrl) {
+                        (KeyCode::Esc, false) | (KeyCode::Char('c'), true) => {
+                            return Ok(FetchOutcome::Cancelled);
+                        }
+                        (KeyCode::Char('d'), true) => return Ok(FetchOutcome::Quit),
+                        _ => {}
+                    }
+                }
+                Some(Ok(ev @ TermEvent::Resize(_, _))) => {
+                    app.handle_event(ev);
+                    draw(term, app)?;
+                }
+                Some(Ok(_)) => {}
+                Some(Err(err)) => return Err(err.into()),
+                None => return Ok(FetchOutcome::Quit),
+            },
+            list = &mut fut => return Ok(FetchOutcome::Done(list)),
+        }
+    }
 }
 
 fn resume_session(id: &str, agent: &mut Agent, app: &mut App, session: Option<&mut Session>) {
@@ -344,6 +465,7 @@ async fn run_turn(
                             | Action::Submit(_)
                             | Action::Slash(_)
                             | Action::ResumeSession(_)
+                            | Action::SelectModel(_)
                             | Action::SetThinking(_) => {}
                         },
                         Some(Err(err)) => return Err(err.into()),
