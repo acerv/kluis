@@ -3,4 +3,5 @@
 
 //! Subscription logins through OAuth.
 
+pub mod flow;
 pub mod http;
