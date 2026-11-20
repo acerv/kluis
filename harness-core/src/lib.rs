@@ -10,6 +10,7 @@
 mod agent;
 mod auth;
 mod event;
+mod models;
 mod prompt;
 mod session;
 pub mod tools;
@@ -17,6 +18,10 @@ pub mod tools;
 pub use agent::{Agent, Error, Thinking};
 pub use auth::{AuthConfig, ProviderAuth};
 pub use event::Event;
+pub use models::{
+    discover_models, discover_models_with_timeout, is_chat_model, provider_name, ModelInfo,
+    ModelList,
+};
 pub use prompt::{find_agents_files, system_prompt, AGENTS_FILE, MAX_AGENTS_BYTES};
 pub use session::{
     SessionData, SessionEntry, SessionMeta, SessionStore, SessionSummary, SessionWriter,

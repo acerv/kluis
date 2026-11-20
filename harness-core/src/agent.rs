@@ -16,6 +16,7 @@ use genai::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::models::{discover_models, ModelList};
 use crate::tools::{self, Executor, ToolContext};
 use crate::Event;
 
@@ -170,6 +171,12 @@ impl Agent {
     /// Switch the model used for subsequent prompts.
     pub fn set_model(&mut self, model: impl Into<String>) {
         self.model = model.into();
+    }
+
+    /// Query `adapters` concurrently via this agent's HTTP client for available
+    /// chat models.
+    pub async fn list_models(&self, adapters: &[AdapterKind]) -> ModelList {
+        discover_models(&self.client, adapters).await
     }
 
     /// Drop the conversation history, keeping the model, system prompt, and
