@@ -6,18 +6,25 @@
 //! Each table is keyed by a lowercase `genai` adapter name (`anthropic`,
 //! `openai`, `deepseek`, `gemini`, `groq`, `mistral`, `xai`, `open_router`,
 //! `ollama`, `github_copilot`, `genai_1`, …) and accepts `api_key` and/or
-//! `endpoint`. Environment variables still take precedence when set.
+//! `endpoint`. Environment variables still take precedence when set, and an
+//! OAuth login (see [`crate::oauth`]) takes precedence over `api_key`.
 
 use std::collections::HashMap;
 use std::fmt;
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
+use std::sync::Arc;
 
 use genai::adapter::AdapterKind;
-use genai::resolver::{AuthData, Endpoint, ProviderConfig};
-use genai::Client;
+use genai::resolver::{self, AuthData, AuthResolver, Endpoint, ProviderConfig};
+use genai::{Client, ModelIden};
 use serde::Deserialize;
 
+use crate::oauth::{OAuthProvider, OAuthStore};
 use crate::{private_file, Error};
+
+type ResolverFuture = Pin<Box<dyn Future<Output = resolver::Result<Option<AuthData>>> + Send>>;
 
 /// Maximum size of an `auth.toml` file (256 KiB).
 const MAX_AUTH_BYTES: usize = 256 * 1024;
@@ -42,9 +49,10 @@ impl fmt::Debug for ProviderAuth {
 }
 
 /// Provider authentication loaded from `auth.toml`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct AuthConfig {
     providers: HashMap<AdapterKind, ProviderAuth>,
+    oauth: Option<Arc<OAuthStore>>,
 }
 
 impl AuthConfig {
@@ -93,22 +101,74 @@ impl AuthConfig {
                 return Err(format!("duplicate provider '{name}'"));
             }
         }
-        Ok(Self { providers })
+        Ok(Self {
+            providers,
+            oauth: None,
+        })
+    }
+
+    /// Also authenticate through the logins saved in `oauth`.
+    pub fn with_oauth(mut self, oauth: Arc<OAuthStore>) -> Self {
+        self.oauth = Some(oauth);
+        self
     }
 
     pub fn is_empty(&self) -> bool {
-        self.providers.is_empty()
+        self.providers.is_empty() && self.oauth.as_ref().is_none_or(|o| o.providers().is_empty())
     }
 
     pub fn get(&self, kind: AdapterKind) -> Option<&ProviderAuth> {
         self.providers.get(&kind)
     }
 
+    /// The OAuth login used for `kind`: one is saved and no API key
+    /// environment variable overrides it.
+    fn oauth_login(&self, kind: AdapterKind) -> Option<OAuthProvider> {
+        let provider = OAuthProvider::from_adapter(kind)?;
+        (self.oauth.as_ref()?.is_logged_in(provider) && !env_key_present(kind)).then_some(provider)
+    }
+
+    /// Resolver authenticating adapters with an OAuth login, refreshing its
+    /// token before each request when needed.
+    fn oauth_resolver(&self) -> Option<AuthResolver> {
+        let store = self.oauth.clone()?;
+        let logins: Arc<[_]> = OAuthProvider::ALL
+            .iter()
+            .filter_map(|p| {
+                let kind = p.adapter();
+                let endpoint = self.get(kind).and_then(|e| e.endpoint.clone());
+                Some((kind, self.oauth_login(kind)?, endpoint))
+            })
+            .collect();
+        if logins.is_empty() {
+            return None;
+        }
+        Some(AuthResolver::from_resolver_async_fn(
+            move |model: ModelIden| -> ResolverFuture {
+                let store = store.clone();
+                let logins = logins.clone();
+                Box::pin(async move {
+                    let Some((_, provider, endpoint)) =
+                        logins.iter().find(|(k, ..)| *k == model.adapter_kind)
+                    else {
+                        return Ok(None);
+                    };
+                    store
+                        .auth_data(*provider, endpoint.as_deref())
+                        .await
+                        .map(Some)
+                        .map_err(|e| resolver::Error::Custom(e.to_string()))
+                })
+            },
+        ))
+    }
+
     /// Build a [`Client`] configured with all entries from this `AuthConfig`.
     ///
     /// Environment variables (`ANTHROPIC_API_KEY`, etc.) take precedence over
-    /// `auth.toml` when set and non-empty. `[openai]` also applies to
-    /// `OpenAIResp`, and `[gemini]` also applies to `GeminiIx`.
+    /// `auth.toml` when set and non-empty; otherwise an OAuth login does.
+    /// `[openai]` also applies to `OpenAIResp`, and `[gemini]` also applies
+    /// to `GeminiIx`.
     pub fn client(&self) -> Result<Client, Error> {
         let mut builder = Client::builder();
         for (&kind, entry) in &self.providers {
@@ -141,6 +201,9 @@ impl AuthConfig {
                 }
             }
         }
+        if let Some(resolver) = self.oauth_resolver() {
+            builder = builder.with_auth_resolver(resolver);
+        }
         Ok(builder.build()?)
     }
 
@@ -158,7 +221,11 @@ impl AuthConfig {
                 AdapterKind::GeminiIx => {
                     !out.contains(&AdapterKind::Gemini) && self.providers.contains_key(&kind)
                 }
-                _ => self.providers.contains_key(&kind) || env_key_present(kind),
+                _ => {
+                    self.providers.contains_key(&kind)
+                        || env_key_present(kind)
+                        || self.oauth_login(kind).is_some()
+                }
             };
             if configured {
                 out.push(kind);

@@ -3,6 +3,9 @@
 
 //! Claude Pro/Max login.
 
+use genai::resolver::AuthData;
+use genai::Headers;
+
 use super::flow::{Flow, FlowConfig, Token};
 use super::http::BodyFormat;
 use super::store::OAuthFile;
@@ -14,6 +17,10 @@ const AUTH_URL: &str = "https://claude.ai/oauth/authorize";
 const TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
 const REDIRECT_URI: &str = "https://console.anthropic.com/oauth/code/callback";
 const SCOPES: &[&str] = &["org:create_api_key", "user:profile", "user:inference"];
+const API_URL: &str = "https://api.anthropic.com/v1/";
+const API_VERSION: &str = "2023-06-01";
+/// Beta flag enabling OAuth access tokens on the Messages API.
+const OAUTH_BETA: &str = "oauth-2025-04-20";
 
 /// Anthropic login settings.
 #[derive(Debug, Clone)]
@@ -73,4 +80,20 @@ impl Provider for Anthropic {
     fn access_token<'a>(&self, creds: &'a Tokens) -> &'a str {
         &creds.access_token
     }
+
+    fn auth(&self, creds: &Tokens, endpoint: Option<&str>) -> AuthData {
+        AuthData::RequestOverride {
+            url: format!("{}messages", endpoint.unwrap_or(API_URL)),
+            headers: headers(&creds.access_token),
+        }
+    }
+}
+
+/// Headers authenticating an API request with `access_token`.
+fn headers(access_token: &str) -> Headers {
+    Headers::from([
+        ("authorization", format!("Bearer {access_token}")),
+        ("anthropic-version", API_VERSION.to_owned()),
+        ("anthropic-beta", OAUTH_BETA.to_owned()),
+    ])
 }

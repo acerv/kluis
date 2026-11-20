@@ -18,6 +18,7 @@ use std::str::FromStr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use genai::adapter::AdapterKind;
+use genai::resolver::AuthData;
 use oauth2::basic::BasicErrorResponseType;
 use oauth2::{RequestTokenError, TokenResponse};
 use serde::de::DeserializeOwned;
@@ -181,4 +182,8 @@ pub(crate) trait Provider: Send + Sync {
     ) -> impl Future<Output = Result<Self::Credentials, Error>> + Send;
 
     fn access_token<'a>(&self, creds: &'a Self::Credentials) -> &'a str;
+
+    /// `genai` authentication for chat requests to `endpoint` (the API base
+    /// URL ending with `/`), or to the provider's own API when `None`.
+    fn auth(&self, creds: &Self::Credentials, endpoint: Option<&str>) -> AuthData;
 }

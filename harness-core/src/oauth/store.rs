@@ -14,6 +14,7 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+use genai::resolver::AuthData;
 use rustix::fs::{flock, FlockOperation};
 use serde::{Deserialize, Serialize};
 
@@ -117,6 +118,19 @@ impl OAuthStore {
         with_provider!(self, provider, |p| {
             let creds = self.credentials(p).await?;
             Ok(p.access_token(&creds).to_owned())
+        })
+    }
+
+    /// `genai` authentication for `provider`, refreshed when about to expire;
+    /// `endpoint` overrides the provider's API base URL.
+    pub async fn auth_data(
+        &self,
+        provider: OAuthProvider,
+        endpoint: Option<&str>,
+    ) -> Result<AuthData, Error> {
+        with_provider!(self, provider, |p| {
+            let creds = self.credentials(p).await?;
+            Ok(p.auth(&creds, endpoint))
         })
     }
 

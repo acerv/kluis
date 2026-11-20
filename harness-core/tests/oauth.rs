@@ -5,14 +5,17 @@ mod common;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use common::web::WebServer;
 use genai::adapter::AdapterKind;
+use genai::resolver::AuthData;
 use harness_core::oauth::anthropic::Anthropic;
 use harness_core::oauth::flow::{self, Flow, FlowConfig, Login, Token};
 use harness_core::oauth::http::{BodyFormat, HttpClient};
 use harness_core::oauth::{OAuthProvider, OAuthStore};
+use harness_core::AuthConfig;
 use oauth2::basic::BasicTokenType;
 use oauth2::http::{header::CONTENT_TYPE, Method, Request};
 use oauth2::url::Url;
@@ -442,4 +445,95 @@ async fn store_reports_expired_login() {
         .to_string();
     assert!(err.contains("anthropic login expired"), "{err}");
     assert!(store.is_logged_in(OAuthProvider::Anthropic));
+}
+
+/// A store logged in to Anthropic with `access_token`, valid for a day.
+fn logged_in(dir: &Path, access_token: &str) -> Arc<OAuthStore> {
+    let path = dir.join("oauth.toml");
+    write_private(&path, &tokens(access_token, "rt", far_future()));
+    Arc::new(OAuthStore::load(&path).unwrap())
+}
+
+fn anthropic_env_set() -> bool {
+    std::env::var_os("ANTHROPIC_API_KEY").is_some_and(|v| !v.is_empty())
+}
+
+#[tokio::test]
+async fn oauth_login_overrides_anthropic_api_key() {
+    if anthropic_env_set() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let auth = AuthConfig::parse(
+        "[anthropic]\napi_key = \"sk-ignored\"\nendpoint = \"http://127.0.0.1:9/v1\"\n",
+    )
+    .unwrap()
+    .with_oauth(logged_in(dir.path(), "at-1"));
+    let client = auth.client().unwrap();
+
+    let target = client
+        .resolve_service_target("claude-sonnet-4-5")
+        .await
+        .unwrap();
+    let AuthData::RequestOverride { url, headers } = target.auth else {
+        panic!("expected a request override, got {:?}", target.auth);
+    };
+    assert_eq!(url, "http://127.0.0.1:9/v1/messages");
+    let header = |name: &str| {
+        headers
+            .iter()
+            .find(|(k, _)| *k == name)
+            .map(|(_, v)| v.clone())
+    };
+    assert_eq!(header("authorization").as_deref(), Some("Bearer at-1"));
+    assert_eq!(
+        header("anthropic-beta").as_deref(),
+        Some("oauth-2025-04-20")
+    );
+    assert!(header("anthropic-version").is_some());
+    assert!(header("x-api-key").is_none());
+}
+
+#[tokio::test]
+async fn oauth_login_leaves_other_adapters_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let auth = AuthConfig::parse("[mistral]\napi_key = \"sk-mistral\"\n")
+        .unwrap()
+        .with_oauth(logged_in(dir.path(), "at-1"));
+    let client = auth.client().unwrap();
+
+    let target = client
+        .resolve_service_target("mistral::mistral-small")
+        .await
+        .unwrap();
+    assert_eq!(target.auth.single_key_value().unwrap(), "sk-mistral");
+}
+
+#[tokio::test]
+async fn oauth_login_adds_adapter_and_reports_expiry() {
+    if anthropic_env_set() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let auth = AuthConfig::default();
+    assert!(!auth.configured_adapters().contains(&AdapterKind::Anthropic));
+
+    let server = WebServer::start(vec![(400, json!({"error": "invalid_grant"}))]).await;
+    let path = dir.path().join("oauth.toml");
+    write_private(&path, &tokens("at-0", "rt-0", 1));
+    let store = OAuthStore::load(&path)
+        .unwrap()
+        .with_anthropic(anthropic(&server));
+    let auth = auth.with_oauth(Arc::new(store));
+    assert!(!auth.is_empty());
+    assert!(auth.configured_adapters().contains(&AdapterKind::Anthropic));
+
+    let err = auth
+        .client()
+        .unwrap()
+        .resolve_service_target("claude-sonnet-4-5")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("anthropic login expired"), "{err}");
 }
