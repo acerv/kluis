@@ -5,13 +5,18 @@
 - [x] Hide FUSE and network mounts below shown folders (cloud drives, network shares)
 - [x] Block Unix sockets without `--network`: they lead to host programs that reach the network
 - [x] Refuse user namespaces, `clone3` and io_uring to commands (kernel attack surface)
+- [ ] Allow only the socket families commands need (`AF_INET`, `AF_INET6`, `AF_NETLINK`, `AF_UNIX` with `--network`): `AF_VSOCK` is not isolated by the network namespace and reaches host and hypervisor services, and MCTP, PPPoX, SMC, KCM and `AF_ALG` are open too
+- [ ] Give the container its own IPC and UTS namespaces: commands share SysV memory with host programs, and their segments outlive the sandbox
+- [ ] Call `protect_self()` in the tool worker: commands can read its environment and write forged results into its pipe to the host
 - [x] Protect `.git` of new `git init`: a model-made nested repo with `core.fsmonitor` runs commands when the user (or their shell prompt) runs git there
 - [ ] Check whether editor settings the model writes (`.zed/`, `.vscode/`, `.idea/`) can run commands when the project is opened
 - [x] Refuse a symlinked `AGENTS.md`: the host follows it at startup, pulling hidden files (`~/.kluis/auth.toml`, `~/.ssh`) into the prompt
 - [ ] Hide credentials readable in `$HOME` (`gh`, `npm`, `cargo`, `docker`, `kube`, `aws`, browser and mail profiles, chat apps, keyrings, shell history), or hide `$HOME` by default and show only toolchains
 - [ ] `--allow-connect`: Landlock allows the port on every host and UDP is unfiltered; refuse UDP sockets in ports mode and document it
+- [ ] Warn at startup when a shown folder (the project, `$HOME`) is itself on a FUSE or network filesystem: file access there reaches the network
 - [ ] Line mode prints model text raw: strip control characters so escape sequences (e.g. OSC 52 clipboard) cannot reach the terminal
 - [ ] Refuse more unneeded system calls (`keyctl`, `bpf`, `perf_event_open`, `userfaultfd`, mount family, `kexec`, module loading) for kernels with laxer defaults
+- [ ] Default limits for memory and the private `/tmp`: without `--max-memory` and `--tmp-size`, a command can exhaust the host's memory
 
 ## Compatibility
 
