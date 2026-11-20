@@ -596,52 +596,62 @@ fn read_request_with_headers(stream: &TcpStream) -> (String, Value) {
     (headers, serde_json::from_slice(&body).unwrap())
 }
 
-/// Python run by the model's command: try the host's Unix socket at the
-/// path in $SOCK, then a socket pair.
-const SOCKET_PROBE: &str = r#"
-import os, socket
-try:
-    s = socket.socket(socket.AF_UNIX)
-    s.connect(os.environ["SOCK"])
-    s.send(b"escaped")
-    print("UNIX=connected")
-except OSError as e:
-    print("UNIX=" + e.strerror)
-a, b = socket.socketpair()
-a.send(b"x")
-print("PAIR=" + b.recv(1).decode())
-"#;
+/// Set when this test program runs inside the sandbox as the socket
+/// probe of the model's command.
+const SOCKET_PROBE: &str = "KL_TEST_SOCKET_PROBE";
+
+/// Run inside the sandbox by the model's command: try the host's Unix
+/// socket at the path in $SOCK, then a socket pair, and print the results.
+#[test]
+fn socket_probe() {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+
+    if std::env::var_os(SOCKET_PROBE).is_none() {
+        return;
+    }
+    match UnixStream::connect(std::env::var("SOCK").unwrap()) {
+        Ok(mut stream) => {
+            stream.write_all(b"escaped").unwrap();
+            println!("UNIX=connected");
+        }
+        Err(e) => println!("UNIX={:?}", e.kind()),
+    }
+    let (mut a, mut b) = UnixStream::pair().unwrap();
+    a.write_all(b"x").unwrap();
+    let mut buf = [0];
+    b.read_exact(&mut buf).unwrap();
+    println!("PAIR={}", buf[0] as char);
+}
 
 /// Run the socket probe through `kl` with `extra_args`, against a socket
 /// listening on the host in the readable home folder, and return its
 /// output and whether the host received anything.
-fn probe_host_socket(extra_args: &[&str]) -> Option<(String, bool)> {
-    if Command::new("python3").arg("-c").arg("").status().is_err() {
-        eprintln!("skipping: python3 is not installed");
-        return None;
-    }
+fn probe_host_socket(extra_args: &[&str]) -> (String, bool) {
     let home = tempdir();
     let sock = home.path().join("app.sock");
     let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
     listener.set_nonblocking(true).unwrap();
-    let sock_env = sock.to_str().unwrap().to_owned();
+    let probe = std::env::current_exe().unwrap();
+    let probe = probe.to_str().unwrap();
+    let sock = sock.to_str().unwrap();
 
-    let mut args = vec!["--pass-env", "SOCK"];
+    let mut args = vec!["--pass-env", "SOCK", "--pass-env", SOCKET_PROBE];
+    args.extend(["--allow-read", probe]);
     args.extend(extra_args);
-    let output = run_bash(home.path(), &args, &[("SOCK", &sock_env)], |_| {
-        format!("python3 -c '{SOCKET_PROBE}'")
+    let env = [("SOCK", sock), (SOCKET_PROBE, "1")];
+    let output = run_bash(home.path(), &args, &env, |_| {
+        format!("{probe} --exact socket_probe --nocapture")
     });
     let received = listener.accept().is_ok();
-    Some((output, received))
+    (output, received)
 }
 
 #[test]
 fn commands_cannot_reach_host_unix_sockets() {
-    let Some((output, received)) = probe_host_socket(&[]) else {
-        return;
-    };
+    let (output, received) = probe_host_socket(&[]);
     let unix = output.lines().find(|l| l.starts_with("UNIX=")).unwrap();
-    assert_eq!(unix, "UNIX=Permission denied", "{output}");
+    assert_eq!(unix, "UNIX=PermissionDenied", "{output}");
     assert!(!received, "the host socket got a connection");
     // A socket pair only reaches itself, so it keeps working.
     assert!(output.contains("PAIR=x"), "{output}");
@@ -650,9 +660,7 @@ fn commands_cannot_reach_host_unix_sockets() {
 #[test]
 fn network_allows_host_unix_sockets() {
     // With any network allowed there is nothing to keep away.
-    let Some((output, received)) = probe_host_socket(&["--network"]) else {
-        return;
-    };
+    let (output, received) = probe_host_socket(&["--network"]);
     assert!(output.contains("UNIX=connected"), "{output}");
     assert!(received);
 }

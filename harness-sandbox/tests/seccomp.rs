@@ -73,18 +73,30 @@ fn io_uring_is_unavailable() {
     });
 }
 
+/// Set in a program started by the copy with Unix sockets blocked.
+const PROBE: &str = "HARNESS_TEST_SECCOMP_PROBE";
+
 #[test]
 fn commands_inherit_the_block() {
     blocked("commands_inherit_the_block", || {
         // A program started afterwards is refused too.
-        let Ok(out) = Command::new("python3")
-            .args(["-c", "import socket; socket.socket(socket.AF_UNIX)"])
-            .output()
-        else {
-            eprintln!("skipping: python3 is not installed");
-            return;
-        };
-        let err = String::from_utf8_lossy(&out.stderr);
-        assert!(err.contains("Permission denied"), "{err}");
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "unix_socket_probe"])
+            .env_remove(CHILD)
+            .env(PROBE, "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
     });
+}
+
+/// Run by `commands_inherit_the_block`: Unix sockets must be refused.
+#[test]
+fn unix_socket_probe() {
+    if std::env::var_os(PROBE).is_none() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let err = UnixListener::bind(dir.path().join("app.sock")).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::PermissionDenied, "{err}");
 }
