@@ -138,8 +138,12 @@ impl Sandbox {
         self
     }
 
-    /// Let the processes and threads of the current user number at most
-    /// `max` in the container, so a fork bomb cannot fill the host.
+    /// Let the processes and threads of the container number at most `max`,
+    /// so a fork bomb cannot fill the host.
+    ///
+    /// Uses `RLIMIT_NPROC`, which Linux 5.14 and newer count per user
+    /// namespace: processes of the same user outside the container do not
+    /// count. Older kernels count all of them.
     pub fn max_processes(mut self, max: u64) -> Self {
         self.max_processes = Some(max);
         self
