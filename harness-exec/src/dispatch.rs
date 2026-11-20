@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
-    BashContext, BashTool, Diff, EditTool, FindTool, GrepTool, LsTool, ReadTool, WriteTool,
+    BashContext, BashTool, Diff, EditTool, FindTool, GrepTool, LsTool, ReadTool, TodoTool,
+    WriteTool,
 };
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -49,6 +50,7 @@ pub fn definitions() -> Vec<Tool> {
         FindTool::definition(),
         GrepTool::definition(),
         BashTool::definition(),
+        TodoTool::definition(),
     ]
 }
 
@@ -126,6 +128,7 @@ async fn dispatch(
                 .run_in_streaming(cwd, &ctx.bash, on_output)
                 .await?,
         ),
+        "todo" => plain(&TodoTool::deserialize(args)?.run()?),
         other => Err(format!("unknown tool {other}").into()),
     }
 }

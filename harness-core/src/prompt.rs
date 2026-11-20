@@ -68,6 +68,7 @@ pub fn system_prompt(cwd: &Path, agents_files: &[PathBuf]) -> String {
          - Use `read`, `grep`, `find`, and `ls` to inspect files instead of shell commands when possible.\n\
          - Use `edit` and `write` to modify files, and read a file before editing it.\n\
          - Use `bash` to run builds, tests, git, and other command-line tools.\n\
+         - Use `todo` to plan and track multi-step tasks.\n\
          - Keep changes minimal and focused, and verify them when appropriate.\n\
          - Be concise and direct; report errors or blockers clearly.\n\
          \n\

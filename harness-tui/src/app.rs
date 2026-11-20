@@ -1152,6 +1152,11 @@ fn format_tool_call(name: &str, args: &str, theme: Theme) -> Line<'static> {
             }
         }
         "ls" => Some(v["path"].as_str().unwrap_or(".").to_owned()),
+        "todo" => {
+            let todos = v["todos"].as_array()?;
+            let done = todos.iter().filter(|t| t["status"] == "completed").count();
+            Some(format!("{done}/{} done", todos.len()))
+        }
         _ => None,
     });
     let detail = detail.unwrap_or_else(|| summary(args));
@@ -1237,6 +1242,20 @@ fn format_tool_result(
         Some("grep") => {
             let total = v["total"].as_u64().unwrap_or(0);
             out.push(Line::styled(format!("  {total} matches"), theme.muted));
+        }
+        Some("todo") => {
+            for todo in v["todos"].as_array().into_iter().flatten() {
+                let (mark, style) = match todo["status"].as_str() {
+                    Some("completed") => ("[x]", theme.muted),
+                    Some("in_progress") => ("[>]", theme.tool_name),
+                    _ => ("[ ]", Style::default()),
+                };
+                let content = todo["content"].as_str().unwrap_or_default();
+                out.push(Line::styled(
+                    format!("  {mark} {}", summary(content)),
+                    style,
+                ));
+            }
         }
         _ => {
             out.push(Line::styled(format!("  {}", summary(content)), theme.muted));
