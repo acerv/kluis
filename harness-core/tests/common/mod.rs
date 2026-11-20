@@ -6,6 +6,8 @@
 
 #![allow(dead_code)]
 
+pub mod web;
+
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 

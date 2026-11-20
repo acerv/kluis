@@ -11,6 +11,7 @@ mod agent;
 mod auth;
 mod event;
 mod models;
+pub mod oauth;
 mod private_file;
 mod prompt;
 mod session;
