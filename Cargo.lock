@@ -1054,6 +1054,7 @@ dependencies = [
  "memchr",
  "oauth2",
  "reqwest",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

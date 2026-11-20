@@ -3,12 +3,20 @@
 
 mod common;
 
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use common::web::WebServer;
-use harness_core::oauth::flow::{self, Flow, FlowConfig, Login};
+use genai::adapter::AdapterKind;
+use harness_core::oauth::anthropic::Anthropic;
+use harness_core::oauth::flow::{self, Flow, FlowConfig, Login, Token};
 use harness_core::oauth::http::{BodyFormat, HttpClient};
+use harness_core::oauth::{OAuthProvider, OAuthStore};
+use oauth2::basic::BasicTokenType;
 use oauth2::http::{header::CONTENT_TYPE, Method, Request};
 use oauth2::url::Url;
-use oauth2::{AsyncHttpClient, TokenResponse};
+use oauth2::{AccessToken, AsyncHttpClient, EmptyExtraTokenFields, RefreshToken, TokenResponse};
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -262,4 +270,176 @@ async fn http_json_body_converts_form_fields() {
         req.json(),
         json!({"grant_type": "refresh_token", "scope": "a b", "x": "&"})
     );
+}
+
+fn anthropic(server: &WebServer) -> Anthropic {
+    Anthropic::new(FlowConfig {
+        client_id: "cid".into(),
+        token_url: server.url("/token"),
+        scopes: vec!["a".into()],
+        auth_params: vec![],
+        body: BodyFormat::Json,
+        flow: Flow::Paste {
+            auth_url: "https://auth.example/authorize".into(),
+            redirect_uri: "https://auth.example/callback".into(),
+        },
+    })
+}
+
+fn write_private(path: &Path, contents: &str) {
+    std::fs::write(path, contents).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+}
+
+fn tokens(access: &str, refresh: &str, expires_at: u64) -> String {
+    format!(
+        "[anthropic]\naccess_token = \"{access}\"\nrefresh_token = \"{refresh}\"\nexpires_at = {expires_at}\n"
+    )
+}
+
+fn far_future() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 86_400
+}
+
+#[test]
+fn provider_names_round_trip() {
+    assert_eq!(
+        "Anthropic".parse::<OAuthProvider>(),
+        Ok(OAuthProvider::Anthropic)
+    );
+    assert_eq!(OAuthProvider::Anthropic.to_string(), "anthropic");
+    assert_eq!(
+        OAuthProvider::from_adapter(AdapterKind::Anthropic),
+        Some(OAuthProvider::Anthropic)
+    );
+    assert_eq!(OAuthProvider::from_adapter(AdapterKind::OpenAI), None);
+    let err = "openai".parse::<OAuthProvider>().unwrap_err();
+    assert!(err.contains("expected anthropic"), "{err}");
+}
+
+#[test]
+fn store_load_validates_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("oauth.toml");
+    let store = OAuthStore::load(&path).unwrap();
+    assert!(store.providers().is_empty());
+
+    write_private(&path, "[openai]\naccess_token = \"x\"\n");
+    let err = OAuthStore::load(&path).unwrap_err().to_string();
+    assert!(err.contains("unknown field"), "{err}");
+
+    write_private(&path, "[anthropic]\naccess_token = \"x\"\nfoo = 1\n");
+    let err = OAuthStore::load(&path).unwrap_err().to_string();
+    assert!(err.contains("unknown field"), "{err}");
+
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let err = OAuthStore::load(&path).unwrap_err().to_string();
+    assert!(err.contains("chmod 600"), "{err}");
+}
+
+#[tokio::test]
+async fn store_saves_login_and_logout_removes_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("kluis/oauth.toml");
+    let store = OAuthStore::load(&path).unwrap();
+
+    let mut token = Token::new(
+        AccessToken::new("at-1".into()),
+        BasicTokenType::Bearer,
+        EmptyExtraTokenFields {},
+    );
+    token.set_refresh_token(Some(RefreshToken::new("rt-1".into())));
+    token.set_expires_in(Some(&Duration::from_secs(3600)));
+    store
+        .finish_login(OAuthProvider::Anthropic, &token)
+        .await
+        .unwrap();
+    assert!(store.is_logged_in(OAuthProvider::Anthropic));
+
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600);
+    let reloaded = OAuthStore::load(&path).unwrap();
+    assert_eq!(reloaded.providers(), vec![OAuthProvider::Anthropic]);
+    assert_eq!(
+        reloaded
+            .access_token(OAuthProvider::Anthropic)
+            .await
+            .unwrap(),
+        "at-1"
+    );
+    assert!(!format!("{reloaded:?}").contains("at-1"));
+
+    assert!(store.logout(OAuthProvider::Anthropic).await.unwrap());
+    assert!(!path.exists());
+    assert!(!store.logout(OAuthProvider::Anthropic).await.unwrap());
+    let err = store
+        .access_token(OAuthProvider::Anthropic)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("not logged in to anthropic"), "{err}");
+}
+
+#[tokio::test]
+async fn store_refreshes_expired_token_once() {
+    let server = WebServer::start(vec![token_reply()]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("oauth.toml");
+    write_private(&path, &tokens("at-0", "rt-0", 1));
+    let store = OAuthStore::load(&path)
+        .unwrap()
+        .with_anthropic(anthropic(&server));
+
+    let (a, b) = tokio::join!(
+        store.access_token(OAuthProvider::Anthropic),
+        store.access_token(OAuthProvider::Anthropic)
+    );
+    assert_eq!(a.unwrap(), "at-1");
+    assert_eq!(b.unwrap(), "at-1");
+
+    let reqs = server.requests();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].json()["refresh_token"], "rt-0");
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(saved.contains("refresh_token = \"rt-1\""), "{saved}");
+    assert!(!saved.contains("expires_at = 1\n"), "{saved}");
+}
+
+#[tokio::test]
+async fn store_uses_token_refreshed_by_another_process() {
+    let server = WebServer::start(vec![]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("oauth.toml");
+    write_private(&path, &tokens("at-0", "rt-0", 1));
+    let store = OAuthStore::load(&path)
+        .unwrap()
+        .with_anthropic(anthropic(&server));
+
+    write_private(&path, &tokens("at-disk", "rt-disk", far_future()));
+    let token = store.access_token(OAuthProvider::Anthropic).await.unwrap();
+    assert_eq!(token, "at-disk");
+    assert!(server.requests().is_empty());
+}
+
+#[tokio::test]
+async fn store_reports_expired_login() {
+    let server = WebServer::start(vec![(400, json!({"error": "invalid_grant"}))]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("oauth.toml");
+    write_private(&path, &tokens("at-0", "rt-0", 1));
+    let store = OAuthStore::load(&path)
+        .unwrap()
+        .with_anthropic(anthropic(&server));
+
+    let err = store
+        .access_token(OAuthProvider::Anthropic)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("anthropic login expired"), "{err}");
+    assert!(store.is_logged_in(OAuthProvider::Anthropic));
 }
