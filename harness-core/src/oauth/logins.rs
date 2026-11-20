@@ -56,6 +56,12 @@ impl OAuthLogins {
         }
     }
 
+    /// Text the login for `kind` requires as the first system prompt block.
+    pub fn system_prefix(&self, kind: AdapterKind) -> Option<&'static str> {
+        let (provider, _) = self.find(kind)?;
+        self.store.system_prefix(provider)
+    }
+
     /// Models available to the login for `kind`.
     pub async fn models(&self, kind: AdapterKind) -> Result<Vec<String>, Error> {
         let (provider, endpoint) = self

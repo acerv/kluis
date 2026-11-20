@@ -611,3 +611,51 @@ async fn oauth_login_lists_models() {
         .contains("oauth-2025-04-20"));
     assert_eq!(req.header("x-api-key"), None);
 }
+
+/// Send one prompt with `system` through `auth` to `server` and return the
+/// request body; the fake server does not stream, so the prompt fails.
+async fn sent_system(auth: AuthConfig, server: &WebServer) -> Value {
+    let mut agent = Agent::with_client(auth.client().unwrap(), "claude-sonnet-4-5")
+        .with_oauth(auth.oauth_logins())
+        .with_system("own prompt");
+    let _ = agent.prompt("hi", |_| {}).await;
+    server.requests()[0].json()["system"].clone()
+}
+
+#[tokio::test]
+async fn oauth_login_prefixes_system_prompt() {
+    if anthropic_env_set() {
+        return;
+    }
+    let server = WebServer::start(vec![(200, json!({}))]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let auth = AuthConfig::parse(&format!(
+        "[anthropic]\nendpoint = \"{}\"\n",
+        server.url("/v1")
+    ))
+    .unwrap()
+    .with_oauth(logged_in(dir.path(), "at-1"));
+
+    let system = sent_system(auth, &server).await;
+    assert_eq!(
+        system[0]["text"],
+        "You are Claude Code, Anthropic's official CLI for Claude."
+    );
+    assert_eq!(system[1]["text"], "own prompt");
+    assert_eq!(system.as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn api_key_keeps_system_prompt() {
+    if anthropic_env_set() {
+        return;
+    }
+    let server = WebServer::start(vec![(200, json!({}))]).await;
+    let auth = AuthConfig::parse(&format!(
+        "[anthropic]\napi_key = \"sk-ant\"\nendpoint = \"{}\"\n",
+        server.url("/v1")
+    ))
+    .unwrap();
+
+    assert_eq!(sent_system(auth, &server).await, "own prompt");
+}

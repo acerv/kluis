@@ -31,6 +31,8 @@ const API_VERSION: &str = "2023-06-01";
 const OAUTH_BETA: &str = "claude-code-20250219,oauth-2025-04-20";
 /// Client identity expected with OAuth access tokens.
 const USER_AGENT: &str = "claude-cli/2.1.322";
+/// First system prompt block required with OAuth access tokens.
+const IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
 
 /// Anthropic login settings.
 #[derive(Debug, Clone)]
@@ -97,6 +99,10 @@ impl Provider for Anthropic {
             url: format!("{}messages", endpoint.unwrap_or(API_URL)),
             headers: headers(&creds.access_token),
         }
+    }
+
+    fn system_prefix(&self) -> Option<&'static str> {
+        Some(IDENTITY)
     }
 
     async fn models(&self, creds: &Tokens, endpoint: Option<&str>) -> Result<Vec<String>, Error> {

@@ -134,6 +134,11 @@ impl OAuthStore {
         })
     }
 
+    /// Text `provider` requires as the first system prompt block.
+    pub fn system_prefix(&self, provider: OAuthProvider) -> Option<&'static str> {
+        with_provider!(self, provider, |p| p.system_prefix())
+    }
+
     /// Models available to the login to `provider`; `endpoint` overrides the
     /// provider's API base URL.
     pub async fn models(

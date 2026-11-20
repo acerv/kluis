@@ -189,6 +189,11 @@ pub(crate) trait Provider: Send + Sync {
     /// URL ending with `/`), or to the provider's own API when `None`.
     fn auth(&self, creds: &Self::Credentials, endpoint: Option<&str>) -> AuthData;
 
+    /// Text the provider requires as the first system prompt block.
+    fn system_prefix(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Chat models available through `endpoint`, as for [`Self::auth`].
     fn models(
         &self,

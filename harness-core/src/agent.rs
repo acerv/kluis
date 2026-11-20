@@ -9,8 +9,8 @@ use std::str::FromStr;
 use futures_util::StreamExt;
 use genai::adapter::AdapterKind;
 use genai::chat::{
-    ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, ContentPart, MessageContent,
-    ReasoningEffort, StopReason, ToolCall, ToolResponse, Usage,
+    CacheControl, ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, ContentPart,
+    MessageContent, ReasoningEffort, StopReason, ToolCall, ToolResponse, Usage,
 };
 use genai::Client;
 use serde::{Deserialize, Serialize};
@@ -125,7 +125,8 @@ impl Agent {
         }
     }
 
-    /// List models of the adapters covered by `oauth` through their login.
+    /// Shape requests and list models of the adapters covered by `oauth` as
+    /// their login requires.
     pub fn with_oauth(mut self, oauth: Option<OAuthLogins>) -> Self {
         self.oauth = oauth;
         self
@@ -297,6 +298,13 @@ impl Agent {
         }
     }
 
+    /// Text the login used for the model requires as the first system
+    /// prompt block.
+    fn system_prefix(&self) -> Option<&'static str> {
+        let kind = AdapterKind::from_model(&self.model).ok()?;
+        self.oauth.as_ref()?.system_prefix(kind)
+    }
+
     /// Ask the model for its next turn, reporting its text as it streams,
     /// and return it with its token usage.
     ///
@@ -311,9 +319,18 @@ impl Agent {
         if let Some(effort) = self.thinking.reasoning_effort() {
             options = options.with_reasoning_effort(effort);
         }
+        let mut req = self.req.clone();
+        if let Some(prefix) = self.system_prefix() {
+            // Keep our prompt as a separate block: with a cache breakpoint,
+            // genai sends system blocks apart instead of joining them.
+            if let Some(system) = req.system.replace(prefix.to_owned()) {
+                req.messages.insert(0, ChatMessage::system(system));
+            }
+            options = options.with_cache_control(CacheControl::Ephemeral);
+        }
         let res = self
             .client
-            .exec_chat_stream(&self.model, self.req.clone(), Some(&options))
+            .exec_chat_stream(&self.model, req, Some(&options))
             .await?;
         let reasoning_back = needs_reasoning_back(res.model_iden.adapter_kind);
         let mut stream = res.stream;
