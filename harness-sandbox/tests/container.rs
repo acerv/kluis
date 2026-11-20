@@ -852,3 +852,23 @@ fn no_network_isolates_container_network() {
     let out = run(&sandbox.allow_connect(port), &connect(port));
     assert!(out.status.success(), "{}", stderr(&out));
 }
+
+#[test]
+fn own_ipc_and_host_name() {
+    // SysV shared memory of host programs must not be reachable, and what
+    // commands create must not outlive the container.
+    let out = run(
+        &system(),
+        "readlink /proc/self/ns/ipc; readlink /proc/self/ns/uts",
+    );
+    let inside = stdout(&out);
+    for ns in ["ipc", "uts"] {
+        let host = std::fs::read_link(format!("/proc/self/ns/{ns}")).unwrap();
+        let host = host.to_str().unwrap();
+        assert!(inside.contains(&format!("{ns}:[")), "{inside}");
+        assert!(
+            !inside.contains(host),
+            "{ns} shared with the host: {inside}"
+        );
+    }
+}

@@ -173,8 +173,8 @@ impl Sandbox {
     }
 
     /// A container showing only the allowed paths, at the same place, plus
-    /// `/dev`, `/proc` and a private `/tmp`. Commands run in it as the
-    /// current user, on the host network.
+    /// `/dev`, `/proc` and a private `/tmp`, with its own IPC and host name.
+    /// Commands run in it as the current user, on the host network.
     ///
     /// Fails if a path is missing or not UTF-8. Starting a command in it
     /// fails without user namespaces, or without Landlock TCP support
@@ -187,6 +187,11 @@ impl Sandbox {
         }
         let mut container = Container::new();
         container
+            // Their own SysV shared memory, semaphores and message queues,
+            // which would otherwise be the host's and outlive the container,
+            // and their own host name.
+            .unshare(Namespace::Ipc)
+            .unshare(Namespace::Uts)
             .runctl(Runctl::MountFallback)
             .devfsmount("/dev")
             .mount(

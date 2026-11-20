@@ -6,7 +6,7 @@
 - [x] Block Unix sockets without `--network`: they lead to host programs that reach the network
 - [x] Refuse user namespaces, `clone3` and io_uring to commands (kernel attack surface)
 - [ ] Allow only the socket families commands need (`AF_INET`, `AF_INET6`, `AF_NETLINK`, `AF_UNIX` with `--network`): `AF_VSOCK` is not isolated by the network namespace and reaches host and hypervisor services, and MCTP, PPPoX, SMC, KCM and `AF_ALG` are open too
-- [ ] Give the container its own IPC and UTS namespaces: commands share SysV memory with host programs, and their segments outlive the sandbox
+- [x] Give the container its own IPC and UTS namespaces: commands share SysV memory with host programs, and their segments outlive the sandbox
 - [x] Call `protect_self()` in the tool worker: commands can read its environment and write forged results into its pipe to the host
 - [x] Protect `.git` of new `git init`: a model-made nested repo with `core.fsmonitor` runs commands when the user (or their shell prompt) runs git there
 - [ ] Check whether editor settings the model writes (`.zed/`, `.vscode/`, `.idea/`) can run commands when the project is opened
