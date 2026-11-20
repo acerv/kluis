@@ -130,6 +130,7 @@ endpoint = "http://{slow_addr}/v1"
 
     let list = discover_models_with_timeout(
         &client,
+        None,
         &[
             AdapterKind::OpenAI,
             AdapterKind::OpenAI,

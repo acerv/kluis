@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::models::{discover_models, ModelList};
+use crate::oauth::OAuthLogins;
 use crate::tools::{self, Executor, ToolContext};
 use crate::Event;
 
@@ -98,6 +99,7 @@ impl FromStr for Thinking {
 /// The history is kept across [`Agent::prompt`] calls.
 pub struct Agent {
     client: Client,
+    oauth: Option<OAuthLogins>,
     model: String,
     thinking: Thinking,
     req: ChatRequest,
@@ -115,11 +117,18 @@ impl Agent {
     pub fn with_client(client: Client, model: impl Into<String>) -> Self {
         Self {
             client,
+            oauth: None,
             model: model.into(),
             thinking: Thinking::Default,
             req: ChatRequest::default().with_tools(tools::definitions()),
             executor: Executor::default(),
         }
+    }
+
+    /// List models of the adapters covered by `oauth` through their login.
+    pub fn with_oauth(mut self, oauth: Option<OAuthLogins>) -> Self {
+        self.oauth = oauth;
+        self
     }
 
     /// Set the thinking effort sent with requests.
@@ -176,7 +185,7 @@ impl Agent {
     /// Query `adapters` concurrently via this agent's HTTP client for available
     /// chat models.
     pub async fn list_models(&self, adapters: &[AdapterKind]) -> ModelList {
-        discover_models(&self.client, adapters).await
+        discover_models(&self.client, self.oauth.as_ref(), adapters).await
     }
 
     /// Drop the conversation history, keeping the model, system prompt, and

@@ -11,20 +11,16 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::future::Future;
 use std::path::Path;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use genai::adapter::AdapterKind;
-use genai::resolver::{self, AuthData, AuthResolver, Endpoint, ProviderConfig};
-use genai::{Client, ModelIden};
+use genai::resolver::{AuthData, Endpoint, ProviderConfig};
+use genai::Client;
 use serde::Deserialize;
 
-use crate::oauth::{OAuthProvider, OAuthStore};
+use crate::oauth::{OAuthLogins, OAuthProvider, OAuthStore};
 use crate::{private_file, Error};
-
-type ResolverFuture = Pin<Box<dyn Future<Output = resolver::Result<Option<AuthData>>> + Send>>;
 
 /// Maximum size of an `auth.toml` file (256 KiB).
 const MAX_AUTH_BYTES: usize = 256 * 1024;
@@ -128,39 +124,17 @@ impl AuthConfig {
         (self.oauth.as_ref()?.is_logged_in(provider) && !env_key_present(kind)).then_some(provider)
     }
 
-    /// Resolver authenticating adapters with an OAuth login, refreshing its
-    /// token before each request when needed.
-    fn oauth_resolver(&self) -> Option<AuthResolver> {
-        let store = self.oauth.clone()?;
-        let logins: Arc<[_]> = OAuthProvider::ALL
+    /// OAuth logins in use, with their `auth.toml` endpoint overrides.
+    pub fn oauth_logins(&self) -> Option<OAuthLogins> {
+        let logins = OAuthProvider::ALL
             .iter()
             .filter_map(|p| {
                 let kind = p.adapter();
                 let endpoint = self.get(kind).and_then(|e| e.endpoint.clone());
-                Some((kind, self.oauth_login(kind)?, endpoint))
+                Some((self.oauth_login(kind)?, endpoint))
             })
             .collect();
-        if logins.is_empty() {
-            return None;
-        }
-        Some(AuthResolver::from_resolver_async_fn(
-            move |model: ModelIden| -> ResolverFuture {
-                let store = store.clone();
-                let logins = logins.clone();
-                Box::pin(async move {
-                    let Some((_, provider, endpoint)) =
-                        logins.iter().find(|(k, ..)| *k == model.adapter_kind)
-                    else {
-                        return Ok(None);
-                    };
-                    store
-                        .auth_data(*provider, endpoint.as_deref())
-                        .await
-                        .map(Some)
-                        .map_err(|e| resolver::Error::Custom(e.to_string()))
-                })
-            },
-        ))
+        OAuthLogins::new(self.oauth.clone()?, logins)
     }
 
     /// Build a [`Client`] configured with all entries from this `AuthConfig`.
@@ -201,8 +175,8 @@ impl AuthConfig {
                 }
             }
         }
-        if let Some(resolver) = self.oauth_resolver() {
-            builder = builder.with_auth_resolver(resolver);
+        if let Some(logins) = self.oauth_logins() {
+            builder = builder.with_auth_resolver(logins.resolver());
         }
         Ok(builder.build()?)
     }

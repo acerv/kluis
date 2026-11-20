@@ -5,9 +5,10 @@
 
 use genai::resolver::AuthData;
 use genai::Headers;
+use serde::Deserialize;
 
 use super::flow::{Flow, FlowConfig, Token};
-use super::http::BodyFormat;
+use super::http::{BodyFormat, HttpClient};
 use super::store::OAuthFile;
 use super::{OAuthProvider, Provider, Tokens};
 use crate::Error;
@@ -86,6 +87,27 @@ impl Provider for Anthropic {
             url: format!("{}messages", endpoint.unwrap_or(API_URL)),
             headers: headers(&creds.access_token),
         }
+    }
+
+    async fn models(&self, creds: &Tokens, endpoint: Option<&str>) -> Result<Vec<String>, Error> {
+        #[derive(Deserialize)]
+        struct Model {
+            id: String,
+        }
+        #[derive(Deserialize)]
+        struct Models {
+            data: Vec<Model>,
+        }
+
+        let url = format!("{}models?limit=1000", endpoint.unwrap_or(API_URL));
+        let http = HttpClient::new(BodyFormat::Form)?;
+        let mut request = http.reqwest().get(url);
+        for (name, value) in headers(&creds.access_token).iter() {
+            request = request.header(name, value);
+        }
+        let body = request.send().await?.error_for_status()?.bytes().await?;
+        let models: Models = serde_json::from_slice(&body)?;
+        Ok(models.data.into_iter().map(|m| m.id).collect())
     }
 }
 

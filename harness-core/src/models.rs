@@ -9,6 +9,8 @@ use futures_util::future::join_all;
 use genai::adapter::AdapterKind;
 use genai::Client;
 
+use crate::oauth::OAuthLogins;
+
 /// Per-provider timeout when querying live `/models` endpoints.
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(8);
 
@@ -34,13 +36,19 @@ pub struct ModelList {
 /// Query every adapter in `adapters` concurrently for its available chat
 /// models, filtering out obvious non-chat models (embeddings, audio, image,
 /// moderation) and auto-namespacing models when needed for `genai` routing.
-pub async fn discover_models(client: &Client, adapters: &[AdapterKind]) -> ModelList {
-    discover_models_with_timeout(client, adapters, DISCOVERY_TIMEOUT).await
+/// Adapters covered by `oauth` are queried through their login.
+pub async fn discover_models(
+    client: &Client,
+    oauth: Option<&OAuthLogins>,
+    adapters: &[AdapterKind],
+) -> ModelList {
+    discover_models_with_timeout(client, oauth, adapters, DISCOVERY_TIMEOUT).await
 }
 
 /// Like [`discover_models`], with an explicit per-provider timeout.
 pub async fn discover_models_with_timeout(
     client: &Client,
+    oauth: Option<&OAuthLogins>,
     adapters: &[AdapterKind],
     timeout: Duration,
 ) -> ModelList {
@@ -53,7 +61,13 @@ pub async fn discover_models_with_timeout(
 
     let futs = unique.into_iter().map(|kind| async move {
         let provider = provider_name(kind);
-        match tokio::time::timeout(timeout, client.all_model_names(kind, ())).await {
+        let names = async {
+            match oauth.filter(|o| o.covers(kind)) {
+                Some(oauth) => oauth.models(kind).await,
+                None => Ok(client.all_model_names(kind, ()).await?),
+            }
+        };
+        match tokio::time::timeout(timeout, names).await {
             Ok(Ok(mut raw)) => {
                 raw.retain(|id| is_chat_model(id));
                 raw.sort_unstable();

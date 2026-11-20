@@ -15,7 +15,7 @@ use harness_core::oauth::anthropic::Anthropic;
 use harness_core::oauth::flow::{self, Flow, FlowConfig, Login, Token};
 use harness_core::oauth::http::{BodyFormat, HttpClient};
 use harness_core::oauth::{OAuthProvider, OAuthStore};
-use harness_core::AuthConfig;
+use harness_core::{Agent, AuthConfig};
 use oauth2::basic::BasicTokenType;
 use oauth2::http::{header::CONTENT_TYPE, Method, Request};
 use oauth2::url::Url;
@@ -536,4 +536,38 @@ async fn oauth_login_adds_adapter_and_reports_expiry() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("anthropic login expired"), "{err}");
+}
+
+#[tokio::test]
+async fn oauth_login_lists_models() {
+    if anthropic_env_set() {
+        return;
+    }
+    let server = WebServer::start(vec![(
+        200,
+        json!({"data": [{"id": "claude-sonnet-4-5"}, {"id": "claude-opus-4-1"}]}),
+    )])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let auth = AuthConfig::parse(&format!(
+        "[anthropic]\nendpoint = \"{}\"\n",
+        server.url("/v1")
+    ))
+    .unwrap()
+    .with_oauth(logged_in(dir.path(), "at-1"));
+    let agent = Agent::with_client(auth.client().unwrap(), "claude-sonnet-4-5")
+        .with_oauth(auth.oauth_logins());
+
+    let list = agent.list_models(&[AdapterKind::Anthropic]).await;
+    assert!(list.errors.is_empty(), "{:?}", list.errors);
+    let ids: Vec<_> = list.models.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, ["claude-opus-4-1", "claude-sonnet-4-5"]);
+    assert!(list.models.iter().all(|m| m.provider == "anthropic"));
+
+    let req = &server.requests()[0];
+    assert_eq!(req.method, "GET");
+    assert_eq!(req.path, "/v1/models?limit=1000");
+    assert_eq!(req.header("authorization"), Some("Bearer at-1"));
+    assert_eq!(req.header("anthropic-beta"), Some("oauth-2025-04-20"));
+    assert_eq!(req.header("x-api-key"), None);
 }

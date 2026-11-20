@@ -10,6 +10,7 @@
 pub mod anthropic;
 pub mod flow;
 pub mod http;
+mod logins;
 mod store;
 
 use std::fmt;
@@ -26,6 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Error;
 use flow::{FlowConfig, Token};
+pub use logins::OAuthLogins;
 pub use store::OAuthStore;
 
 /// Refresh access tokens this long before they expire.
@@ -186,4 +188,11 @@ pub(crate) trait Provider: Send + Sync {
     /// `genai` authentication for chat requests to `endpoint` (the API base
     /// URL ending with `/`), or to the provider's own API when `None`.
     fn auth(&self, creds: &Self::Credentials, endpoint: Option<&str>) -> AuthData;
+
+    /// Chat models available through `endpoint`, as for [`Self::auth`].
+    fn models(
+        &self,
+        creds: &Self::Credentials,
+        endpoint: Option<&str>,
+    ) -> impl Future<Output = Result<Vec<String>, Error>> + Send;
 }

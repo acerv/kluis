@@ -134,6 +134,19 @@ impl OAuthStore {
         })
     }
 
+    /// Models available to the login to `provider`; `endpoint` overrides the
+    /// provider's API base URL.
+    pub async fn models(
+        &self,
+        provider: OAuthProvider,
+        endpoint: Option<&str>,
+    ) -> Result<Vec<String>, Error> {
+        with_provider!(self, provider, |p| {
+            let creds = self.credentials(p).await?;
+            p.models(&creds, endpoint).await
+        })
+    }
+
     /// Credentials of `p`, refreshed when about to expire.
     async fn credentials<P: Provider>(&self, p: &P) -> Result<P::Credentials, Error> {
         let not_logged_in = || format!("not logged in to {}", P::ID).into();
