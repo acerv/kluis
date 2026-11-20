@@ -4,7 +4,7 @@
 use std::os::unix::fs::PermissionsExt;
 
 use genai::adapter::AdapterKind;
-use harness_core::{Agent, AuthConfig};
+use harness_core::{Agent, AuthConfig, CredentialSource};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -79,6 +79,40 @@ endpoint = "http://127.0.0.1:8000/v1/"
         .unwrap_err()
         .contains("expected `api_key` or `endpoint`"));
     assert!(AuthConfig::parse("[openai]\nextra = true\n").is_err());
+}
+
+fn env_unset(kind: AdapterKind) -> bool {
+    kind.default_key_env_name()
+        .is_none_or(|name| std::env::var_os(name).is_none_or(|v| v.is_empty()))
+}
+
+#[test]
+fn credential_source_follows_client_precedence() {
+    let auth = AuthConfig::parse(
+        "[mistral]\napi_key = \"sk-m\"\n[openai]\napi_key = \"sk-o\"\n[genai_3]\nendpoint = \"http://127.0.0.1:9/v1\"\n",
+    )
+    .unwrap();
+    let source = |kind| auth.credential_source(kind);
+
+    if env_unset(AdapterKind::Mistral) {
+        assert_eq!(source(AdapterKind::Mistral), CredentialSource::AuthToml);
+    }
+    // `[openai]` also covers its Responses API sibling.
+    if env_unset(AdapterKind::OpenAIResp) {
+        assert_eq!(source(AdapterKind::OpenAIResp), CredentialSource::AuthToml);
+    }
+    if env_unset(AdapterKind::Groq) {
+        assert_eq!(source(AdapterKind::Groq), CredentialSource::Missing);
+        assert_eq!(source(AdapterKind::Groq).to_string(), "no credentials");
+    }
+    if std::env::var_os("GENAI_3_API_KEY").is_none() {
+        assert_eq!(source(AdapterKind::Custom(3)), CredentialSource::NotNeeded);
+    }
+    assert_eq!(
+        CredentialSource::Env("MISTRAL_API_KEY".into()).to_string(),
+        "MISTRAL_API_KEY"
+    );
+    assert_eq!(CredentialSource::AuthToml.to_string(), "auth.toml");
 }
 
 #[test]

@@ -18,7 +18,7 @@ mod session;
 pub mod tools;
 
 pub use agent::{Agent, Error, Thinking};
-pub use auth::{AuthConfig, ProviderAuth};
+pub use auth::{AuthConfig, CredentialSource, ProviderAuth};
 pub use event::Event;
 pub use models::{
     discover_models, discover_models_with_timeout, is_chat_model, provider_name, ModelInfo,

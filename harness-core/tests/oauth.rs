@@ -15,7 +15,7 @@ use harness_core::oauth::anthropic::Anthropic;
 use harness_core::oauth::flow::{self, Flow, FlowConfig, Login, Token};
 use harness_core::oauth::http::{BodyFormat, HttpClient};
 use harness_core::oauth::{OAuthProvider, OAuthStore};
-use harness_core::{Agent, AuthConfig};
+use harness_core::{Agent, AuthConfig, CredentialSource};
 use oauth2::basic::BasicTokenType;
 use oauth2::http::{header::CONTENT_TYPE, Method, Request};
 use oauth2::url::Url;
@@ -505,6 +505,9 @@ async fn oauth_login_overrides_anthropic_api_key() {
     )
     .unwrap()
     .with_oauth(logged_in(dir.path(), "at-1"));
+    let source = auth.credential_source(AdapterKind::Anthropic);
+    assert_eq!(source, CredentialSource::Login(OAuthProvider::Anthropic));
+    assert_eq!(source.to_string(), "Claude Pro/Max login");
     let client = auth.client().unwrap();
 
     let target = client

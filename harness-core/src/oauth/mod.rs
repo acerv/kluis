@@ -49,6 +49,13 @@ impl OAuthProvider {
         }
     }
 
+    /// What the login gives access to.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Anthropic => "Claude Pro/Max login",
+        }
+    }
+
     /// The `genai` adapter the login authenticates.
     pub fn adapter(self) -> AdapterKind {
         match self {

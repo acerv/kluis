@@ -44,6 +44,33 @@ impl fmt::Debug for ProviderAuth {
     }
 }
 
+/// Where the credentials of a provider come from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CredentialSource {
+    /// An API key environment variable, e.g. `ANTHROPIC_API_KEY`.
+    Env(String),
+    /// A subscription login.
+    Login(OAuthProvider),
+    /// `api_key` in `auth.toml`.
+    AuthToml,
+    /// None, and the provider needs none, e.g. a local Ollama.
+    NotNeeded,
+    /// None, though the provider needs an API key.
+    Missing,
+}
+
+impl fmt::Display for CredentialSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Env(name) => f.write_str(name),
+            Self::Login(provider) => f.write_str(provider.label()),
+            Self::AuthToml => f.write_str("auth.toml"),
+            Self::NotNeeded => f.write_str("no key needed"),
+            Self::Missing => f.write_str("no credentials"),
+        }
+    }
+}
+
 /// Provider authentication loaded from `auth.toml`.
 #[derive(Debug, Clone, Default)]
 pub struct AuthConfig {
@@ -115,6 +142,31 @@ impl AuthConfig {
 
     pub fn get(&self, kind: AdapterKind) -> Option<&ProviderAuth> {
         self.providers.get(&kind)
+    }
+
+    /// Where the credentials of `kind` come from, in the order
+    /// [`Self::client`] uses them.
+    pub fn credential_source(&self, kind: AdapterKind) -> CredentialSource {
+        let env = env_key_name(kind);
+        if let Some(name) = env.as_deref().filter(|name| env_set(name)) {
+            return CredentialSource::Env(name.to_owned());
+        }
+        if let Some(provider) = self.oauth_login(kind) {
+            return CredentialSource::Login(provider);
+        }
+        let sibling = match kind {
+            AdapterKind::OpenAIResp => Some(AdapterKind::OpenAI),
+            AdapterKind::GeminiIx => Some(AdapterKind::Gemini),
+            _ => None,
+        };
+        let entry = self.get(kind).or_else(|| self.get(sibling?));
+        if entry.is_some_and(|e| e.api_key.is_some()) {
+            CredentialSource::AuthToml
+        } else if env.is_none() || matches!(kind, AdapterKind::Custom(_)) {
+            CredentialSource::NotNeeded
+        } else {
+            CredentialSource::Missing
+        }
     }
 
     /// The OAuth login used for `kind`: one is saved and no API key
@@ -242,10 +294,18 @@ fn parse_adapter(name: &str) -> Option<AdapterKind> {
     AdapterKind::from_lower_str(&lower)
 }
 
-fn env_key_present(kind: AdapterKind) -> bool {
-    if let AdapterKind::Custom(n) = kind {
-        return std::env::var_os(format!("GENAI_{n}_API_KEY")).is_some_and(|v| !v.is_empty());
+/// Environment variable holding the API key of `kind`, if it has one.
+fn env_key_name(kind: AdapterKind) -> Option<String> {
+    match kind {
+        AdapterKind::Custom(n) => Some(format!("GENAI_{n}_API_KEY")),
+        _ => kind.default_key_env_name().map(str::to_owned),
     }
-    kind.default_key_env_name()
-        .is_some_and(|name| std::env::var_os(name).is_some_and(|v| !v.is_empty()))
+}
+
+fn env_set(name: &str) -> bool {
+    std::env::var_os(name).is_some_and(|v| !v.is_empty())
+}
+
+fn env_key_present(kind: AdapterKind) -> bool {
+    env_key_name(kind).is_some_and(|name| env_set(&name))
 }
