@@ -6,6 +6,7 @@
 //! ```sh
 //! kl                           # interactive chat, Ctrl-D to quit
 //! kl "fix the typo in README.md"   # single prompt
+//! kl --login anthropic         # use a Claude Pro/Max subscription
 //! ```
 //!
 //! Uses an inline TUI when attached to a terminal and falls back to line mode
@@ -20,9 +21,12 @@ mod sandbox;
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::Parser;
 use genai::chat::ChatMessage;
+use harness_core::oauth::flow::Login;
+use harness_core::oauth::{OAuthProvider, OAuthStore};
 use harness_core::tools::{run_worker, Executor, ToolContext};
 use harness_core::{
     Agent, AuthConfig, Error, Event, SessionData, SessionStore, Thinking, TokenUsage,
@@ -113,6 +117,14 @@ pub struct Args {
     #[arg(long, env = config::ENV, value_name = "PATH")]
     config: Option<PathBuf>,
 
+    /// Log in to a provider subscription (anthropic), then exit.
+    #[arg(long, value_name = "PROVIDER", conflicts_with_all = ["logout", "prompt"])]
+    login: Option<OAuthProvider>,
+
+    /// Forget the login to a provider, then exit.
+    #[arg(long, value_name = "PROVIDER", conflicts_with = "prompt")]
+    logout: Option<OAuthProvider>,
+
     /// Internal mode: run the NDJSON tool worker inside the sandbox container.
     #[arg(long, hide = true)]
     tool_executor: bool,
@@ -132,21 +144,85 @@ fn main() -> ExitCode {
 }
 
 fn launch(mut args: Args) -> Result<ExitCode, Error> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
     if args.tool_executor {
         let cwd = std::env::current_dir()?;
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()?
-            .block_on(run_worker(cwd, args.max_memory))?;
-        return Ok(ExitCode::SUCCESS);
+        runtime.block_on(run_worker(cwd, args.max_memory))?;
+    } else if let Some(provider) = args.login {
+        runtime.block_on(login(provider))?;
+    } else if let Some(provider) = args.logout {
+        runtime.block_on(logout(provider))?;
+    } else {
+        let config_model = apply_config(&mut args)?;
+        runtime.block_on(run(args, config_model))?;
     }
-
-    let config_model = apply_config(&mut args)?;
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?
-        .block_on(run(args, config_model))?;
     Ok(ExitCode::SUCCESS)
+}
+
+fn oauth_store() -> Result<OAuthStore, Error> {
+    let path = config::oauth_path().ok_or("cannot store logins: HOME is not set")?;
+    OAuthStore::load(path)
+}
+
+/// Log in to `provider` and save the login.
+async fn login(provider: OAuthProvider) -> Result<(), Error> {
+    let store = oauth_store()?;
+    let token = match store.start_login(provider).await? {
+        Login::Paste(login) => {
+            println!(
+                "Open this page to log in to {provider}:\n\n{}\n",
+                login.url()
+            );
+            print!("Paste the authorization code: ");
+            io::stdout().flush()?;
+            let mut input = String::new();
+            BufReader::new(tokio::io::stdin())
+                .read_line(&mut input)
+                .await?;
+            if input.trim().is_empty() {
+                return Err("login cancelled".into());
+            }
+            login.finish(&input).await?
+        }
+        Login::Callback(login) => {
+            println!(
+                "Open this page to log in to {provider}:\n\n{}\n",
+                login.url()
+            );
+            println!("Waiting for the browser...");
+            login.finish().await?
+        }
+        Login::Device(login) => {
+            println!(
+                "Open {} and enter the code {} to log in to {provider}.",
+                login.url(),
+                login.user_code()
+            );
+            println!("Waiting for approval...");
+            login.finish().await?
+        }
+    };
+    store.finish_login(provider, &token).await?;
+    println!("Logged in to {provider}.");
+    if let Some(var) = provider
+        .adapter()
+        .default_key_env_name()
+        .filter(|v| std::env::var_os(v).is_some_and(|v| !v.is_empty()))
+    {
+        eprintln!("warning: {var} is set and is used instead of the login");
+    }
+    Ok(())
+}
+
+async fn logout(provider: OAuthProvider) -> Result<(), Error> {
+    if oauth_store()?.logout(provider).await? {
+        println!("Logged out of {provider}.");
+    } else {
+        println!("Not logged in to {provider}.");
+    }
+    Ok(())
 }
 
 /// Add the settings of the config file to `args`, leave in `args.config` the
@@ -177,12 +253,16 @@ fn apply_config(args: &mut Args) -> Result<Option<String>, Error> {
 
 async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
     let cwd = std::env::current_dir()?;
-    let auth = match config::auth_path() {
+    let mut auth = match config::auth_path() {
         Some(path) => AuthConfig::load(&path)?,
         None => AuthConfig::default(),
     };
+    if let Some(path) = config::oauth_path() {
+        auth = auth.with_oauth(Arc::new(OAuthStore::load(path)?));
+    }
     let client = auth.client()?;
     let adapters = auth.configured_adapters();
+    let oauth = auth.oauth_logins();
     drop(auth);
     let system = harness_core::system_prompt(
         &cwd,
@@ -255,6 +335,7 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
     };
 
     let mut agent = Agent::with_client(client, &model)
+        .with_oauth(oauth)
         .with_thinking(args.thinking.unwrap_or_default())
         .with_system(system)
         .with_history(history)

@@ -113,6 +113,11 @@ pub fn auth_path() -> Option<PathBuf> {
     Some(kluis_dir()?.join("auth.toml"))
 }
 
+/// Where OAuth logins are saved: `~/.kluis/oauth.toml`.
+pub fn oauth_path() -> Option<PathBuf> {
+    Some(kluis_dir()?.join("oauth.toml"))
+}
+
 /// Where global agent instructions are looked for:
 /// `~/.kluis/AGENTS.md`.
 pub fn agents_path() -> Option<PathBuf> {

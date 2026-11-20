@@ -317,7 +317,10 @@ async fn open_model_picker(
 ) -> Result<bool, Error> {
     if models.adapters.is_empty() {
         app.push_info(format!("model: {}", agent.model()));
-        app.push_info("[no configured providers — set an API key env var or ~/.kluis/auth.toml]");
+        app.push_info(
+            "[no configured providers — set an API key env var or ~/.kluis/auth.toml, \
+             or run `kl --login <provider>`]",
+        );
         return Ok(false);
     }
 
