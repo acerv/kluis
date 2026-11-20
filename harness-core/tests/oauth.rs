@@ -15,7 +15,7 @@ use harness_core::oauth::anthropic::Anthropic;
 use harness_core::oauth::flow::{self, Flow, FlowConfig, Login, Token};
 use harness_core::oauth::http::{BodyFormat, HttpClient};
 use harness_core::oauth::{OAuthProvider, OAuthStore};
-use harness_core::{Agent, AuthConfig, CredentialSource};
+use harness_core::{Agent, AuthConfig, CredentialSource, RetryPolicy};
 use oauth2::basic::BasicTokenType;
 use oauth2::http::{header::CONTENT_TYPE, Method, Request};
 use oauth2::url::Url;
@@ -618,8 +618,15 @@ async fn oauth_login_lists_models() {
 /// Send one prompt with `system` through `auth` to `server` and return the
 /// request body; the fake server does not stream, so the prompt fails.
 async fn sent_system(auth: AuthConfig, server: &WebServer) -> Value {
+    // Only the first request matters: the server cannot answer it as a
+    // stream, and retrying would wait half a minute for nothing.
+    let no_retry = RetryPolicy {
+        max_retries: 0,
+        ..RetryPolicy::default()
+    };
     let mut agent = Agent::with_client(auth.client().unwrap(), "claude-sonnet-4-5")
         .with_oauth(auth.oauth_logins())
+        .with_retry(no_retry)
         .with_system("own prompt");
     let _ = agent.prompt("hi", |_| {}).await;
     server.requests()[0].json()["system"].clone()
