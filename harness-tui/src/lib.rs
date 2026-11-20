@@ -25,11 +25,12 @@ use std::time::Duration;
 use crossterm::event::{Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers};
 use genai::adapter::AdapterKind;
 use genai::chat::ChatMessage;
-use harness_core::tools::Question;
+use harness_core::tools::{is_read_only, Question};
 use harness_core::{
     Agent, Error, ModelInfo, ModelList, SessionData, SessionStore, SessionSummary, SessionWriter,
     Thinking, TokenUsage,
 };
+use harness_sandbox::GitGuard;
 use tokio::sync::mpsc;
 use tokio::time::{interval_at, Instant, MissedTickBehavior};
 
@@ -124,6 +125,40 @@ pub struct RunOptions {
     pub adapters: Vec<AdapterKind>,
     /// Shown next to the startup logo.
     pub banner: Vec<BannerLine>,
+    /// Checked after every prompt, when sandboxed.
+    pub git_guard: Option<GitGuard>,
+}
+
+/// Disable the git repositories commands created during a prompt that
+/// added `messages` to the history, returning what to tell the user.
+///
+/// Only a tool that may change files can create one, so without such a
+/// call the folders are not scanned.
+pub fn git_notices(guard: Option<&mut GitGuard>, messages: &[ChatMessage]) -> Vec<String> {
+    let changes_files = messages
+        .iter()
+        .flat_map(|message| message.content.tool_calls())
+        .any(|call| !is_read_only(&call.fn_name));
+    let Some(guard) = guard.filter(|_| changes_files) else {
+        return Vec::new();
+    };
+    guard
+        .disable_new()
+        .into_iter()
+        .map(|repo| match repo.moved_to {
+            Ok(to) => format!(
+                "[a command created the git repository {}: renamed to {}, check its \
+                 config and hooks before renaming it back]",
+                repo.path.display(),
+                to.display()
+            ),
+            Err(err) => format!(
+                "[warning: a command created the git repository {} and it could not \
+                 be disabled ({err}): check its config and hooks before using git there]",
+                repo.path.display()
+            ),
+        })
+        .collect()
 }
 
 /// The start of a session `id`: its creation date and time.
@@ -141,6 +176,7 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
         picker_entries,
         adapters,
         banner,
+        mut git_guard,
     } = opts;
     let mut models = ModelCatalog {
         adapters,
@@ -207,7 +243,8 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
                 }
                 app.start_prompt(&prompt);
                 draw(&mut term, &mut app)?;
-                if run_turn(
+                let prev_len = agent.history().len();
+                let quit = run_turn(
                     &mut term,
                     &mut app,
                     &mut agent,
@@ -216,14 +253,21 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
                     session.as_mut(),
                     &prompt,
                 )
-                .await?
-                {
-                    break;
+                .await?;
+                let notices = git_notices(git_guard.as_mut(), &agent.history()[prev_len..]);
+                if quit {
+                    // Once the screen is back.
+                    drop(term);
+                    notices.iter().for_each(|notice| eprintln!("{notice}"));
+                    return Ok(());
+                }
+                if !notices.is_empty() {
+                    notices.iter().for_each(|notice| app.push_info(notice));
+                    draw(&mut term, &mut app)?;
                 }
             }
         }
     }
-
     Ok(())
 }
 

@@ -11,12 +11,13 @@ use std::path::Path;
 
 use harness_core::tools::{Executor, SandboxConfig};
 use harness_core::Error;
-use harness_sandbox::{Options, Sandbox};
+use harness_sandbox::{GitGuard, Options, Sandbox};
 
 use crate::Args;
 
-/// Spawn the sandboxed tool executor for `args` in `cwd`.
-pub fn executor(args: &Args, cwd: &Path) -> Result<Executor, Error> {
+/// Spawn the sandboxed tool executor for `args` in `cwd`, with the guard
+/// against git repositories its commands create.
+pub fn executor(args: &Args, cwd: &Path) -> Result<(Executor, GitGuard), Error> {
     let exe = std::env::current_exe()?;
     let mut read = args.allow_read.clone();
     let mut write = args.allow_write.clone();
@@ -84,11 +85,13 @@ pub fn executor(args: &Args, cwd: &Path) -> Result<Executor, Error> {
         .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
         .collect();
 
-    Ok(Executor::sandbox(SandboxConfig {
+    let git_guard = GitGuard::new(&sandbox)?;
+    let executor = Executor::sandbox(SandboxConfig {
         sandbox,
         program: exe,
         args: worker_args,
         cwd: cwd.to_path_buf(),
         env,
-    })?)
+    })?;
+    Ok((executor, git_guard))
 }

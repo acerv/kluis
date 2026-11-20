@@ -675,3 +675,18 @@ fn commands_cannot_create_user_namespaces() {
     assert!(output.contains("Operation not permitted"), "{output}");
     assert!(output.contains("EXIT=1"), "{output}");
 }
+
+#[test]
+fn repositories_commands_create_are_disabled() {
+    // Git on the host would run what their config names.
+    let home = tempdir();
+    let cwd = tempdir();
+    run_bash_in(cwd.path(), home.path(), &[], &[], |_| {
+        "mkdir -p .git sub/.git && echo '[core]' > sub/.git/config".into()
+    });
+
+    for dir in [cwd.path().to_path_buf(), cwd.path().join("sub")] {
+        assert!(!dir.join(".git").exists(), "{}", dir.display());
+        assert!(dir.join(".git.kl-disabled").is_dir(), "{}", dir.display());
+    }
+}

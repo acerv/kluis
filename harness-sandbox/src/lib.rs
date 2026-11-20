@@ -21,12 +21,14 @@
 compile_error!("harness-sandbox only supports Linux");
 
 mod env;
+mod git;
 mod network;
 mod profile;
 mod protect;
 mod seccomp;
 
 pub use env::command_env;
+pub use git::{GitGuard, NewRepository};
 pub use network::NoNetwork;
 pub use profile::Options;
 pub use protect::protect_self;
@@ -389,7 +391,7 @@ impl Sandbox {
 }
 
 /// Canonical paths and whether they are directories for existing `deny` entries.
-fn resolve_denied(deny: &[PathBuf]) -> Result<Vec<(PathBuf, bool)>, SandboxError> {
+pub(crate) fn resolve_denied(deny: &[PathBuf]) -> Result<Vec<(PathBuf, bool)>, SandboxError> {
     let mut out = IndexSet::new();
     for raw in deny {
         let error = |e: &dyn fmt::Display| SandboxError {
@@ -580,7 +582,7 @@ fn map_denied(
 
 /// `.git` folders and files inside `root`, unless already covered by
 /// `writable` or `denied`.
-fn collect_git(
+pub(crate) fn collect_git(
     root: &Path,
     canon_root: &Path,
     writable: &[&PathBuf],
@@ -760,7 +762,7 @@ fn closest_ancestor(mounts: &[(PathBuf, bool)], path: &Path) -> Option<(PathBuf,
 }
 
 /// `path` made absolute, if it exists and is UTF-8.
-fn checked(path: &Path) -> Result<PathBuf, SandboxError> {
+pub(crate) fn checked(path: &Path) -> Result<PathBuf, SandboxError> {
     let error = |e: &dyn fmt::Display| SandboxError {
         message: format!("{}: {e}", path.display()),
     };

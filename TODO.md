@@ -5,7 +5,8 @@
 - [x] Hide FUSE and network mounts below shown folders (cloud drives, network shares)
 - [x] Block Unix sockets without `--network`: they lead to host programs that reach the network
 - [x] Refuse user namespaces, `clone3` and io_uring to commands (kernel attack surface)
-- [ ] Protect `.git` of new `git init`: a model-made nested repo with `core.fsmonitor` runs commands when the user (or their shell prompt) runs git there; also watch editor settings (`.zed/`, `.vscode/`, `.idea/`)
+- [x] Protect `.git` of new `git init`: a model-made nested repo with `core.fsmonitor` runs commands when the user (or their shell prompt) runs git there
+- [ ] Check whether editor settings the model writes (`.zed/`, `.vscode/`, `.idea/`) can run commands when the project is opened
 - [x] Refuse a symlinked `AGENTS.md`: the host follows it at startup, pulling hidden files (`~/.kluis/auth.toml`, `~/.ssh`) into the prompt
 - [ ] Hide credentials readable in `$HOME` (`gh`, `npm`, `cargo`, `docker`, `kube`, `aws`, browser and mail profiles, chat apps, keyrings, shell history), or hide `$HOME` by default and show only toolchains
 - [ ] `--allow-connect`: Landlock allows the port on every host and UDP is unfiltered; refuse UDP sockets in ports mode and document it

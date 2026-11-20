@@ -33,7 +33,10 @@ use harness_core::{
     provider_name, Agent, AuthConfig, CredentialSource, Error, Event, SessionData, SessionStore,
     Thinking, TokenUsage,
 };
-use harness_tui::{retry_notice, summary, BannerLine, History, RunOptions, Session, Status};
+use harness_sandbox::GitGuard;
+use harness_tui::{
+    git_notices, retry_notice, summary, BannerLine, History, RunOptions, Session, Status,
+};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 /// Terminal coding agent with native sandboxing.
@@ -330,7 +333,7 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
         .map(|kind| (kind, auth.credential_source(kind)));
     drop(auth);
 
-    let executor = if args.no_sandbox {
+    let (executor, mut git_guard) = if args.no_sandbox {
         // Even without the container, keep local bash commands away from API
         // keys in our memory and environment.
         harness_sandbox::protect_self()?;
@@ -339,9 +342,10 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
             std::env::vars_os(),
             &args.pass_env,
         ));
-        Executor::Local(tools)
+        (Executor::Local(tools), None)
     } else {
-        sandbox::executor(&args, &cwd)?
+        let (executor, guard) = sandbox::executor(&args, &cwd)?;
+        (executor, Some(guard))
     };
 
     let mut agent = Agent::with_client(client, &model)
@@ -357,7 +361,8 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
     }
 
     if !args.prompt.is_empty() {
-        prompt_and_persist(&mut agent, session.as_mut(), &args.prompt.join(" ")).await?;
+        let text = args.prompt.join(" ");
+        prompt_and_persist(&mut agent, session.as_mut(), git_guard.as_mut(), &text).await?;
         return Ok(());
     }
 
@@ -384,6 +389,7 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
                 picker_entries,
                 adapters,
                 banner,
+                git_guard,
             },
         )
         .await;
@@ -409,7 +415,8 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
         }
 
         // Keep the session alive on failures such as network errors.
-        if let Err(err) = prompt_and_persist(&mut agent, session.as_mut(), line).await {
+        let res = prompt_and_persist(&mut agent, session.as_mut(), git_guard.as_mut(), line).await;
+        if let Err(err) = res {
             eprintln!("error: {err}");
         }
     }
@@ -432,6 +439,7 @@ fn open_loaded_session(
 async fn prompt_and_persist(
     agent: &mut Agent,
     session: Option<&mut Session>,
+    git_guard: Option<&mut GitGuard>,
     text: &str,
 ) -> Result<(), Error> {
     let prev_len = agent.history().len();
@@ -444,11 +452,14 @@ async fn prompt_and_persist(
             print_event(event);
         })
         .await;
+    let added = &agent.history()[prev_len..];
     if let Some(session) = session {
-        let added = &agent.history()[prev_len..];
         if let Err(err) = session.record_prompt(added, usage) {
             eprintln!("warning: could not save session: {err}");
         }
+    }
+    for notice in git_notices(git_guard, added) {
+        eprintln!("{notice}");
     }
     res.map(|_| ())
 }

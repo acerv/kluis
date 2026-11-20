@@ -1201,3 +1201,33 @@ fn retry_keeps_partial_text_and_shows_notice() {
     let partial = text.iter().position(|l| l.contains("half an ans"));
     assert!(partial < notice && notice.is_some(), "{text:?}");
 }
+
+#[test]
+fn git_guard_runs_only_after_tools_that_change_files() {
+    use harness_sandbox::{GitGuard, Sandbox};
+    use harness_tui::git_notices;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut guard = GitGuard::new(&Sandbox::new().allow_write(dir.path())).unwrap();
+    std::fs::create_dir(dir.path().join(".git")).unwrap();
+    let prompt = |tool: &str| {
+        let call = ToolCall {
+            call_id: "c1".into(),
+            fn_name: tool.into(),
+            fn_arguments: serde_json::json!({}),
+            thought_signatures: None,
+        };
+        vec![ChatMessage::assistant(MessageContent::from_tool_calls(
+            vec![call],
+        ))]
+    };
+
+    // Reading cannot create a repository: no scan.
+    assert!(git_notices(Some(&mut guard), &prompt("read")).is_empty());
+    assert!(dir.path().join(".git").exists());
+
+    let notices = git_notices(Some(&mut guard), &prompt("bash"));
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert!(notices[0].contains(".git.kl-disabled"), "{notices:?}");
+    assert!(!dir.path().join(".git").exists());
+}

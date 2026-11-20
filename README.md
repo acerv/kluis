@@ -134,7 +134,8 @@ precedence over `api_key`.
 
 - `hakoniwa` container showing only the configured folders.
 - The current folder is writable by default; `.git` stays read-only so hooks
-  and `config` cannot run code on the host.
+  and `config` cannot run code on the host, and a new `.git` that commands
+  create is renamed to `.git.kl-disabled` after each prompt.
 - `--strict` makes the current folder read-only; `--no-sandbox` runs tools on
   the host.
 - Network access is off by default; allow specific TCP ports or all network
