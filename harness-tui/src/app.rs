@@ -135,6 +135,8 @@ pub struct App {
     status: Status,
     theme: Theme,
     width: Cell<u16>,
+    /// Where the last [`App::render`] placed the visible cursor.
+    cursor: Cell<Option<Position>>,
     input: Input,
     busy: bool,
     show_thinking: bool,
@@ -168,6 +170,7 @@ impl App {
             status,
             theme,
             width: Cell::new(DEFAULT_WIDTH),
+            cursor: Cell::new(None),
             input: Input::default(),
             busy: false,
             show_thinking: true,
@@ -746,7 +749,18 @@ impl App {
 
     /// Draw the pi-style inline viewport: multi-line live preview,
     /// spinner/notice, framed multiline editor with cursor, and footer.
+    /// Where the last [`App::render`] placed the visible cursor, if anywhere.
+    pub fn cursor_position(&self) -> Option<Position> {
+        self.cursor.get()
+    }
+
+    fn set_cursor(&self, frame: &mut Frame<'_>, position: Position) {
+        self.cursor.set(Some(position));
+        frame.set_cursor_position(position);
+    }
+
     pub fn render(&self, frame: &mut Frame<'_>) {
+        self.cursor.set(None);
         let area = frame.area();
         if area.width > 0 {
             self.width.set(area.width);
@@ -872,10 +886,10 @@ impl App {
                 Span::styled("Type a message… (/help for commands)", self.theme.muted),
             ]);
             frame.render_widget(Paragraph::new(line), area);
-            frame.set_cursor_position(Position::new(
-                area.x.saturating_add(prefix_w as u16),
-                area.y,
-            ));
+            self.set_cursor(
+                frame,
+                Position::new(area.x.saturating_add(prefix_w as u16), area.y),
+            );
             return;
         }
 
@@ -911,7 +925,7 @@ impl App {
                 .y
                 .saturating_add(layout.cursor_row.saturating_sub(scroll_row) as u16)
                 .min(area.bottom().saturating_sub(1));
-            frame.set_cursor_position(Position::new(x, y));
+            self.set_cursor(frame, Position::new(x, y));
         }
     }
 

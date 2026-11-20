@@ -15,6 +15,7 @@ use crossterm::terminal::{
     EndSynchronizedUpdate,
 };
 use ratatui::backend::{Backend, CrosstermBackend};
+use ratatui::layout::Size;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 use ratatui::{Terminal, TerminalOptions, Viewport};
@@ -97,6 +98,11 @@ impl Drop for EventReader {
 pub struct InlineTerminal {
     terminal: Terminal<CrosstermBackend<Stdout>>,
     height: u16,
+    /// Terminal size at the last draw.
+    size: Size,
+    /// Row of the terminal cursor after the last draw: the only point that
+    /// still tells where the viewport is once the terminal resizes.
+    cursor_row: u16,
     pending_clear: bool,
     signals: JoinHandle<()>,
 }
@@ -121,12 +127,14 @@ impl InlineTerminal {
         let options = TerminalOptions {
             viewport: Viewport::Inline(height),
         };
-        match Terminal::with_options(backend, options) {
-            Ok(mut terminal) => {
-                let height = terminal.get_frame().area().height;
+        match Terminal::with_options(backend, options).and_then(|t| Ok((t.size()?, t))) {
+            Ok((size, mut terminal)) => {
+                let area = terminal.get_frame().area();
                 Ok(Self {
                     terminal,
-                    height,
+                    height: area.height,
+                    size,
+                    cursor_row: area.y,
                     pending_clear: false,
                     signals,
                 })
@@ -148,19 +156,30 @@ impl InlineTerminal {
     /// Sync terminal dimensions, resize the inline viewport if needed, flush
     /// pending scrollback lines above it, and redraw `app` inside a single
     /// synchronized terminal update.
+    ///
+    /// After a terminal resize the viewport follows the cursor, which the
+    /// terminal moves along with the text, so the output above stays in
+    /// place. Ratatui's own resize instead clears the screen and moves the
+    /// viewport to the top when the terminal gets narrower.
     pub fn draw_app(&mut self, app: &mut App) -> io::Result<()> {
         execute!(io::stdout(), BeginSynchronizedUpdate)?;
         let sync = scopeguard::guard((), |()| {
             let _ = execute!(io::stdout(), EndSynchronizedUpdate);
         });
         let res = (|| -> io::Result<()> {
-            // Sync ratatui's viewport before querying its top row or calling
-            // `insert_before` (ratatui otherwise only autoresizes inside `draw`).
-            self.terminal.autoresize()?;
-
             let size = self.terminal.size()?;
             let desired = app.viewport_height(size.width).min(size.height.max(1));
-            if self.pending_clear {
+            if size != self.size {
+                self.size = size;
+                let top = self.follow_cursor(size)?;
+                execute!(
+                    io::stdout(),
+                    MoveTo(0, top),
+                    Clear(ClearType::FromCursorDown)
+                )?;
+                self.recreate_viewport(desired)?;
+                self.pending_clear = false;
+            } else if self.pending_clear {
                 self.pending_clear = false;
                 execute!(
                     io::stdout(),
@@ -182,11 +201,30 @@ impl InlineTerminal {
             let lines = app.take_scrollback();
             flush_scrollback(&mut self.terminal, lines)?;
             self.terminal.draw(|frame| app.render(frame))?;
+            self.cursor_row = match app.cursor_position() {
+                Some(position) => position.y,
+                None => {
+                    // Park the hidden cursor where we can find it again.
+                    let top = self.terminal.get_frame().area().y;
+                    execute!(io::stdout(), MoveTo(0, top))?;
+                    top
+                }
+            };
             Ok(())
         })();
         ScopeGuard::into_inner(sync);
         let end_res = execute!(io::stdout(), EndSynchronizedUpdate);
         res.and(end_res)
+    }
+
+    /// Top row of the viewport after the terminal became `size`, found from
+    /// how far the terminal moved the cursor.
+    fn follow_cursor(&mut self, size: Size) -> io::Result<u16> {
+        let top = self.terminal.get_frame().area().y;
+        let row = self.terminal.get_cursor_position()?.y;
+        let top = (top as i32 + row as i32 - self.cursor_row as i32)
+            .clamp(0, size.height.saturating_sub(1) as i32);
+        Ok(top as u16)
     }
 
     fn recreate_viewport(&mut self, height: u16) -> io::Result<()> {

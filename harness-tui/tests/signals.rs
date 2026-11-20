@@ -1,59 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
+mod common;
+
 use std::fs::File;
 use std::io::Read;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::os::unix::process::{CommandExt, ExitStatusExt};
-use std::process::{Child, Command, Stdio};
+use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::unix::process::ExitStatusExt;
 use std::time::{Duration, Instant};
 
-/// A pseudo-terminal pair: `master` for us, `slave` for the harness.
-fn openpty() -> (OwnedFd, OwnedFd) {
-    let (mut master, mut slave) = (0, 0);
-    let ret = unsafe {
-        libc::openpty(
-            &mut master,
-            &mut slave,
-            std::ptr::null_mut(),
-            std::ptr::null(),
-            std::ptr::null(),
-        )
-    };
-    assert_eq!(ret, 0, "openpty: {}", std::io::Error::last_os_error());
-    unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) }
-}
-
-fn termios(fd: &OwnedFd) -> libc::termios {
-    let mut t = unsafe { std::mem::zeroed() };
-    assert_eq!(unsafe { libc::tcgetattr(fd.as_raw_fd(), &mut t) }, 0);
-    t
-}
+use common::{openpty, spawn_tui};
 
 fn is_raw(fd: &OwnedFd) -> bool {
-    termios(fd).c_lflag & (libc::ICANON | libc::ECHO) == 0
-}
-
-/// Run the TUI on the terminal `slave`, as its controlling terminal.
-fn spawn_tui(home: &std::path::Path, slave: &OwnedFd) -> Child {
-    let stdio = || Stdio::from(slave.try_clone().unwrap());
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_kl"));
-    cmd.arg("--no-sandbox")
-        .env("HOME", home)
-        .env("TERM", "xterm")
-        .env_remove("HARNESS_CONFIG")
-        .stdin(stdio())
-        .stdout(stdio())
-        .stderr(stdio());
-    unsafe {
-        cmd.pre_exec(|| {
-            if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY, 0) < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    cmd.spawn().unwrap()
+    let mut t: libc::termios = unsafe { std::mem::zeroed() };
+    assert_eq!(unsafe { libc::tcgetattr(fd.as_raw_fd(), &mut t) }, 0);
+    t.c_lflag & (libc::ICANON | libc::ECHO) == 0
 }
 
 fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
@@ -72,7 +33,7 @@ fn signals_restore_terminal() {
         (libc::SIGINT, "SIGINT"),
     ] {
         let home = tempfile::tempdir().unwrap();
-        let (master, slave) = openpty();
+        let (master, slave) = openpty(24, 80);
         let mut child = spawn_tui(home.path(), &slave);
 
         // Keep reading so the harness never blocks on a full terminal.
