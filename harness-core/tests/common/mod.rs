@@ -39,6 +39,8 @@ pub enum Reply {
     Broken(String),
     /// No answer at all, as a model that takes forever.
     Hang,
+    /// An HTTP error: status, extra headers and body.
+    Status(u16, Vec<(&'static str, String)>, String),
 }
 
 /// A reply with only text.
@@ -140,26 +142,30 @@ impl MockModel {
     /// A client sending every request to this server, through the adapter
     /// of `kind`, as when talking to that provider.
     pub fn client_as(&self, kind: AdapterKind) -> Client {
-        let url = self.url.clone();
-        let resolver = ServiceTargetResolver::from_resolver_fn(
-            move |target: ServiceTarget| -> Result<ServiceTarget, genai::resolver::Error> {
-                Ok(ServiceTarget {
-                    endpoint: Endpoint::from_owned(url.clone()),
-                    auth: AuthData::from_single("test"),
-                    model: ModelIden::new(kind, target.model.model_name),
-                })
-            },
-        );
-        Client::builder()
-            .with_service_target_resolver(resolver)
-            .build()
-            .unwrap()
+        client_for(self.url.clone(), kind)
     }
 
     /// Bodies of the requests received so far.
     pub fn requests(&self) -> Vec<Value> {
         self.requests.lock().unwrap().clone()
     }
+}
+
+/// A client sending every request to `url`, through the adapter of `kind`.
+pub fn client_for(url: String, kind: AdapterKind) -> Client {
+    let resolver = ServiceTargetResolver::from_resolver_fn(
+        move |target: ServiceTarget| -> Result<ServiceTarget, genai::resolver::Error> {
+            Ok(ServiceTarget {
+                endpoint: Endpoint::from_owned(url.clone()),
+                auth: AuthData::from_single("test"),
+                model: ModelIden::new(kind, target.model.model_name),
+            })
+        },
+    );
+    Client::builder()
+        .with_service_target_resolver(resolver)
+        .build()
+        .unwrap()
 }
 
 /// Answer one request, then close the connection.
@@ -193,11 +199,24 @@ async fn serve(
 
     let reply = replies.lock().unwrap().pop_front();
     let reply = reply.expect("no reply left for this request");
-    if let Reply::Hang = reply {
-        return std::future::pending().await;
-    }
-
     let out = stream.get_mut();
+    match reply {
+        Reply::Hang => return std::future::pending().await,
+        Reply::Status(status, headers, body) => {
+            let mut head = format!(
+                "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n",
+                body.len()
+            );
+            for (name, value) in headers {
+                head.push_str(&format!("{name}: {value}\r\n"));
+            }
+            head.push_str("\r\n");
+            out.write_all(head.as_bytes()).await.unwrap();
+            out.write_all(body.as_bytes()).await.unwrap();
+            return;
+        }
+        _ => {}
+    }
     let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n";
     out.write_all(head.as_bytes()).await.unwrap();
     match reply {
@@ -243,7 +262,7 @@ async fn serve(
                 send(out, delta(json!({ "content": piece }), None)).await;
             }
         }
-        Reply::Hang => unreachable!(),
+        Reply::Hang | Reply::Status(..) => unreachable!(),
     }
 }
 

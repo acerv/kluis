@@ -93,6 +93,8 @@ precedence over `api_key`.
 ### Agent
 
 - Streaming replies and reasoning, with configurable thinking effort.
+- Rate limits, overloaded servers and dropped connections are retried up to
+  five times with exponential backoff (1 s to 16 s), honoring `Retry-After`.
 - Read-only tools (`read`, `ls`, `find`, `grep`) run in parallel.
 - `AGENTS.md` instructions loaded from `~/.kluis/AGENTS.md`, the repository
   root, and the current folder.

@@ -18,6 +18,7 @@ use serde_json::json;
 
 use crate::models::{discover_models, ModelList};
 use crate::oauth::OAuthLogins;
+use crate::retry::{EndedEarly, RetryPolicy};
 use crate::tools::{
     self, error_response, AskTool, Asker, Executor, FetchTool, HostTools, ToolContext,
 };
@@ -107,6 +108,7 @@ pub struct Agent {
     req: ChatRequest,
     executor: Executor,
     host: HostTools,
+    retry: RetryPolicy,
 }
 
 impl Agent {
@@ -126,6 +128,7 @@ impl Agent {
             req: ChatRequest::default().with_tools(tools::definitions()),
             executor: Executor::default(),
             host: HostTools::default(),
+            retry: RetryPolicy::default(),
         }
     }
 
@@ -173,6 +176,12 @@ impl Agent {
             self.req = self.req.append_tool(FetchTool::definition());
         }
         Ok(self)
+    }
+
+    /// Set when failed model requests are retried.
+    pub fn with_retry(mut self, retry: RetryPolicy) -> Self {
+        self.retry = retry;
+        self
     }
 
     /// Set how local tools run (shorthand for `with_executor(Executor::Local(tools))`).
@@ -252,7 +261,7 @@ impl Agent {
 
         loop {
             on_event(Event::TurnStart);
-            let turn = self.next_turn(&mut on_event).await?;
+            let turn = self.next_turn_retrying(&mut on_event).await?;
 
             // Keep the whole assistant turn (text, tool calls, thought
             // signatures) in the history, before any tool result.
@@ -328,6 +337,31 @@ impl Agent {
         self.oauth.as_ref()?.system_prefix(kind)
     }
 
+    /// Like [`next_turn`](Self::next_turn), retrying failures that may pass
+    /// as the [`RetryPolicy`] says.
+    async fn next_turn_retrying(
+        &self,
+        on_event: &mut impl FnMut(Event<'_>),
+    ) -> Result<Turn, Error> {
+        let mut attempt = 0;
+        loop {
+            let err = match self.next_turn(on_event).await {
+                Ok(turn) => return Ok(turn),
+                Err(err) => err,
+            };
+            attempt += 1;
+            let Some((delay, reason)) = self.retry.delay(attempt, err.as_ref()) else {
+                return Err(err);
+            };
+            on_event(Event::Retry {
+                attempt,
+                delay,
+                reason: &reason,
+            });
+            tokio::time::sleep(delay).await;
+        }
+    }
+
     /// Ask the model for its next turn, reporting its text as it streams,
     /// and return it with its token usage.
     ///
@@ -400,7 +434,7 @@ impl Agent {
                 _ => {}
             }
         }
-        Err("the model's reply ended early".into())
+        Err(EndedEarly.into())
     }
 }
 

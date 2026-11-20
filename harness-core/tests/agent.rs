@@ -11,8 +11,8 @@ use genai::adapter::AdapterKind;
 use genai::chat::{ChatMessage, ChatRole};
 use harness_core::tools::ToolContext;
 use harness_core::{
-    find_agents_files, system_prompt, Agent, Event, Thinking, ToolDetails, AGENTS_FILE,
-    MAX_AGENTS_BYTES,
+    find_agents_files, system_prompt, Agent, Event, RetryPolicy, Thinking, ToolDetails,
+    AGENTS_FILE, MAX_AGENTS_BYTES,
 };
 use serde_json::{json, Value};
 use tokio::sync::Notify;
@@ -167,6 +167,7 @@ async fn tool_call_round_trip() {
                 Event::ToolCall(call) => format!("call {}", call.fn_name),
                 Event::ToolOutput(chunk) => format!("out {}", chunk.trim_end()),
                 Event::ToolResult(resp, _) => format!("result {}", resp.call_id),
+                Event::Retry { reason, .. } => format!("retry {reason}"),
             })
         })
         .await
@@ -448,7 +449,11 @@ async fn cancel_while_streaming_drops_the_partial_reply() {
 async fn broken_stream_is_an_error() {
     let model = MockModel::start(vec![Reply::Broken("half an answer".into()), text("again")]).await;
     let dir = tempfile::tempdir().unwrap();
-    let mut agent = agent(&model, dir.path());
+    let no_retry = RetryPolicy {
+        max_retries: 0,
+        ..RetryPolicy::default()
+    };
+    let mut agent = agent(&model, dir.path()).with_retry(no_retry);
 
     let mut ended = false;
     let run = agent.prompt("first", |event| ended |= matches!(event, Event::TurnEnd(_)));

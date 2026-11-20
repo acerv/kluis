@@ -23,7 +23,7 @@
 
 - [ ] Auto-compaction when `input_tokens` approaches the model's context limit
 - [ ] Recover when the provider rejects an oversized request (compact and retry)
-- [ ] Retry with exponential backoff on transient API errors (rate limit, 5xx, dropped stream), honoring `Retry-After`
+- [x] Retry with exponential backoff on transient API errors (rate limit, 5xx, dropped stream), honoring `Retry-After`
 - [ ] Limit the turns of a prompt and detect repeated identical tool calls
 - [ ] Steering: inject a user message between tool calls of a running turn
 - [ ] Cost tracking: convert persisted token usage into money per session

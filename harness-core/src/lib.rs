@@ -17,6 +17,7 @@ mod models;
 pub mod oauth;
 mod private_file;
 mod prompt;
+mod retry;
 mod session;
 pub mod tools;
 
@@ -28,6 +29,7 @@ pub use models::{
     ModelList,
 };
 pub use prompt::{find_agents_files, system_prompt, AGENTS_FILE, MAX_AGENTS_BYTES};
+pub use retry::RetryPolicy;
 pub use session::{
     SessionData, SessionEntry, SessionMeta, SessionStore, SessionSummary, SessionWriter,
     TokenUsage, MAX_SESSION_BYTES,

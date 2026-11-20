@@ -98,6 +98,12 @@ pub enum AgentUpdate {
     TextDelta(String),
     Text(String),
     TurnEnd(TokenUsage),
+    /// The turn failed for a passing reason and will be asked again.
+    Retry {
+        attempt: u32,
+        delay: Duration,
+        reason: String,
+    },
     ToolCall {
         name: String,
         args: String,
@@ -118,6 +124,15 @@ impl AgentUpdate {
             AgentEvent::TextDelta(text) => Self::TextDelta(text.to_owned()),
             AgentEvent::Text(text) => Self::Text(text.to_owned()),
             AgentEvent::TurnEnd(usage) => Self::TurnEnd(TokenUsage::from_genai(usage?)),
+            AgentEvent::Retry {
+                attempt,
+                delay,
+                reason,
+            } => Self::Retry {
+                attempt,
+                delay,
+                reason: reason.to_owned(),
+            },
             AgentEvent::ToolCall(call) => Self::ToolCall {
                 name: call.fn_name.clone(),
                 args: call.fn_arguments.to_string(),
@@ -477,6 +492,19 @@ impl App {
             }
             AgentUpdate::TurnEnd(usage) => {
                 self.tokens += usage;
+            }
+            AgentUpdate::Retry {
+                attempt,
+                delay,
+                reason,
+            } => {
+                // Keep what the failed attempt showed, marked as such.
+                self.flush_reasoning();
+                self.flush_text();
+                self.scrollback.push(Line::styled(
+                    retry_notice(attempt, delay, &reason),
+                    self.theme.muted,
+                ));
             }
             AgentUpdate::ToolCall { name, args } => {
                 self.flush_reasoning();
@@ -1506,6 +1534,11 @@ fn layout_editor(input: &Input, width: usize) -> EditorLayout {
 }
 
 /// First line of `text`, cut to [`SUMMARY_LEN`] characters.
+/// The line telling the user a failed model request is retried.
+pub fn retry_notice(attempt: u32, delay: Duration, reason: &str) -> String {
+    format!("[{reason} · retry {attempt} in {delay:.0?}]")
+}
+
 pub fn summary(text: &str) -> String {
     let line = text.lines().next().unwrap_or_default();
     match line.char_indices().nth(SUMMARY_LEN) {

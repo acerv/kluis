@@ -3,6 +3,8 @@
 
 //! What happens while the agent works on a prompt.
 
+use std::time::Duration;
+
 use genai::chat::{ToolCall, ToolResponse, Usage};
 
 use crate::tools::ToolDetails;
@@ -22,6 +24,15 @@ pub enum Event<'a> {
     TextDelta(&'a str),
     /// The whole text the model wrote in a turn, once the turn is done.
     Text(&'a str),
+    /// The model's turn failed for a passing reason, such as a rate limit
+    /// or a dropped connection: the agent waits `delay`, then asks again.
+    /// Text streamed by the failed attempt is not part of the turn.
+    Retry {
+        /// Retry number, from 1.
+        attempt: u32,
+        delay: Duration,
+        reason: &'a str,
+    },
     /// The model finished its turn, with the tokens it used when the
     /// provider reports them. Not sent for a turn cut short.
     TurnEnd(Option<&'a Usage>),

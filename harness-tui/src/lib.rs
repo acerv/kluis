@@ -33,7 +33,9 @@ use harness_core::{
 use tokio::sync::mpsc;
 use tokio::time::{interval_at, Instant, MissedTickBehavior};
 
-pub use app::{summary, Action, AgentUpdate, App, BannerLine, SlashCommand, VIEWPORT_HEIGHT};
+pub use app::{
+    retry_notice, summary, Action, AgentUpdate, App, BannerLine, SlashCommand, VIEWPORT_HEIGHT,
+};
 pub use clipboard::{last_assistant_text, osc52_sequence};
 pub use history::{History, MAX_HISTORY};
 pub use style::Theme;

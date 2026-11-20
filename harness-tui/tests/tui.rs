@@ -1177,3 +1177,27 @@ fn todo_marks_current_and_strikes_done() {
         assert!(line.spans[1].style.add_modifier.is_empty());
     }
 }
+
+#[test]
+fn retry_keeps_partial_text_and_shows_notice() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    app.start_prompt("go");
+    app.take_scrollback();
+    app.apply_update(AgentUpdate::TextDelta("half an ans".into()));
+    app.apply_update(AgentUpdate::Retry {
+        attempt: 1,
+        delay: std::time::Duration::from_secs(2),
+        reason: "HTTP 429 Too Many Requests".into(),
+    });
+
+    let text: Vec<String> = app
+        .take_scrollback()
+        .iter()
+        .map(|l| l.to_string())
+        .collect();
+    let notice = text
+        .iter()
+        .position(|l| l == "[HTTP 429 Too Many Requests · retry 1 in 2s]");
+    let partial = text.iter().position(|l| l.contains("half an ans"));
+    assert!(partial < notice && notice.is_some(), "{text:?}");
+}

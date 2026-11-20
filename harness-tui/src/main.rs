@@ -33,7 +33,7 @@ use harness_core::{
     provider_name, Agent, AuthConfig, CredentialSource, Error, Event, SessionData, SessionStore,
     Thinking, TokenUsage,
 };
-use harness_tui::{summary, BannerLine, History, RunOptions, Session, Status};
+use harness_tui::{retry_notice, summary, BannerLine, History, RunOptions, Session, Status};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 /// Terminal coding agent with native sandboxing.
@@ -555,5 +555,14 @@ fn print_event(event: Event<'_>) {
             summary(&call.fn_arguments.to_string())
         ),
         Event::ToolResult(resp, _) => println!("← {}", summary(&resp.content)),
+        Event::Retry {
+            attempt,
+            delay,
+            reason,
+        } => {
+            // End any line the failed attempt left half printed.
+            println!();
+            eprintln!("{}", retry_notice(attempt, delay, reason));
+        }
     }
 }
