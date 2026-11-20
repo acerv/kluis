@@ -39,11 +39,13 @@ const KILL: u32 = libc::SECCOMP_RET_KILL_PROCESS;
 /// process making system calls of another architecture or ABI, which could
 /// get around the filter, is killed.
 ///
-/// Unless `unix_sockets`, creating a Unix socket fails with `EACCES`: a
-/// sandbox without network still shows sockets of the host below the
-/// folders it shows, such as the ones of an editor or a chat app, and the
-/// programs behind them can reach the network. `socketpair` keeps working:
-/// its sockets only reach each other.
+/// Creating a socket fails with `EACCES` unless it is an IPv4, IPv6 or
+/// netlink one, which a network namespace confines: others, such as vsock,
+/// reach the host or the hypervisor past it. Unix ones are allowed only
+/// with `unix_sockets`: a sandbox without network still shows sockets of
+/// the host below the folders it shows, such as the ones of an editor or a
+/// chat app, and the programs behind them can reach the network.
+/// `socketpair` keeps working: its sockets only reach each other.
 ///
 /// It cannot be undone, and applies to every thread of the process.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -69,16 +71,11 @@ pub fn restrict_syscalls(unix_sockets: bool) -> io::Result<()> {
         jump_set(libc::CLONE_NEWUSER as u32, 0, 1),
         ret(EPERM),
     ]);
-    if !unix_sockets {
-        program.extend([
-            load(NR),
-            jump_eq(libc::SYS_socket as u32, 0, 3),
-            load(ARG0),
-            jump_eq(libc::AF_UNIX as u32, 0, 1),
-            ret(EACCES),
-        ]);
+    let mut families = vec![libc::AF_INET, libc::AF_INET6, libc::AF_NETLINK];
+    if unix_sockets {
+        families.push(libc::AF_UNIX);
     }
-    program.push(ret(ALLOW));
+    program.extend(socket_rules(&families));
     let filter = sock_fprog {
         len: program.len() as u16,
         filter: program.as_mut_ptr(),
@@ -113,6 +110,26 @@ pub fn restrict_syscalls(_unix_sockets: bool) -> io::Result<()> {
         io::ErrorKind::Unsupported,
         "restricting system calls is not supported on this architecture",
     ))
+}
+
+/// Instructions allowing system calls other than `socket`, and sockets of
+/// the address `families`, and refusing the others with `EACCES`.
+fn socket_rules(families: &[libc::c_int]) -> Vec<sock_filter> {
+    // Where each part lands: the call check, the family tests, then these.
+    let deny = 3 + families.len();
+    let allow = deny + 1;
+    let skip = |from: usize, to: usize| (to - from - 1) as u8;
+
+    let mut rules = vec![
+        load(NR),
+        jump_eq(libc::SYS_socket as u32, 0, skip(1, allow)),
+        load(ARG0),
+    ];
+    for (i, &family) in families.iter().enumerate() {
+        rules.push(jump_eq(family as u32, skip(3 + i, allow), 0));
+    }
+    rules.extend([ret(EACCES), ret(ALLOW)]);
+    rules
 }
 
 fn load(offset: u32) -> sock_filter {

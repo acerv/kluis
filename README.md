@@ -141,8 +141,9 @@ precedence over `api_key`.
 - Network access is off by default; allow specific TCP ports or all network
   access. Landlock enforces the TCP allowlist on Linux 6.7+, and the
   container uses `CLONE_NEWNET` when no network is allowed.
-- Cloud drives and network shares are hidden, and Unix sockets are blocked
-  without `--network`, so commands cannot reach the network through them.
+- Cloud drives and network shares are hidden, and commands can only create
+  IP and netlink sockets (Unix ones too with `--network`), so they cannot
+  reach the network through other programs or vsock.
 - Commands cannot create user namespaces, which most kernel exploits rely on.
 - Private `/tmp`, process/thread limit, virtual memory limit, and chosen
   environment variables passed to commands.

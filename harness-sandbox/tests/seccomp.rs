@@ -154,3 +154,48 @@ fn threads_and_programs_still_start() {
         assert!(status.success());
     });
 }
+
+/// The error of creating a socket of `family` and `kind`, if any.
+fn socket_error(family: libc::c_int, kind: libc::c_int) -> Option<i32> {
+    // SAFETY: plain system calls.
+    unsafe {
+        let fd = libc::socket(family, kind, 0);
+        if fd < 0 {
+            return std::io::Error::last_os_error().raw_os_error();
+        }
+        libc::close(fd);
+    }
+    None
+}
+
+#[test]
+fn only_ip_and_netlink_sockets() {
+    // vsock and the like are not confined by the network namespace.
+    blocked("only_ip_and_netlink_sockets", check_families);
+}
+
+#[test]
+fn unix_sockets_do_not_open_other_families() {
+    restricted(
+        "unix_sockets_do_not_open_other_families",
+        true,
+        check_families,
+    );
+}
+
+/// Address families that get past a network namespace or that commands do
+/// not need: vsock, kernel crypto, PPPoX, KCM, SMC and MCTP.
+const REFUSED: [libc::c_int; 6] = [libc::AF_VSOCK, libc::AF_ALG, libc::AF_PPPOX, 41, 43, 45];
+
+fn check_families() {
+    for family in REFUSED {
+        assert_eq!(
+            socket_error(family, libc::SOCK_STREAM),
+            Some(libc::EACCES),
+            "{family}"
+        );
+    }
+    assert_eq!(socket_error(libc::AF_INET, libc::SOCK_STREAM), None);
+    assert_eq!(socket_error(libc::AF_INET6, libc::SOCK_STREAM), None);
+    assert_eq!(socket_error(libc::AF_NETLINK, libc::SOCK_RAW), None);
+}
