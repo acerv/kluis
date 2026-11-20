@@ -153,6 +153,8 @@ pub enum Action {
     ResumeSession(String),
     SelectModel(String),
     SetThinking(Thinking),
+    /// The user's answer to the question of the model.
+    Answer(String),
     Cancel,
     Quit,
 }
@@ -233,6 +235,20 @@ impl App {
         self.notice = None;
         self.completion.clear();
         self.picker = Some(Picker::models(models, &self.model));
+    }
+
+    /// Show a question of the model and let the user pick or type the
+    /// answer.
+    pub fn ask(&mut self, question: &str, options: &[String]) {
+        self.notice = None;
+        self.completion.clear();
+        // The tool call line shows the question cut to one line.
+        if summary(question) != question {
+            for line in question.lines() {
+                self.scrollback.push(Line::raw(format!("  {line}")));
+            }
+        }
+        self.picker = Some(Picker::answers(options));
     }
 
     pub fn is_picker_open(&self) -> bool {
@@ -536,7 +552,7 @@ impl App {
                 }
                 Action::Redraw
             }
-            TermEvent::Paste(text) if !self.busy => {
+            TermEvent::Paste(text) if !self.busy || self.picker.is_some() => {
                 if let Some(picker) = &mut self.picker {
                     return if picker.paste(&text) {
                         Action::Redraw
@@ -567,12 +583,14 @@ impl App {
                     match kind {
                         PickerKind::Session => Action::ResumeSession(id),
                         PickerKind::Model => Action::SelectModel(id),
+                        PickerKind::Answer => Action::Answer(id),
                     }
                 }
-                PickerOutcome::Cancel => {
-                    self.picker = None;
-                    Action::Redraw
-                }
+                PickerOutcome::Cancel => match self.picker.take().map(|p| p.kind()) {
+                    // The model waits for the answer: cancel the prompt.
+                    Some(PickerKind::Answer) => Action::Cancel,
+                    _ => Action::Redraw,
+                },
                 PickerOutcome::Quit => {
                     self.picker = None;
                     Action::Quit
@@ -831,7 +849,10 @@ impl App {
                 Constraint::Fill(1),
             ])
             .areas(area);
-            frame.render_widget(Paragraph::new(picker.header_line(self.theme)), header_area);
+            frame.render_widget(
+                Paragraph::new(picker.header_line(self.theme, area.width as usize)),
+                header_area,
+            );
             self.render_rule(frame, top_rule);
             picker.render(frame, list_area, self.theme);
             self.render_rule(frame, bottom_rule);
@@ -1152,6 +1173,7 @@ fn format_tool_call(name: &str, args: &str, theme: Theme) -> Line<'static> {
             }
         }
         "ls" => Some(v["path"].as_str().unwrap_or(".").to_owned()),
+        "ask_user" => v["question"].as_str().map(summary),
         "todo" => {
             let todos = v["todos"].as_array()?;
             let done = todos.iter().filter(|t| t["status"] == "completed").count();
@@ -1242,6 +1264,13 @@ fn format_tool_result(
         Some("grep") => {
             let total = v["total"].as_u64().unwrap_or(0);
             out.push(Line::styled(format!("  {total} matches"), theme.muted));
+        }
+        Some("ask_user") => {
+            let answer = v["answer"].as_str().unwrap_or_default();
+            out.push(Line::styled(
+                format!("  answer: {}", summary(answer)),
+                theme.muted,
+            ));
         }
         Some("todo") => {
             for todo in v["todos"].as_array().into_iter().flatten() {

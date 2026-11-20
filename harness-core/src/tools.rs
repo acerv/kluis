@@ -6,5 +6,7 @@
 pub use harness_exec::{
     definitions, execute, execute_streaming, is_read_only, run, run_with, run_worker, BashContext,
     Diff, DiffHunk, DiffLine, ExecError, Executor, PreExec, SandboxConfig, SandboxExecutor,
-    ToolContext, ToolDetails,
+    ToolContext, ToolDetails, ToolError,
 };
+
+pub use crate::ask::{AskOutput, AskTool, Asker, Question, ASK_TOOL, MAX_ASK_OPTIONS};

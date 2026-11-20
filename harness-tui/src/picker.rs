@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
-//! Inline interactive filterable picker shared by `/resume` and `/model`.
+//! Inline interactive filterable picker shared by `/resume`, `/model` and
+//! the answers to the model's questions.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -11,7 +12,7 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::style::Theme;
 use crate::terminal::truncate_width;
@@ -22,11 +23,16 @@ pub(crate) const MAX_PICKER_ROWS: u16 = 8;
 /// Maximum characters accepted into the live filter query.
 const MAX_FILTER_CHARS: usize = 128;
 
+/// Maximum characters of an answer typed to a question.
+const MAX_ANSWER_CHARS: usize = 1024;
+
 /// Which domain an open [`Picker`] is selecting from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PickerKind {
     Session,
     Model,
+    /// An answer to a question: typed text answers instead of filtering.
+    Answer,
 }
 
 /// Outcome of handling a key while a picker is open.
@@ -133,6 +139,25 @@ impl Picker {
         )
     }
 
+    pub(crate) fn answers(options: &[String]) -> Self {
+        let items = options
+            .iter()
+            .map(|option| PickerItem {
+                id: option.clone(),
+                primary: None,
+                meta: String::new(),
+                search: String::new(),
+            })
+            .collect();
+        Self::new(
+            PickerKind::Answer,
+            "Answer",
+            "  (type your answer)",
+            items,
+            0,
+        )
+    }
+
     fn new(
         kind: PickerKind,
         title: &'static str,
@@ -157,6 +182,17 @@ impl Picker {
         }
     }
 
+    pub(crate) fn kind(&self) -> PickerKind {
+        self.kind
+    }
+
+    fn max_filter_chars(&self) -> usize {
+        match self.kind {
+            PickerKind::Answer => MAX_ANSWER_CHARS,
+            PickerKind::Session | PickerKind::Model => MAX_FILTER_CHARS,
+        }
+    }
+
     pub(crate) fn visible_rows(&self) -> u16 {
         (self.filtered.len().max(1) as u16).min(MAX_PICKER_ROWS)
     }
@@ -167,10 +203,16 @@ impl Picker {
         match (key.code, ctrl) {
             (KeyCode::Esc, false) | (KeyCode::Char('c'), true) => PickerOutcome::Cancel,
             (KeyCode::Char('d'), true) => PickerOutcome::Quit,
-            (KeyCode::Enter, false) => match self.selected_item() {
-                Some(item) => PickerOutcome::Select(self.kind, item.id.clone()),
-                None => PickerOutcome::None,
-            },
+            (KeyCode::Enter, false) => {
+                let typed = self.filter.trim();
+                if self.kind == PickerKind::Answer && !typed.is_empty() {
+                    return PickerOutcome::Select(self.kind, typed.to_owned());
+                }
+                match self.selected_item() {
+                    Some(item) => PickerOutcome::Select(self.kind, item.id.clone()),
+                    None => PickerOutcome::None,
+                }
+            }
             (KeyCode::Up, false) | (KeyCode::Char('p'), true) => {
                 if self.selected > 0 {
                     self.selected -= 1;
@@ -213,7 +255,7 @@ impl Picker {
                 }
             }
             (KeyCode::Char(ch), false) if !alt && !ch.is_control() => {
-                if self.filter.chars().count() < MAX_FILTER_CHARS {
+                if self.filter.chars().count() < self.max_filter_chars() {
                     self.filter.push(ch);
                     self.refilter();
                     PickerOutcome::Redraw
@@ -226,7 +268,9 @@ impl Picker {
     }
 
     pub(crate) fn paste(&mut self, text: &str) -> bool {
-        let mut remaining = MAX_FILTER_CHARS.saturating_sub(self.filter.chars().count());
+        let mut remaining = self
+            .max_filter_chars()
+            .saturating_sub(self.filter.chars().count());
         let mut changed = false;
         for ch in text.chars() {
             if remaining == 0 {
@@ -245,7 +289,27 @@ impl Picker {
         changed
     }
 
-    pub(crate) fn header_line(&self, theme: Theme) -> Line<'static> {
+    pub(crate) fn header_line(&self, theme: Theme, width: usize) -> Line<'static> {
+        if self.kind == PickerKind::Answer {
+            let hint = if self.filter.is_empty() {
+                "  (↑/↓ move · type to answer · Enter select · Esc cancel)"
+            } else {
+                "  (Enter send · Esc cancel)"
+            };
+            let prefix = format!("{}: ", self.title);
+            let budget = width.saturating_sub(prefix.width());
+            // The answer comes first: drop the hint when both do not fit.
+            let hint = if self.filter.width() + hint.width() <= budget {
+                hint
+            } else {
+                ""
+            };
+            return Line::from(vec![
+                Span::styled(prefix, theme.prompt),
+                Span::raw(tail_width(&self.filter, budget - hint.width()).to_owned()),
+                Span::styled(hint, theme.muted),
+            ]);
+        }
         if self.filter.is_empty() {
             Line::from(vec![
                 Span::styled(self.title, theme.prompt),
@@ -297,6 +361,9 @@ impl Picker {
     }
 
     fn refilter(&mut self) {
+        if self.kind == PickerKind::Answer {
+            return;
+        }
         let query = self.filter.trim().to_lowercase();
         self.filtered.clear();
         for (idx, item) in self.items.iter().enumerate() {
@@ -338,7 +405,7 @@ fn format_row(item: &PickerItem, selected: bool, width: usize, theme: Theme) -> 
 
     spans.push(Span::styled(marker, marker_style));
 
-    if marker_w + meta_w + sep_w + 4 <= width {
+    if !item.meta.is_empty() && marker_w + meta_w + sep_w + 4 <= width {
         let budget = width - marker_w - meta_w - sep_w;
         spans.push(Span::styled(
             truncate_width(item.primary(), budget),
@@ -355,6 +422,21 @@ fn format_row(item: &PickerItem, selected: bool, width: usize, theme: Theme) -> 
     }
 
     Line::from(spans)
+}
+
+/// The end of `text` that fits in `width` columns, so the cursor end of a
+/// long answer stays visible.
+fn tail_width(text: &str, width: usize) -> &str {
+    let mut used = 0;
+    let mut start = text.len();
+    for (idx, ch) in text.char_indices().rev() {
+        used += ch.width().unwrap_or(0);
+        if used > width {
+            break;
+        }
+        start = idx;
+    }
+    &text[start..]
 }
 
 fn format_age(timestamp: u64, now: u64) -> String {

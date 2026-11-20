@@ -25,6 +25,7 @@ use std::time::Duration;
 use crossterm::event::{Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers};
 use genai::adapter::AdapterKind;
 use genai::chat::ChatMessage;
+use harness_core::tools::Question;
 use harness_core::{
     Agent, Error, ModelInfo, ModelList, SessionData, SessionStore, SessionSummary, SessionWriter,
     Thinking, TokenUsage,
@@ -129,7 +130,9 @@ fn short_id(id: &str) -> &str {
 }
 
 /// Run the interactive inline TUI until the user quits (`Ctrl-D` or `/quit`).
-pub async fn run(mut agent: Agent, status: Status, opts: RunOptions) -> Result<(), Error> {
+pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), Error> {
+    let (asker, mut questions) = mpsc::unbounded_channel();
+    let mut agent = agent.with_asker(asker);
     let RunOptions {
         mut session,
         mut history,
@@ -165,7 +168,7 @@ pub async fn run(mut agent: Agent, status: Status, opts: RunOptions) -> Result<(
             break;
         };
         match handle_event_batch(next?, &mut events, &mut app)? {
-            Action::None | Action::Cancel => {}
+            Action::None | Action::Cancel | Action::Answer(_) => {}
             Action::Redraw => draw(&mut term, &mut app)?,
             Action::Quit => break,
             Action::Slash(cmd) => {
@@ -207,6 +210,7 @@ pub async fn run(mut agent: Agent, status: Status, opts: RunOptions) -> Result<(
                     &mut app,
                     &mut agent,
                     &mut events,
+                    &mut questions,
                     session.as_mut(),
                     &prompt,
                 )
@@ -436,6 +440,7 @@ async fn run_turn(
     app: &mut App,
     agent: &mut Agent,
     events: &mut EventReader,
+    questions: &mut mpsc::UnboundedReceiver<Question>,
     session: Option<&mut Session>,
     prompt: &str,
 ) -> Result<bool, Error> {
@@ -445,6 +450,8 @@ async fn run_turn(
     let mut quit = false;
     let mut outcome: Option<Result<String, Error>> = None;
     let mut prompt_usage = TokenUsage::default();
+    // The question of the model waiting for the user's answer.
+    let mut question: Option<Question> = None;
 
     // Scope `prompt_fut` so dropping it on exit runs `Agent::prompt`'s cancel
     // cleanup and closes `tx` before we drain `rx`.
@@ -480,6 +487,12 @@ async fn run_turn(
                             | Action::ResumeSession(_)
                             | Action::SelectModel(_)
                             | Action::SetThinking(_) => {}
+                            Action::Answer(answer) => {
+                                if let Some(question) = question.take() {
+                                    question.answer(answer);
+                                }
+                                draw(term, app)?;
+                            }
                         },
                         Some(Err(err)) => return Err(err.into()),
                         None => {
@@ -490,6 +503,12 @@ async fn run_turn(
                 }
                 Some(update) = rx.recv() => {
                     drain_updates(update, &mut rx, app, &mut prompt_usage);
+                    draw(term, app)?;
+                }
+                // After `rx`, so the tool call shows before its question.
+                Some(asked) = questions.recv() => {
+                    app.ask(&asked.text, &asked.options);
+                    question = Some(asked);
                     draw(term, app)?;
                 }
                 res = &mut prompt_fut => {
@@ -507,6 +526,9 @@ async fn run_turn(
     if let Ok(first) = rx.try_recv() {
         drain_updates(first, &mut rx, app, &mut prompt_usage);
     }
+    // A question sent just before a cancel has nobody waiting for it: drop
+    // it so the next prompt does not show it.
+    while questions.try_recv().is_ok() {}
 
     if let Some(session) = session {
         let added = &agent.history()[prev_len..];

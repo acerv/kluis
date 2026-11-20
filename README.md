@@ -103,9 +103,12 @@ precedence over `api_key`.
 
 ### Tools
 
-- `read`, `write`, `edit`, `ls`, `find`, `grep`, `bash`.
+- `read`, `write`, `edit`, `ls`, `find`, `grep`, `bash`, `todo`, `ask_user`.
 - `edit` applies changes atomically and shows a unified diff.
 - `bash` streams cleaned output with a timeout and line limits.
+- `todo` keeps the plan of a multi-step task.
+- `ask_user` asks you a question mid-task, with suggested answers to pick
+  from or your own text (interactive mode only).
 - Tool results are bounded JSON, with `{"error": "..."}` responses so the
   model recovers instead of derailing.
 

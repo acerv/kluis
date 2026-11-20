@@ -32,6 +32,12 @@ fn ctrl(c: char) -> Event {
     Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
 }
 
+fn type_str(app: &mut App, text: &str) {
+    for ch in text.chars() {
+        app.handle_event(key(KeyCode::Char(ch)));
+    }
+}
+
 fn inline_terminal(width: u16, height: u16) -> Terminal<TestBackend> {
     inline_terminal_with(width, height, VIEWPORT_HEIGHT)
 }
@@ -514,12 +520,6 @@ fn replay_history_and_restore_tokens() {
 fn session_picker_navigation_filtering_and_resume_slash() {
     use harness_core::SessionSummary;
     use std::path::PathBuf;
-
-    let type_str = |app: &mut App, s: &str| {
-        for ch in s.chars() {
-            app.handle_event(key(KeyCode::Char(ch)));
-        }
-    };
 
     let mut term = inline_terminal(90, 14);
     let mut app = App::new("deepseek-chat", status(), Theme::new(false));
@@ -1066,4 +1066,82 @@ fn banner_puts_info_next_to_logo() {
         .map(|l| l.to_string())
         .collect();
     assert_eq!(text[2..], ["█▀▄  █", "▀  ▀ ▀▀▀", ""]);
+}
+
+#[test]
+fn ask_picks_an_option_or_takes_typed_text() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    let mut term = inline_terminal(90, 20);
+    let options = ["yes".to_owned(), "no".to_owned()];
+    app.start_prompt("go");
+
+    app.ask("Proceed?", &options);
+    assert!(app.is_picker_open());
+    term.draw(|f| app.render(f)).unwrap();
+    let screen = render_text(&term);
+    assert!(screen.contains("Answer:"), "{screen}");
+    assert!(screen.contains("❯ yes"), "{screen}");
+    assert!(screen.contains("no"), "{screen}");
+
+    assert_eq!(app.handle_event(key(KeyCode::Down)), Action::Redraw);
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Answer("no".into())
+    );
+    assert!(!app.is_picker_open());
+
+    // Typing does not filter the options: it is the answer.
+    app.ask("Proceed?", &options);
+    type_str(&mut app, "ye");
+    assert_eq!(
+        app.handle_event(Event::Paste("s, but later".into())),
+        Action::Redraw
+    );
+    term.draw(|f| app.render(f)).unwrap();
+    let screen = render_text(&term);
+    assert!(screen.contains("Answer: yes, but later"), "{screen}");
+    assert!(screen.contains("no"), "{screen}");
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Answer("yes, but later".into())
+    );
+}
+
+#[test]
+fn ask_without_options_and_cancel() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    let mut term = inline_terminal(30, 20);
+    app.start_prompt("go");
+
+    app.ask("Name?", &[]);
+    // Nothing to pick: Enter waits for text.
+    assert_eq!(app.handle_event(key(KeyCode::Enter)), Action::None);
+    let long = "x".repeat(100) + "END";
+    type_str(&mut app, &long);
+    term.draw(|f| app.render(f)).unwrap();
+    // The end of a long answer stays in view.
+    let screen = render_text(&term);
+    assert!(screen.contains("END"), "{screen}");
+
+    // The model waits for the answer, so leaving cancels the prompt.
+    assert_eq!(app.handle_event(key(KeyCode::Esc)), Action::Cancel);
+    assert!(!app.is_picker_open());
+}
+
+#[test]
+fn ask_shows_a_long_question_in_full() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    app.start_prompt("go");
+    let question = "Which database should the service use?\nPostgres is already deployed.";
+
+    app.ask(question, &[]);
+    let lines: Vec<String> = app
+        .take_scrollback()
+        .iter()
+        .map(|l| l.to_string())
+        .collect();
+    assert!(
+        lines.iter().any(|l| l == "  Postgres is already deployed."),
+        "{lines:?}"
+    );
 }

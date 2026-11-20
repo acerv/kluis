@@ -16,9 +16,10 @@ use genai::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::ask;
 use crate::models::{discover_models, ModelList};
 use crate::oauth::OAuthLogins;
-use crate::tools::{self, Executor, ToolContext};
+use crate::tools::{self, AskTool, Asker, Executor, ToolContext, ASK_TOOL};
 use crate::Event;
 
 /// Error returned by the agent.
@@ -104,6 +105,7 @@ pub struct Agent {
     thinking: Thinking,
     req: ChatRequest,
     executor: Executor,
+    asker: Option<Asker>,
 }
 
 impl Agent {
@@ -122,6 +124,7 @@ impl Agent {
             thinking: Thinking::Default,
             req: ChatRequest::default().with_tools(tools::definitions()),
             executor: Executor::default(),
+            asker: None,
         }
     }
 
@@ -151,6 +154,14 @@ impl Agent {
     /// Set the tool executor used to run model tool calls.
     pub fn with_executor(mut self, executor: Executor) -> Self {
         self.executor = executor;
+        self
+    }
+
+    /// Offer the `ask_user` tool, sending its questions through `asker`.
+    pub fn with_asker(mut self, asker: Asker) -> Self {
+        if self.asker.replace(asker).is_none() {
+            self.req = self.req.append_tool(AskTool::definition());
+        }
         self
     }
 
@@ -275,6 +286,8 @@ impl Agent {
                     on_event(Event::ToolCall(call));
                     let (resp, details) = if turn.truncated {
                         (error_response(call, TRUNCATED), None)
+                    } else if call.fn_name == ASK_TOOL {
+                        (ask::respond(call, self.asker.as_ref()).await, None)
                     } else {
                         self.executor
                             .execute(call, |chunk| on_event(Event::ToolOutput(chunk)))
@@ -403,7 +416,8 @@ const CANCELLED: &str = "cancelled; the call may have partly run";
 /// Result of a tool call from a response truncated by the token limit.
 const TRUNCATED: &str = "response was truncated at max_tokens; tool call was not executed — please re-issue it (split into smaller calls if needed)";
 
-fn error_response(call: &ToolCall, message: &str) -> ToolResponse {
+/// A tool response carrying `message` as `{"error": "..."}`.
+pub(crate) fn error_response(call: &ToolCall, message: &str) -> ToolResponse {
     ToolResponse::from_tool_call(call, json!({ "error": message }).to_string())
 }
 
