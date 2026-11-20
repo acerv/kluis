@@ -19,7 +19,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 use scopeguard::ScopeGuard;
+use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::App;
@@ -91,20 +93,28 @@ impl Drop for EventReader {
 }
 
 /// Owns the inline ratatui terminal and restores raw mode and bracketed paste
-/// on drop or panic.
+/// on drop, panic, or `SIGHUP`/`SIGINT`/`SIGTERM`.
 pub struct InlineTerminal {
     terminal: Terminal<CrosstermBackend<Stdout>>,
     height: u16,
     pending_clear: bool,
+    signals: JoinHandle<()>,
 }
 
 impl InlineTerminal {
+    /// Enter raw mode with an inline viewport of `height` rows. Must be called
+    /// inside a Tokio runtime.
     pub fn enter(height: u16) -> io::Result<Self> {
         install_panic_hook();
-        enable_raw_mode()?;
+        let signals = spawn_signal_handler()?;
+        if let Err(err) = enable_raw_mode() {
+            signals.abort();
+            return Err(err);
+        }
         let mut stdout = io::stdout();
         if let Err(err) = execute!(stdout, EnableBracketedPaste) {
             let _ = disable_raw_mode();
+            signals.abort();
             return Err(err);
         }
         let backend = CrosstermBackend::new(stdout);
@@ -118,9 +128,11 @@ impl InlineTerminal {
                     terminal,
                     height,
                     pending_clear: false,
+                    signals,
                 })
             }
             Err(err) => {
+                signals.abort();
                 restore_terminal();
                 Err(err)
             }
@@ -190,6 +202,7 @@ impl InlineTerminal {
 
 impl Drop for InlineTerminal {
     fn drop(&mut self) {
+        self.signals.abort();
         restore_terminal();
     }
 }
@@ -322,6 +335,24 @@ fn install_panic_hook() {
             prev(info);
         }));
     });
+}
+
+/// Restore the terminal and exit with `128 + signal` when asked to stop by
+/// `SIGHUP`, `SIGINT` or `SIGTERM`; in raw mode `Ctrl-C` is a key, not a
+/// signal, so `SIGINT` only comes from outside.
+fn spawn_signal_handler() -> io::Result<JoinHandle<()>> {
+    let mut hangup = signal(SignalKind::hangup())?;
+    let mut interrupt = signal(SignalKind::interrupt())?;
+    let mut terminate = signal(SignalKind::terminate())?;
+    Ok(tokio::spawn(async move {
+        let kind = tokio::select! {
+            _ = hangup.recv() => SignalKind::hangup(),
+            _ = interrupt.recv() => SignalKind::interrupt(),
+            _ = terminate.recv() => SignalKind::terminate(),
+        };
+        restore_terminal();
+        std::process::exit(128 + kind.as_raw_value());
+    }))
 }
 
 fn restore_terminal() {

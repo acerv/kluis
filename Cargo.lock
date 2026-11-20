@@ -1111,6 +1111,7 @@ dependencies = [
  "genai",
  "harness-core",
  "harness-sandbox",
+ "libc",
  "ratatui",
  "scopeguard",
  "serde",
