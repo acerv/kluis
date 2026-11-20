@@ -97,7 +97,8 @@ precedence over `api_key`.
   five times with exponential backoff (1 s to 16 s), honoring `Retry-After`.
 - Read-only tools (`read`, `ls`, `find`, `grep`) run in parallel.
 - `AGENTS.md` instructions loaded from `~/.kluis/AGENTS.md`, the repository
-  root, and the current folder.
+  root, and the current folder. Project ones must not be symlinks, which
+  could point at files the sandbox hides.
 - Live model discovery across configured providers, with a per-provider
   timeout.
 - Sessions persisted as append-only JSONL per workspace; continue the latest

@@ -5,9 +5,12 @@
 
 use std::collections::HashSet;
 use std::fmt::Write;
-use std::fs::File;
+use std::fs::OpenOptions;
 use std::io::Read;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+
+use rustix::fs::OFlags;
 
 /// File name searched for project and global agent instructions.
 pub const AGENTS_FILE: &str = "AGENTS.md";
@@ -27,14 +30,24 @@ const MAX_TOTAL_AGENTS_BYTES: usize = 256 * 1024;
 ///    (inclusive), or only `cwd/AGENTS.md` when `cwd` is not inside a git
 ///    repository.
 ///
-/// Duplicate paths (e.g. symlinks or when `cwd` is the global folder) are
-/// omitted while preserving order.
+/// Duplicate paths (e.g. when `cwd` is the global folder) are omitted while
+/// preserving order.
+///
+/// A project `AGENTS.md` must be a regular file, not a symlink: the
+/// sandboxed model can write there, and could link it to a file the sandbox
+/// hides, such as `~/.kluis/auth.toml`, for the host to read. The global
+/// one, which only the user writes, may be a symlink.
 pub fn find_agents_files(cwd: &Path, global: Option<&Path>) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
 
     if let Some(path) = global {
-        push_if_file(path.to_path_buf(), &mut seen, &mut out);
+        let path = if path.is_symlink() {
+            std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+        } else {
+            path.to_path_buf()
+        };
+        push_if_file(path, &mut seen, &mut out);
     }
 
     let mut ancestors = Vec::new();
@@ -109,8 +122,9 @@ pub fn system_prompt(cwd: &Path, agents_files: &[PathBuf]) -> String {
     prompt
 }
 
+/// Add `path` when it is a regular file, not a symlink to one.
 fn push_if_file(path: PathBuf, seen: &mut HashSet<PathBuf>, out: &mut Vec<PathBuf>) {
-    if !path.is_file() {
+    if !std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_file()) {
         return;
     }
     let key = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
@@ -120,12 +134,13 @@ fn push_if_file(path: PathBuf, seen: &mut HashSet<PathBuf>, out: &mut Vec<PathBu
 }
 
 fn read_agents_bytes(path: &Path, limit: usize) -> Option<(Vec<u8>, bool)> {
-    // Reject non-regular files (such as FIFOs or devices) before opening so
-    // `File::open` cannot block.
-    if !path.is_file() {
-        return None;
-    }
-    let file = File::open(path).ok()?;
+    // Never through a symlink, even one swapped in after the file was
+    // found; non-blocking, so a FIFO cannot hang the open.
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags((OFlags::NOFOLLOW | OFlags::NONBLOCK).bits() as i32)
+        .open(path)
+        .ok()?;
     let meta = file.metadata().ok()?;
     if !meta.is_file() {
         return None;

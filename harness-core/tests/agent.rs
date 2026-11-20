@@ -603,6 +603,39 @@ fn find_agents_files_orders_global_repo_root_and_subdir_and_deduplicates() {
 }
 
 #[test]
+fn symlinked_project_agents_file_is_ignored() {
+    // The sandboxed model can write the project folder, and could link
+    // AGENTS.md to a file the sandbox hides, for the host to read.
+    let tmp = tempfile::tempdir().unwrap();
+    let hidden = tmp.path().join("auth.toml");
+    std::fs::write(&hidden, "api_key = \"sk-secret\"").unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir(&cwd).unwrap();
+    std::os::unix::fs::symlink(&hidden, cwd.join(AGENTS_FILE)).unwrap();
+
+    assert!(find_agents_files(&cwd, None).is_empty());
+    // Not even when handed the path, as if swapped in after it was found.
+    let prompt = system_prompt(&cwd, &[cwd.join(AGENTS_FILE)]);
+    assert!(!prompt.contains("sk-secret"), "{prompt}");
+}
+
+#[test]
+fn symlinked_global_agents_file_is_followed() {
+    // Only the user writes the global folder.
+    let tmp = tempfile::tempdir().unwrap();
+    let rules = tmp.path().join("rules.md");
+    std::fs::write(&rules, "global rules").unwrap();
+    let global = tmp.path().join(AGENTS_FILE);
+    std::os::unix::fs::symlink(&rules, &global).unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir(&cwd).unwrap();
+
+    let found = find_agents_files(&cwd, Some(&global));
+    assert_eq!(found, [std::fs::canonicalize(&rules).unwrap()]);
+    assert!(system_prompt(&cwd, &found).contains("global rules"));
+}
+
+#[test]
 fn system_prompt_includes_context_and_truncates_large_agents_file() {
     let tmp = tempfile::tempdir().unwrap();
     let cwd = tmp.path();
