@@ -595,3 +595,64 @@ fn read_request_with_headers(stream: &TcpStream) -> (String, Value) {
     reader.read_exact(&mut body).unwrap();
     (headers, serde_json::from_slice(&body).unwrap())
 }
+
+/// Python run by the model's command: try the host's Unix socket at the
+/// path in $SOCK, then a socket pair.
+const SOCKET_PROBE: &str = r#"
+import os, socket
+try:
+    s = socket.socket(socket.AF_UNIX)
+    s.connect(os.environ["SOCK"])
+    s.send(b"escaped")
+    print("UNIX=connected")
+except OSError as e:
+    print("UNIX=" + e.strerror)
+a, b = socket.socketpair()
+a.send(b"x")
+print("PAIR=" + b.recv(1).decode())
+"#;
+
+/// Run the socket probe through `kl` with `extra_args`, against a socket
+/// listening on the host in the readable home folder, and return its
+/// output and whether the host received anything.
+fn probe_host_socket(extra_args: &[&str]) -> Option<(String, bool)> {
+    if Command::new("python3").arg("-c").arg("").status().is_err() {
+        eprintln!("skipping: python3 is not installed");
+        return None;
+    }
+    let home = tempdir();
+    let sock = home.path().join("app.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let sock_env = sock.to_str().unwrap().to_owned();
+
+    let mut args = vec!["--pass-env", "SOCK"];
+    args.extend(extra_args);
+    let output = run_bash(home.path(), &args, &[("SOCK", &sock_env)], |_| {
+        format!("python3 -c '{SOCKET_PROBE}'")
+    });
+    let received = listener.accept().is_ok();
+    Some((output, received))
+}
+
+#[test]
+fn commands_cannot_reach_host_unix_sockets() {
+    let Some((output, received)) = probe_host_socket(&[]) else {
+        return;
+    };
+    let unix = output.lines().find(|l| l.starts_with("UNIX=")).unwrap();
+    assert_eq!(unix, "UNIX=Permission denied", "{output}");
+    assert!(!received, "the host socket got a connection");
+    // A socket pair only reaches itself, so it keeps working.
+    assert!(output.contains("PAIR=x"), "{output}");
+}
+
+#[test]
+fn network_allows_host_unix_sockets() {
+    // With any network allowed there is nothing to keep away.
+    let Some((output, received)) = probe_host_socket(&["--network"]) else {
+        return;
+    };
+    assert!(output.contains("UNIX=connected"), "{output}");
+    assert!(received);
+}

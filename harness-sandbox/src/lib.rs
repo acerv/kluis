@@ -7,9 +7,14 @@
 //! A [`Sandbox`] lists the folders the harness may read and write and the
 //! TCP ports it may connect to, or allows any network. Its
 //! [`container`](Sandbox::container) shows only those folders, and
-//! Landlock (Linux 6.7 or newer) limits TCP to those ports. UDP and Unix
-//! sockets are not filtered; [`NoNetwork`] takes away all network from
-//! commands.
+//! Landlock (Linux 6.7 or newer) limits TCP to those ports. UDP is not
+//! filtered; [`NoNetwork`] takes away all network from commands.
+//!
+//! Programs of the host that can reach the network are kept away too: a
+//! mount below a shown folder whose filesystem could reach the network,
+//! such as a cloud drive or a network share, is hidden unless it is
+//! allowed itself, and [`block_unix_sockets`], called inside the
+//! container, keeps commands off the Unix sockets of the host.
 
 #[cfg(not(target_os = "linux"))]
 compile_error!("harness-sandbox only supports Linux");
@@ -18,16 +23,19 @@ mod env;
 mod network;
 mod profile;
 mod protect;
+mod seccomp;
 
 pub use env::command_env;
 pub use network::NoNetwork;
 pub use profile::Options;
 pub use protect::protect_self;
+pub use seccomp::block_unix_sockets;
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::OsString;
 use std::fmt;
 use std::io;
+use std::os::unix::ffi::OsStringExt;
 use std::path::{Component, Path, PathBuf};
 
 use hakoniwa::landlock::{CompatMode, Resource, Ruleset};
@@ -85,6 +93,9 @@ impl Sandbox {
     }
 
     /// Allow reading and executing anything below `path`.
+    ///
+    /// A FUSE or network mount below `path` stays hidden unless it is
+    /// allowed too.
     pub fn allow_read(mut self, path: impl Into<PathBuf>) -> Self {
         self.read.push(path.into());
         self
@@ -94,6 +105,9 @@ impl Sandbox {
     /// any `.git` below it, which stays read-only unless allowed itself:
     /// git on the host would otherwise run the hooks and commands written
     /// there.
+    ///
+    /// A FUSE or network mount below `path` stays hidden unless it is
+    /// allowed too.
     pub fn allow_write(mut self, path: impl Into<PathBuf>) -> Self {
         self.write.push(path.into());
         self
@@ -303,7 +317,7 @@ impl Sandbox {
                     .any(|ro| path.starts_with(ro) || canon.starts_with(ro))
         });
 
-        let mask_paths = map_denied(&canon_mounts, &denied_targets);
+        let mut mask_paths = map_denied(&canon_mounts, &denied_targets);
         ro_paths.retain(|ro| !mask_paths.iter().any(|(d, _)| ro.starts_with(d)));
 
         let mut effective: Vec<_> = canon_mounts
@@ -315,6 +329,18 @@ impl Sandbox {
         }
         for (path, _) in &mask_paths {
             effective.push((path.clone(), false));
+        }
+
+        // A bind mount brings the mounts of the host below the folder too.
+        // On a FUSE or network filesystem, reading, writing or even looking
+        // up a file goes to a program or a server that can reach the
+        // network, e.g. a cloud drive: hide those, like denied paths,
+        // unless allowed themselves.
+        let allowed: Vec<&Path> = all.iter().map(|(path, _)| path.as_path()).collect();
+        let remote = remote_mounts(&canon_mounts, &allowed, &mask_paths, &read_mountinfo()?)?;
+        for (path, is_dir) in remote {
+            mask_paths.push((path.clone(), is_dir));
+            effective.push((path, false));
         }
 
         let mut mounts: IndexSet<_> = canon_mounts
@@ -409,6 +435,119 @@ fn covered_by_denied(path: &Path, denied: &[(PathBuf, bool)]) -> bool {
     denied
         .iter()
         .any(|(d, _)| path.starts_with(d) || canon.as_deref().is_some_and(|c| c.starts_with(d)))
+}
+
+/// The mounts of `mountinfo` on a filesystem that could reach the network,
+/// below one of the `roots` (a mount path, its canonical path, and whether
+/// it is writable), as they show in the container.
+///
+/// Each comes with whether it is a directory. Mounts at or above an
+/// `allowed` path stay, as do mounts below a `hidden` one or below another
+/// returned mount, which hiding already covers. So do mounts this user
+/// cannot reach, whose program is gone or which deny access: the sandbox,
+/// running as the same user, cannot reach them either.
+fn remote_mounts(
+    roots: &[(PathBuf, PathBuf, bool)],
+    allowed: &[&Path],
+    hidden: &[(PathBuf, bool)],
+    mountinfo: &str,
+) -> Result<Vec<(PathBuf, bool)>, SandboxError> {
+    // Only the last mount on a path shows: it covers the earlier ones,
+    // e.g. a disk mounted over its automount point.
+    let top: HashMap<&str, &str> = mountinfo.lines().filter_map(mount_point_and_type).collect();
+    let mut found = Vec::new();
+    for (point, _) in top.into_iter().filter(|(_, fstype)| !is_local(fstype)) {
+        let point = PathBuf::from(unescape(point));
+        for (mount, canon, _) in roots {
+            let Some(rest) = point
+                .strip_prefix(canon)
+                .ok()
+                .filter(|r| !r.as_os_str().is_empty())
+            else {
+                continue;
+            };
+            let shown = mount.join(rest);
+            if !allowed.iter().any(|path| path.starts_with(&shown))
+                && !hidden.iter().any(|(path, _)| shown.starts_with(path))
+            {
+                found.push(shown);
+            }
+        }
+    }
+    // Sorted, a path comes right before the ones below it.
+    found.sort();
+    found.dedup_by(|below, above| below.starts_with(above));
+    let mut out = Vec::new();
+    for path in found {
+        match std::fs::metadata(&path) {
+            Ok(meta) => out.push((path, meta.is_dir())),
+            Err(e)
+                if matches!(
+                    e.raw_os_error(),
+                    Some(nix::libc::ENOTCONN | nix::libc::EACCES)
+                ) => {}
+            Err(e) => {
+                return Err(SandboxError {
+                    message: format!("{}: cannot hide this mount: {e}", path.display()),
+                })
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The mount point and filesystem type of a `/proc/self/mountinfo` line.
+fn mount_point_and_type(line: &str) -> Option<(&str, &str)> {
+    // Optional fields end with a lone "-"; spaces in paths are escaped.
+    let (before, after) = line.split_once(" - ")?;
+    let point = before.split(' ').nth(4)?;
+    let fstype = after.split(' ').next()?;
+    Some((point, fstype))
+}
+
+/// Whether the kernel serves a filesystem of type `fstype` from a local
+/// device or from memory, so it cannot reach the network. Any other one,
+/// FUSE, NFS, SMB, 9p, autofs or unknown, could.
+fn is_local(fstype: &str) -> bool {
+    matches!(
+        fstype,
+        // Disks.
+        "ext2" | "ext3" | "ext4" | "btrfs" | "xfs" | "f2fs" | "zfs" | "bcachefs" | "jfs"
+            | "reiserfs" | "nilfs2" | "vfat" | "msdos" | "exfat" | "ntfs3" | "hfsplus"
+            | "iso9660" | "udf" | "squashfs" | "erofs" | "overlay"
+            // Memory and the kernel itself.
+            | "tmpfs" | "ramfs" | "proc" | "sysfs" | "devtmpfs" | "devpts" | "mqueue"
+            | "cgroup" | "cgroup2" | "securityfs" | "debugfs" | "tracefs" | "pstore"
+            | "bpf" | "efivarfs" | "configfs" | "hugetlbfs" | "binfmt_misc" | "selinuxfs"
+            | "fusectl" | "nsfs"
+    )
+}
+
+/// One path of `/proc/self/mountinfo`, where a backslash escapes the octal
+/// value of a space, tab, newline or backslash.
+fn unescape(field: &str) -> OsString {
+    let mut out = Vec::with_capacity(field.len());
+    let mut rest = field.as_bytes();
+    while let Some((&byte, tail)) = rest.split_first() {
+        match tail {
+            [a @ b'0'..=b'3', b @ b'0'..=b'7', c @ b'0'..=b'7', after @ ..] if byte == b'\\' => {
+                out.push((a - b'0') << 6 | (b - b'0') << 3 | (c - b'0'));
+                rest = after;
+            }
+            _ => {
+                out.push(byte);
+                rest = tail;
+            }
+        }
+    }
+    OsString::from_vec(out)
+}
+
+/// The mount table of this namespace.
+fn read_mountinfo() -> Result<String, SandboxError> {
+    std::fs::read_to_string("/proc/self/mountinfo").map_err(|e| SandboxError {
+        message: format!("/proc/self/mountinfo: {e}"),
+    })
 }
 
 /// Denied targets mapped into every surviving mount that strictly contains

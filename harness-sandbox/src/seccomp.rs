@@ -1,0 +1,134 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
+
+//! A seccomp filter keeping commands away from Unix sockets of the host.
+
+use std::io;
+
+use nix::libc::{self, sock_filter, sock_fprog};
+
+/// `seccomp_data` offsets: system call number, architecture, first argument
+/// (its low half on these little-endian architectures).
+const NR: u32 = 0;
+const ARCH: u32 = 4;
+const ARG0: u32 = 16;
+
+#[cfg(target_arch = "x86_64")]
+const NATIVE_ARCH: u32 = 0xC000_003E; // AUDIT_ARCH_X86_64
+#[cfg(target_arch = "aarch64")]
+const NATIVE_ARCH: u32 = 0xC000_00B7; // AUDIT_ARCH_AARCH64
+
+/// System calls of the x32 ABI, which share the x86_64 architecture value.
+#[cfg(target_arch = "x86_64")]
+const X32_BIT: u32 = 0x4000_0000;
+
+const ALLOW: u32 = libc::SECCOMP_RET_ALLOW;
+const DENY: u32 = libc::SECCOMP_RET_ERRNO | libc::EACCES as u32;
+const NOSYS: u32 = libc::SECCOMP_RET_ERRNO | libc::ENOSYS as u32;
+const KILL: u32 = libc::SECCOMP_RET_KILL_PROCESS;
+
+/// Refuse to create Unix sockets in this process and the ones it starts,
+/// failing with `EACCES`.
+///
+/// A sandbox without network still shows sockets of the host below the
+/// folders it shows, such as the ones of an editor or a chat app, and the
+/// programs behind them can reach the network. `socketpair` keeps working:
+/// its sockets only reach each other. io_uring, which could create sockets
+/// without the system call, fails with `ENOSYS`, so programs fall back to
+/// plain system calls. A process making system calls of another
+/// architecture or ABI, which could get around the filter, is killed.
+///
+/// It cannot be undone, and applies to every thread of the process.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub fn block_unix_sockets() -> io::Result<()> {
+    let mut program = vec![
+        load(ARCH),
+        // Another architecture: it could get around the filter.
+        jump_eq(NATIVE_ARCH, 1, 0),
+        ret(KILL),
+        load(NR),
+    ];
+    #[cfg(target_arch = "x86_64")]
+    program.extend([jump_ge(X32_BIT, 0, 1), ret(KILL)]);
+    program.extend([
+        jump_eq(libc::SYS_io_uring_setup as u32, 0, 1),
+        ret(NOSYS),
+        jump_eq(libc::SYS_socket as u32, 0, 3),
+        load(ARG0),
+        jump_eq(libc::AF_UNIX as u32, 0, 1),
+        ret(DENY),
+        ret(ALLOW),
+    ]);
+    let filter = sock_fprog {
+        len: program.len() as u16,
+        filter: program.as_mut_ptr(),
+    };
+
+    // SAFETY: plain system calls; `filter` points into `program`, which
+    // outlives them, and the kernel copies it.
+    unsafe {
+        // Required to install a filter without CAP_SYS_ADMIN; it also stops
+        // set-user-ID programs from gaining privileges.
+        if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if libc::syscall(
+            libc::SYS_seccomp,
+            libc::SECCOMP_SET_MODE_FILTER,
+            libc::SECCOMP_FILTER_FLAG_TSYNC,
+            &filter as *const sock_fprog,
+        ) != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// Unix sockets cannot be blocked on this architecture: refuse to run
+/// rather than leave them open.
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+pub fn block_unix_sockets() -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "blocking Unix sockets is not supported on this architecture",
+    ))
+}
+
+fn load(offset: u32) -> sock_filter {
+    statement(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS, offset)
+}
+
+fn ret(action: u32) -> sock_filter {
+    statement(libc::BPF_RET | libc::BPF_K, action)
+}
+
+fn statement(code: u32, k: u32) -> sock_filter {
+    sock_filter {
+        code: code as u16,
+        jt: 0,
+        jf: 0,
+        k,
+    }
+}
+
+/// Skip `then` instructions when the loaded value equals `k`, `otherwise`
+/// instructions when not.
+fn jump_eq(k: u32, then: u8, otherwise: u8) -> sock_filter {
+    jump(libc::BPF_JEQ, k, then, otherwise)
+}
+
+/// Like [`jump_eq`], comparing with `>=`.
+#[cfg(target_arch = "x86_64")]
+fn jump_ge(k: u32, then: u8, otherwise: u8) -> sock_filter {
+    jump(libc::BPF_JGE, k, then, otherwise)
+}
+
+fn jump(op: u32, k: u32, then: u8, otherwise: u8) -> sock_filter {
+    sock_filter {
+        code: (libc::BPF_JMP | op | libc::BPF_K) as u16,
+        jt: then,
+        jf: otherwise,
+        k,
+    }
+}

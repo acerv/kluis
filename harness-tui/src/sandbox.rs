@@ -4,7 +4,8 @@
 //! Sandboxed tool executor for `kl`: spawns `kl --tool-executor` inside a
 //! `hakoniwa` container with the current folder writable (or read-only with
 //! `--strict`), `~/.kluis` hidden, zero API keys in the environment, and no
-//! network unless `--network` or `--allow-connect` is given.
+//! network unless `--network` or `--allow-connect` is given. Without
+//! `--network`, Unix sockets are blocked too.
 
 use std::path::Path;
 
@@ -67,6 +68,12 @@ pub fn executor(args: &Args, cwd: &Path) -> Result<Executor, Error> {
     }
 
     let mut worker_args = vec!["--tool-executor".to_owned()];
+    // A Unix socket of the host, e.g. of an editor or a chat app below
+    // $HOME, leads to a program that can reach the network. With any
+    // network allowed there is nothing left to keep away.
+    if !args.network {
+        worker_args.push("--block-unix-sockets".to_owned());
+    }
     if let Some(bytes) = args.max_memory {
         worker_args.push("--max-memory".to_owned());
         worker_args.push(bytes.to_string());

@@ -129,6 +129,11 @@ pub struct Args {
     #[arg(long, hide = true)]
     tool_executor: bool,
 
+    /// Internal: keep the tool worker and its commands away from Unix
+    /// sockets of the host.
+    #[arg(long, hide = true, requires = "tool_executor")]
+    block_unix_sockets: bool,
+
     /// Prompt to run once; starts an interactive chat when absent.
     prompt: Vec<String>,
 }
@@ -144,6 +149,11 @@ fn main() -> ExitCode {
 }
 
 fn launch(mut args: Args) -> Result<ExitCode, Error> {
+    // Before the runtime starts its threads, though the filter covers them
+    // anyway.
+    if args.block_unix_sockets {
+        harness_sandbox::block_unix_sockets()?;
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
