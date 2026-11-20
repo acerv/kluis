@@ -15,6 +15,7 @@
 Most coding agents either interrupt you with permission prompts or run
 whatever the model asks directly on the host. K-Luis is sandboxed by default:
 
+- Choose exactly which folders and ports the model can touch.
 - Model commands run in a `hakoniwa` container, not on your machine.
 - `.git` stays read-only, so hooks and config cannot run code as you.
 - API keys and `~/.kluis` are never exposed to the sandbox.
@@ -26,7 +27,7 @@ do is mess with the folders you gave it.
 ## Quick start
 
 ```sh
-cargo install --path .
+cargo install --path harness-tui
 
 export DEEPSEEK_API_KEY="sk-..."
 kl "fix the typo in README.md"   # one task, one command
@@ -171,6 +172,10 @@ of the core loop.
 - Credentials are never passed into the sandbox, and `~/.kluis` is hidden from
   sandboxed tools.
 
+## Roadmap
+
+Planned features are tracked in [TODO.md](TODO.md).
+
 ---
 
-`cargo install --path .` and let the model work — safely.
+`cargo install --path harness-tui` and let the model work — safely.
