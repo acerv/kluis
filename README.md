@@ -168,31 +168,17 @@ precedence over `api_key`.
 
 ### Sandbox
 
-- `hakoniwa` container showing only the configured folders.
-- The current folder is writable by default; `.git` stays read-only so hooks
-  and `config` cannot run code on the host, and a new `.git` that commands
-  create is renamed to `.git.kl-disabled` after each prompt. kl refuses to
-  start if it cannot read a folder there, where a `.git` could hide.
-- kl warns at startup unless git ignores repositories not named `.git`,
-  which commands could create under any name:
-  `git config --global safe.bareRepository explicit`.
-- Programs that commands leave running in the background are stopped after
-  each prompt.
-- `--strict` makes the current folder read-only; `--no-sandbox` runs tools on
-  the host.
-- Network access is off by default; allow specific TCP ports or all network
-  access. Landlock enforces the TCP allowlist on Linux 6.7+, and the
-  container uses `CLONE_NEWNET` when no network is allowed. An allowed port is
-  open on every host, not only locally, and UDP stays closed.
-- Cloud drives and network shares are hidden, and commands can only create
-  IP and netlink sockets of common protocols (Unix ones too with
-  `--network`), so they cannot reach the network through other programs or
-  vsock, nor make the kernel load rarely used modules.
-- Commands cannot create user namespaces, which most kernel exploits rely on.
-- Private `/tmp` holding up to a quarter of the memory, process/thread limit,
-  optional virtual memory limit, no core dumps, and chosen environment
-  variables passed to commands. When memory runs out, the kernel kills
-  commands before your other programs.
+- Commands run in a `hakoniwa` container that shows only the configured
+  folders. The current folder is writable (`--strict`: read-only);
+  `--no-sandbox` turns the container off.
+- `.git` stays read-only, and a new `.git` is disabled after each prompt.
+- No network by default; allow all of it, or some TCP ports (Linux 6.7+),
+  which are then open on every host, not only locally.
+- Cloud drives, network shares and credentials in `$HOME` are hidden.
+- Kernel attack surface is reduced: no user namespaces, only common socket
+  types, no core dumps.
+- Limits on processes and `/tmp`; leftover programs are stopped after each
+  prompt, and on low memory commands are killed first.
 
 The sandbox cannot vet what the model writes: build scripts, Makefiles,
 `.cargo/config.toml`, `package.json` scripts and editor settings run as you
