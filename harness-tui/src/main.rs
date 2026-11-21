@@ -35,7 +35,7 @@ use harness_core::{
 };
 use harness_sandbox::{GitGuard, NetworkAccess};
 use harness_tui::{
-    git_notices, retry_notice, summary, BannerLine, History, RunOptions, Session, Status,
+    git_notices, printable, retry_notice, summary, BannerLine, History, RunOptions, Session, Status,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -146,7 +146,7 @@ fn main() -> ExitCode {
     match launch(Args::parse()) {
         Ok(code) => code,
         Err(err) => {
-            eprintln!("error: {err}");
+            eprintln!("error: {}", printable(&err.to_string()));
             ExitCode::FAILURE
         }
     }
@@ -439,7 +439,7 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
         // Keep the session alive on failures such as network errors.
         let res = prompt_and_persist(&mut agent, session.as_mut(), git_guard.as_mut(), line).await;
         if let Err(err) = res {
-            eprintln!("error: {err}");
+            eprintln!("error: {}", printable(&err.to_string()));
         }
     }
 }
@@ -484,7 +484,7 @@ async fn prompt_and_persist(
         }
     }
     for notice in git_notices(git_guard, added) {
-        eprintln!("{notice}");
+        eprintln!("{}", printable(&notice));
     }
     res.map(|_| ())
 }
@@ -587,7 +587,7 @@ fn tilde(path: &Path) -> String {
 fn print_event(event: Event<'_>) {
     match event {
         Event::TextDelta(text) => {
-            print!("{text}");
+            print!("{}", printable(text));
             // Show the text as it comes, not line by line.
             let _ = io::stdout().flush();
         }
@@ -596,10 +596,10 @@ fn print_event(event: Event<'_>) {
         Event::TurnStart | Event::ReasoningDelta(_) | Event::ToolOutput(_) | Event::TurnEnd(_) => {}
         Event::ToolCall(call) => println!(
             "→ {} {}",
-            call.fn_name,
-            summary(&call.fn_arguments.to_string())
+            printable(&call.fn_name),
+            printable(&summary(&call.fn_arguments.to_string()))
         ),
-        Event::ToolResult(resp, _) => println!("← {}", summary(&resp.content)),
+        Event::ToolResult(resp, _) => println!("← {}", printable(&summary(&resp.content))),
         Event::Retry {
             attempt,
             delay,
@@ -607,7 +607,7 @@ fn print_event(event: Event<'_>) {
         } => {
             // End any line the failed attempt left half printed.
             println!();
-            eprintln!("{}", retry_notice(attempt, delay, reason));
+            eprintln!("{}", printable(&retry_notice(attempt, delay, reason)));
         }
     }
 }

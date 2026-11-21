@@ -826,3 +826,21 @@ fn commands_go_first_when_memory_runs_out() {
     });
     assert_eq!(output.trim(), "1000", "{output}");
 }
+
+#[test]
+fn notices_send_no_escape_sequences() {
+    // A command picks the names in them, which could set the clipboard.
+    let home = tempdir();
+    let cwd = tempdir();
+    let result = run_bash_in(cwd.path(), home.path(), &[], &[], |_| {
+        r#"name=$(printf 'x\033]52;c;cHduZWQ=\007')
+           mkdir -p "$name/.git""#
+            .into()
+    });
+    assert!(result.stderr.contains("kl-disabled"), "{}", result.stderr);
+    assert!(
+        !result.stderr.contains(['\x1b', '\x07']),
+        "{}",
+        result.stderr
+    );
+}

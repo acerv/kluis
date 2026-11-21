@@ -35,7 +35,8 @@ use tokio::sync::mpsc;
 use tokio::time::{interval_at, Instant, MissedTickBehavior};
 
 pub use app::{
-    retry_notice, summary, Action, AgentUpdate, App, BannerLine, SlashCommand, VIEWPORT_HEIGHT,
+    printable, retry_notice, summary, Action, AgentUpdate, App, BannerLine, SlashCommand,
+    VIEWPORT_HEIGHT,
 };
 pub use clipboard::{last_assistant_text, osc52_sequence};
 pub use history::{History, MAX_HISTORY};
@@ -263,7 +264,9 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
                 if quit {
                     // Once the screen is back.
                     drop(term);
-                    notices.iter().for_each(|notice| eprintln!("{notice}"));
+                    for notice in &notices {
+                        eprintln!("{}", printable(notice));
+                    }
                     return Ok(());
                 }
                 if !notices.is_empty() {

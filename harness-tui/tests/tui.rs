@@ -1262,3 +1262,16 @@ fn git_guard_warns_about_folders_it_cannot_read() {
     assert!(notices[0].starts_with("[warning: "), "{notices:?}");
     assert!(notices[0].contains(&*sub.to_string_lossy()), "{notices:?}");
 }
+
+#[test]
+fn printable_text_sends_no_escape_sequences() {
+    use std::borrow::Cow;
+
+    use harness_tui::printable;
+
+    // OSC 52 sets the clipboard; CSI in its one-byte form; a carriage
+    // return could overwrite the line with other text.
+    let text = "a\x1b]52;c;cHduZWQ=\x07b \u{9b}31mc\rd\n\te";
+    assert_eq!(printable(text), "a]52;c;cHduZWQ=b 31mcd\n\te");
+    assert!(matches!(printable("plain\ntext"), Cow::Borrowed(_)));
+}

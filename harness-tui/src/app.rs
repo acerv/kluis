@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
@@ -1533,16 +1534,28 @@ fn layout_editor(input: &Input, width: usize) -> EditorLayout {
     }
 }
 
-/// First line of `text`, cut to [`SUMMARY_LEN`] characters.
 /// The line telling the user a failed model request is retried.
 pub fn retry_notice(attempt: u32, delay: Duration, reason: &str) -> String {
     format!("[{reason} · retry {attempt} in {delay:.0?}]")
 }
 
+/// First line of `text`, cut to [`SUMMARY_LEN`] characters.
 pub fn summary(text: &str) -> String {
     let line = text.lines().next().unwrap_or_default();
     match line.char_indices().nth(SUMMARY_LEN) {
         Some((end, _)) => format!("{}…", &line[..end]),
         None => line.to_owned(),
+    }
+}
+
+/// `text` without control characters but newlines and tabs, to print it
+/// as it is: text from the model or from commands could otherwise send
+/// escape sequences to the terminal, such as one that sets the clipboard.
+pub fn printable(text: &str) -> Cow<'_, str> {
+    let control = |c: char| c.is_control() && c != '\n' && c != '\t';
+    if text.contains(control) {
+        Cow::Owned(text.chars().filter(|&c| !control(c)).collect())
+    } else {
+        Cow::Borrowed(text)
     }
 }
