@@ -137,6 +137,9 @@ precedence over `api_key`.
   and `config` cannot run code on the host, and a new `.git` that commands
   create is renamed to `.git.kl-disabled` after each prompt. kl refuses to
   start if it cannot read a folder there, where a `.git` could hide.
+- kl warns at startup unless git ignores repositories not named `.git`,
+  which commands could create under any name:
+  `git config --global safe.bareRepository explicit`.
 - Programs that commands leave running in the background are stopped after
   each prompt.
 - `--strict` makes the current folder read-only; `--no-sandbox` runs tools on
@@ -152,6 +155,10 @@ precedence over `api_key`.
 - Commands cannot create user namespaces, which most kernel exploits rely on.
 - Private `/tmp`, process/thread limit, virtual memory limit, no core dumps,
   and chosen environment variables passed to commands.
+
+The sandbox cannot vet what the model writes: build scripts, Makefiles,
+`.cargo/config.toml`, `package.json` scripts and editor settings run as you
+when you build, test or open the project. Review the changes like any patch.
 
 ### Auth & config
 

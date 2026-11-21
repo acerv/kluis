@@ -15,9 +15,10 @@
 - [x] Never restart the tool worker from a replaced program: in a writable folder (a build of kl in its own project), a command could rename another program over it, which would run without the seccomp filter
 - [x] Protect `.git` of new `git init`: a model-made nested repo with `core.fsmonitor` runs commands when the user (or their shell prompt) runs git there
 - [x] Stop programs commands leave running after each prompt: one started with `setsid` outlived its command and could recreate a `.git` right after the check; an init in the container also reaps them
+- [x] Warn when git would use repositories not named `.git` (`safe.bareRepository`): git takes any folder holding `HEAD`, `objects` and `refs` for one
 - [x] Fail closed when a writable folder cannot be read: commands could `chmod 300` a folder to hide a `.git` from the scan, so the next session left it writable
 - [ ] Review mode: commands write to a copy of the project, and kl applies the changes after each prompt without `.git`, editor settings and other dangerous files (as AgentFS, Brood Box, yoloAI)
-- [ ] Check whether editor settings the model writes (`.zed/`, `.vscode/`, `.idea/`) can run commands when the project is opened
+- [ ] Editor settings the model writes (`.zed/`, `.vscode/`, `.idea/`) can run commands when the project is opened; like build files, only review mode would cover them
 - [x] Refuse a symlinked `AGENTS.md`: the host follows it at startup, pulling hidden files (`~/.kluis/auth.toml`, `~/.ssh`) into the prompt
 - [ ] Hide credentials readable in `$HOME` (`gh`, `npm`, `cargo`, `docker`, `kube`, `aws`, browser and mail profiles, chat apps, keyrings, shell history), or hide `$HOME` by default and show only toolchains
 - [x] `--allow-connect`: refuse UDP sockets, which Landlock does not limit
