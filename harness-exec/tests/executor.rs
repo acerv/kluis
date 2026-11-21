@@ -335,3 +335,45 @@ fn sandbox_executor_fails_fast_when_worker_exits_before_ready() {
     .unwrap_err();
     assert!(err.to_string().contains("42"), "{err}");
 }
+
+#[tokio::test]
+async fn replaced_worker_program_is_not_restarted() {
+    // A command in a writable folder holding the program could rename
+    // another one over it, which would run without the worker's limits.
+    // Deleted and created again, it may even get the same inode.
+    let rename = |program: &std::path::Path| {
+        let replacement = program.with_file_name("replacement");
+        std::fs::copy("/bin/bash", &replacement).unwrap();
+        std::fs::rename(&replacement, program).unwrap();
+    };
+    let recreate = |program: &std::path::Path| {
+        std::fs::remove_file(program).unwrap();
+        std::fs::copy("/bin/bash", program).unwrap();
+    };
+    for replace in [&rename as &dyn Fn(&std::path::Path), &recreate] {
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("worker");
+        std::fs::copy("/bin/bash", &program).unwrap();
+        let sandbox = Sandbox::with_defaults(&Options {
+            write: vec![dir.path().to_path_buf()],
+            ..Options::default()
+        })
+        .no_network();
+        let exec = Executor::sandbox(SandboxConfig {
+            sandbox,
+            program: program.clone(),
+            args: vec!["-c".into(), MOCK_WORKER_SCRIPT.into()],
+            cwd: dir.path().to_path_buf(),
+            env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+        })
+        .unwrap();
+        let (pong, _) = exec.execute(&call("p1", "ping", json!({})), |_| {}).await;
+        assert_eq!(pong.content, r#"{"pong":true}"#);
+
+        replace(&program);
+        exec.execute(&call("cr", "crash", json!({})), |_| {}).await;
+
+        let (refused, _) = exec.execute(&call("p2", "ping", json!({})), |_| {}).await;
+        assert!(refused.content.contains("replaced"), "{}", refused.content);
+    }
+}

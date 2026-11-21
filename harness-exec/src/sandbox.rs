@@ -5,7 +5,8 @@
 
 use std::collections::HashMap;
 use std::io::{self, BufReader, PipeWriter};
-use std::path::PathBuf;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -44,10 +45,16 @@ pub enum ExecError {
 
 type PendingMap = Arc<Mutex<HashMap<u64, mpsc::UnboundedSender<Response>>>>;
 
+/// A file, as its device, inode and change time: a new file may get the
+/// inode of a deleted one, never its change time.
+type FileId = (u64, u64, i64, i64);
+
 /// Persistent sandboxed tool executor supporting concurrent async calls.
 #[derive(Debug)]
 pub struct SandboxExecutor {
     config: SandboxConfig,
+    /// The worker program's file when the executor started.
+    program: FileId,
     worker: Mutex<Option<Worker>>,
     next_id: AtomicU64,
 }
@@ -85,10 +92,15 @@ impl Drop for Worker {
 impl SandboxExecutor {
     /// Spawn the sandboxed worker eagerly and wait for its readiness signal so
     /// container setup errors (invalid paths, blocked namespaces) fail fast.
+    ///
+    /// A worker that dies is started again on the next call, only while its
+    /// program is still the same file.
     pub fn new(config: SandboxConfig) -> Result<Self, ExecError> {
-        let worker = spawn_worker(&config)?;
+        let program = file_id(&config.program)?;
+        let worker = spawn_worker(&config, program)?;
         Ok(Self {
             config,
+            program,
             worker: Mutex::new(Some(worker)),
             next_id: AtomicU64::new(1),
         })
@@ -168,7 +180,7 @@ impl SandboxExecutor {
             if needs_spawn {
                 // Drop old worker before spawning a replacement.
                 guard.take();
-                *guard = Some(spawn_worker(&self.config)?);
+                *guard = Some(spawn_worker(&self.config, self.program)?);
             }
             let worker = guard.as_mut().expect("worker just spawned");
             let (tx, rx) = mpsc::unbounded_channel();
@@ -201,7 +213,24 @@ impl SandboxExecutor {
     }
 }
 
-fn spawn_worker(config: &SandboxConfig) -> Result<Worker, ExecError> {
+/// The file at `path`.
+fn file_id(path: &Path) -> io::Result<FileId> {
+    let meta = std::fs::metadata(path)?;
+    Ok((meta.dev(), meta.ino(), meta.ctime(), meta.ctime_nsec()))
+}
+
+/// Start the worker, if its program is still the file `expected`.
+fn spawn_worker(config: &SandboxConfig, expected: FileId) -> Result<Worker, ExecError> {
+    // In a writable folder, a command could have renamed another program
+    // over it, which would run without the worker's own restrictions. No
+    // command can swap it before the start: they all died with the last
+    // worker's container.
+    if file_id(&config.program)? != expected {
+        return Err(ExecError::Startup(format!(
+            "{}: replaced since the sandbox started; start again to use it",
+            config.program.display()
+        )));
+    }
     let program = config
         .program
         .to_str()
