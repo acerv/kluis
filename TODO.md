@@ -27,7 +27,8 @@
 - [ ] Warn at startup when a shown folder (the project, `$HOME`) is itself on a FUSE or network filesystem: file access there reaches the network
 - [ ] Line mode prints model text raw: strip control characters so escape sequences (e.g. OSC 52 clipboard) cannot reach the terminal
 - [ ] Refuse more unneeded system calls (`keyctl`, `bpf`, `perf_event_open`, `userfaultfd`, mount family, `kexec`, module loading) for kernels with laxer defaults
-- [ ] Default limits for memory and the private `/tmp`: without `--max-memory` and `--tmp-size`, a command can exhaust the host's memory
+- [x] Default limits for memory and the private `/tmp`: `/tmp` holds a quarter of the memory, and the kernel kills commands first when memory runs out
+- [ ] Limit the memory of all commands together with a cgroup (`memory.max`), where systemd delegates the memory controller to the user (not everywhere)
 
 ## Compatibility
 

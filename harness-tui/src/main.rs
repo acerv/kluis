@@ -104,7 +104,8 @@ pub struct Args {
     #[arg(long, value_name = "NUM", value_parser = clap::value_parser!(u64).range(1..))]
     max_processes: Option<u64>,
 
-    /// Size of the private /tmp in bytes, or with a K, M or G suffix.
+    /// Size of the private /tmp in bytes, or with a K, M or G suffix (a
+    /// quarter of the memory by default).
     #[arg(long, value_name = "SIZE", value_parser = config::parse_size)]
     tmp_size: Option<u64>,
 
@@ -154,6 +155,9 @@ fn main() -> ExitCode {
 fn launch(mut args: Args) -> Result<ExitCode, Error> {
     let mut below_init = false;
     if args.tool_executor {
+        // When memory runs out, the kernel kills commands before the
+        // user's own programs. While `/proc/self` is still ours to write.
+        harness_sandbox::kill_first_on_oom()?;
         // Commands run as the same user: keep them from reading the
         // worker's environment or writing forged results into its pipes.
         harness_sandbox::protect_self()?;

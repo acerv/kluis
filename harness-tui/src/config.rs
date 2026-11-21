@@ -23,7 +23,8 @@
 //! network = false
 //! # Processes and threads the harness and its commands may run at once.
 //! max_processes = 1024
-//! # Size of the private /tmp in bytes, or with a K, M or G suffix.
+//! # Size of the private /tmp in bytes, or with a K, M or G suffix; a
+//! # quarter of the memory by default.
 //! tmp_size = "512M"
 //! # Virtual memory limit for commands in bytes, or with a K, M or G suffix.
 //! max_memory = "4G"

@@ -155,8 +155,10 @@ precedence over `api_key`.
   `--network`), so they cannot reach the network through other programs or
   vsock, nor make the kernel load rarely used modules.
 - Commands cannot create user namespaces, which most kernel exploits rely on.
-- Private `/tmp`, process/thread limit, virtual memory limit, no core dumps,
-  and chosen environment variables passed to commands.
+- Private `/tmp` holding up to a quarter of the memory, process/thread limit,
+  optional virtual memory limit, no core dumps, and chosen environment
+  variables passed to commands. When memory runs out, the kernel kills
+  commands before your other programs.
 
 The sandbox cannot vet what the model writes: build scripts, Makefiles,
 `.cargo/config.toml`, `package.json` scripts and editor settings run as you

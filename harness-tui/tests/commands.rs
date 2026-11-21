@@ -816,3 +816,13 @@ fn no_git_warning_when_only_dot_git_is_used() {
     let stderr = git_warning("[safe]\n\tbareRepository = explicit\n");
     assert!(!stderr.contains("safe.bareRepository"), "{stderr}");
 }
+
+#[test]
+fn commands_go_first_when_memory_runs_out() {
+    // Before the user's own programs.
+    let home = tempdir();
+    let output = run_bash(home.path(), &[], &[], |_| {
+        "cat /proc/self/oom_score_adj".into()
+    });
+    assert_eq!(output.trim(), "1000", "{output}");
+}

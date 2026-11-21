@@ -191,3 +191,28 @@ fn denied_paths_are_hidden() {
         stderr(&out)
     );
 }
+
+/// Size of the private `/tmp` for `options`, in bytes.
+fn tmp_size(options: &Options) -> u64 {
+    let out = run(options, "stat -f -c '%b %S' /tmp");
+    let text = String::from_utf8_lossy(&out.stdout);
+    let (blocks, size) = text.trim().split_once(' ').unwrap();
+    blocks.parse::<u64>().unwrap() * size.parse::<u64>().unwrap()
+}
+
+#[test]
+fn tmp_holds_a_quarter_of_the_memory() {
+    // It lives in memory, which killing its writers does not free.
+    let quarter = nix::sys::sysinfo::sysinfo().unwrap().ram_total() / 4;
+    let size = tmp_size(&Options::default());
+    assert!(quarter.abs_diff(size) < 1 << 20, "{size} != {quarter}");
+}
+
+#[test]
+fn tmp_size_can_be_chosen() {
+    let options = Options {
+        tmp_size: Some(8 << 20),
+        ..Options::default()
+    };
+    assert_eq!(tmp_size(&options), 8 << 20);
+}

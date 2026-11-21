@@ -79,6 +79,12 @@ const HOME_SECRETS: &[&str] = &[
 
 const MAX_PROCESSES: u64 = 1024;
 
+/// A quarter of the memory, the default size of the private `/tmp`.
+fn default_tmp_size() -> Option<u64> {
+    let total = nix::sys::sysinfo::sysinfo().ok()?.ram_total();
+    Some(total / 4).filter(|&bytes| bytes > 0)
+}
+
 /// What to allow on top of the defaults. Paths must exist.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Options {
@@ -98,7 +104,8 @@ pub struct Options {
     /// Processes and threads the sandboxed process and its children may run at
     /// once (1024 by default).
     pub max_processes: Option<u64>,
-    /// Bytes the private `/tmp` may hold.
+    /// Bytes the private `/tmp` may hold (a quarter of the memory by
+    /// default).
     pub tmp_size: Option<u64>,
 }
 
@@ -113,11 +120,14 @@ impl Sandbox {
     /// (`CLONE_NEWNET`); [`Options::connect`] enables Landlock TCP rules for
     /// those ports, and [`Options::network`] allows unrestricted network. It
     /// may run at most 1024 processes and threads (or
-    /// [`Options::max_processes`]).
+    /// [`Options::max_processes`]), and its `/tmp` holds at most a quarter of
+    /// the memory (or [`Options::tmp_size`]).
     pub fn with_defaults(options: &Options) -> Self {
         let mut sandbox =
             Sandbox::new().max_processes(options.max_processes.unwrap_or(MAX_PROCESSES));
-        if let Some(bytes) = options.tmp_size {
+        // `/tmp` lives in memory, which killing its writers does not free:
+        // left unbounded, it could fill the host's memory.
+        if let Some(bytes) = options.tmp_size.or_else(default_tmp_size) {
             sandbox = sandbox.max_tmp_size(bytes);
         }
         for path in DEFAULT_READ
