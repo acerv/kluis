@@ -249,6 +249,40 @@ fn default_config_hides_ssh_and_kluis_dir() {
 }
 
 #[test]
+fn credentials_in_home_stay_hidden() {
+    // Whatever the config hides besides: the home folder is shown.
+    let home = tempdir();
+    write_config(home.path(), "[sandbox]\ndeny = [\"/no/such/secret\"]\n");
+    let files = [
+        ".ssh/id_ed25519",
+        ".config/gh/hosts.yml",
+        ".aws/credentials",
+        ".bash_history",
+        ".config/tool.toml",
+    ];
+    for file in files {
+        let path = home.path().join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, format!("CONTENT-OF {file}\n")).unwrap();
+    }
+
+    let output = run_bash(home.path(), &[], &[], |_| {
+        format!(
+            r#"cd {}
+               for f in {}; do
+                 cat "$f" 2>/dev/null || echo "HIDDEN $f"
+               done"#,
+            home.path().display(),
+            files.join(" ")
+        )
+    });
+    for file in &files[..4] {
+        assert!(output.contains(&format!("HIDDEN {file}")), "{output}");
+    }
+    assert!(output.contains("CONTENT-OF .config/tool.toml"), "{output}");
+}
+
+#[test]
 fn config_env_reaches_commands() {
     let home = tempdir();
     write_config(home.path(), "[sandbox]\nenv = [\"MY_BUILD_FLAG\"]\n");

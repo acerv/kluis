@@ -49,7 +49,7 @@ fn missing_default_file_is_created_with_defaults() {
         text.contains("[generic]\nmodel = \"deepseek-chat\""),
         "{text}"
     );
-    assert!(text.contains("deny = [\"~/.ssh\", \"~/.gnupg\"]"), "{text}");
+    assert!(text.contains("deny = []"), "{text}");
     assert!(!text.contains(".pi"), "{text}");
 
     // Existing file is not overwritten on the next run.

@@ -34,6 +34,49 @@ const DEFAULT_READ: &[&str] = &[
 ];
 
 /// Processes and threads the sandboxed process and its children may run at once.
+/// Paths in the home folder that hold credentials, keys or private history,
+/// hidden even though the home folder is shown.
+const HOME_SECRETS: &[&str] = &[
+    // Keys and passwords.
+    ".ssh",
+    ".gnupg",
+    ".password-store",
+    ".local/share/keyrings",
+    ".netrc",
+    // Git hosts.
+    ".config/gh",
+    ".git-credentials",
+    ".config/git/credentials",
+    // Cloud.
+    ".aws",
+    ".config/gcloud",
+    ".azure",
+    ".kube",
+    ".oci",
+    // Package registries.
+    ".cargo/credentials",
+    ".cargo/credentials.toml",
+    ".npmrc",
+    ".pypirc",
+    ".gem/credentials",
+    ".config/pip",
+    // Containers.
+    ".docker/config.json",
+    ".config/containers/auth.json",
+    // Shell history.
+    ".bash_history",
+    ".zsh_history",
+    ".local/share/fish/fish_history",
+    ".python_history",
+    // Browsers, mail and chat.
+    ".mozilla",
+    ".config/google-chrome",
+    ".config/chromium",
+    ".thunderbird",
+    ".config/Slack",
+    ".config/discord",
+];
+
 const MAX_PROCESSES: u64 = 1024;
 
 /// What to allow on top of the defaults. Paths must exist.
@@ -44,7 +87,7 @@ pub struct Options {
     /// Writable by the sandboxed process and its children.
     pub write: Vec<PathBuf>,
     /// Hidden from the sandboxed process and its children, even below a
-    /// readable or writable path.
+    /// readable or writable path, besides the credentials in `$HOME`.
     pub deny: Vec<PathBuf>,
     /// TCP ports the sandboxed process may connect to (empty isolates the
     /// container in an empty network namespace unless [`Options::network`] is
@@ -64,7 +107,8 @@ impl Sandbox {
     /// [`Sandbox::container`].
     ///
     /// It may run programs from `/usr`, read the few `/etc` files commonly
-    /// needed, the CA certificates rustls uses, and `$HOME`, and change the
+    /// needed, the CA certificates rustls uses, and `$HOME` without the
+    /// credentials, keys and history kept there, and change the
     /// [`Options::write`] paths. By default it runs with no network
     /// (`CLONE_NEWNET`); [`Options::connect`] enables Landlock TCP rules for
     /// those ports, and [`Options::network`] allows unrestricted network. It
@@ -85,6 +129,10 @@ impl Sandbox {
         }
         // Toolchains, caches and settings of the user live there.
         if let Some(home) = std::env::var_os("HOME").filter(|h| Path::new(h).is_dir()) {
+            let home = PathBuf::from(home);
+            for secret in HOME_SECRETS {
+                sandbox = sandbox.deny_read(home.join(secret));
+            }
             sandbox = sandbox.allow_read(home);
         }
         // The certificates rustls loads, found the same way it finds them,

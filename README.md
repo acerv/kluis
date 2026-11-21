@@ -42,7 +42,9 @@ Want more control? `kl --strict` makes the project read-only, and
 ## Configuration
 
 The configuration file selects which parts of the container to expose or
-deny to the model.
+deny to the model. Credentials, keys and shell history in `$HOME` (`~/.ssh`,
+`~/.aws`, `gh` and registry tokens, browser profiles, ...) are always hidden;
+`deny` hides more.
 
 ```toml
 [generic]
@@ -52,7 +54,7 @@ thinking = "medium"
 [sandbox]
 read = ["/etc/ssl"]
 write = ["~/scratch"]
-deny = ["~/.ssh", "~/.gnupg"]
+deny = ["~/work/secrets"]
 connect = [11434]
 network = false
 max_processes = 1024

@@ -20,7 +20,8 @@
 - [ ] Review mode: commands write to a copy of the project, and kl applies the changes after each prompt without `.git`, editor settings and other dangerous files (as AgentFS, Brood Box, yoloAI)
 - [ ] Editor settings the model writes (`.zed/`, `.vscode/`, `.idea/`) can run commands when the project is opened; like build files, only review mode would cover them
 - [x] Refuse a symlinked `AGENTS.md`: the host follows it at startup, pulling hidden files (`~/.kluis/auth.toml`, `~/.ssh`) into the prompt
-- [ ] Hide credentials readable in `$HOME` (`gh`, `npm`, `cargo`, `docker`, `kube`, `aws`, browser and mail profiles, chat apps, keyrings, shell history), or hide `$HOME` by default and show only toolchains
+- [x] Hide credentials readable in `$HOME` (`gh`, `npm`, `cargo`, `docker`, `kube`, `aws`, browser and mail profiles, chat apps, keyrings, shell history): a built-in list, always hidden whatever the config says
+- [ ] Hide `$HOME` by default and show only toolchains, for credentials of tools the built-in list misses
 - [x] `--allow-connect`: refuse UDP sockets, which Landlock does not limit
 - [x] `--allow-connect`: document that Landlock allows the port on every host, not only locally
 - [ ] Warn at startup when a shown folder (the project, `$HOME`) is itself on a FUSE or network filesystem: file access there reaches the network
