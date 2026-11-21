@@ -82,6 +82,24 @@ Paths may start with `~`; sizes take a `K`, `M` or `G` suffix.
 Lists add up with the matching command-line options, and switches turn on when
 either the file or the CLI enables them.
 
+| Environment variable | What it does |
+|---|---|
+| `HARNESS_MODEL` | Model to use, like `--model` |
+| `HARNESS_THINKING` | Thinking effort, like `--thinking` |
+| `HARNESS_CONFIG` | Config file to read, like `--config` |
+| `NO_COLOR` | Turn colors off |
+
+| Command-line option | What it does |
+|---|---|
+| `-c`, `--continue` | Continue the latest session in this folder |
+| `--resume [ID]` | Resume a session, with a picker when no ID is given |
+| `--no-session` | Do not read or write session files |
+| `--strict` | Make the current folder read-only |
+| `--no-sandbox` | Run tools on the host |
+| `--login`, `--logout` | Log in to or out of a subscription (`anthropic`) |
+
+Every setting of the file also has an option: see `kl --help`.
+
 ### API keys
 
 Provider credentials go in `~/.kluis/auth.toml`, keyed by the lowercase
