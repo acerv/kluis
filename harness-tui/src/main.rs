@@ -33,7 +33,7 @@ use harness_core::{
     provider_name, Agent, AuthConfig, CredentialSource, Error, Event, SessionData, SessionStore,
     Thinking, TokenUsage,
 };
-use harness_sandbox::GitGuard;
+use harness_sandbox::{GitGuard, NetworkAccess};
 use harness_tui::{
     git_notices, retry_notice, summary, BannerLine, History, RunOptions, Session, Status,
 };
@@ -132,9 +132,10 @@ pub struct Args {
     #[arg(long, hide = true)]
     tool_executor: bool,
 
-    /// Internal: let the tool worker and its commands use Unix sockets.
-    #[arg(long, hide = true, requires = "tool_executor")]
-    allow_unix_sockets: bool,
+    /// Internal: the network the tool worker's commands get (none, ports or
+    /// any), which decides the sockets they may create.
+    #[arg(long, hide = true, requires = "tool_executor", default_value = "none")]
+    network_access: NetworkAccess,
 
     /// Prompt to run once; starts an interactive chat when absent.
     prompt: Vec<String>,
@@ -157,7 +158,7 @@ fn launch(mut args: Args) -> Result<ExitCode, Error> {
         harness_sandbox::protect_self()?;
         // Before the runtime starts its threads, though the filter covers
         // them anyway.
-        harness_sandbox::restrict_syscalls(args.allow_unix_sockets)?;
+        harness_sandbox::restrict_syscalls(args.network_access)?;
     }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

@@ -69,12 +69,17 @@ pub fn executor(args: &Args, cwd: &Path) -> Result<(Executor, GitGuard), Error> 
     }
 
     let mut worker_args = vec!["--tool-executor".to_owned()];
-    // A Unix socket of the host, e.g. of an editor or a chat app below
-    // $HOME, leads to a program that can reach the network: the worker
-    // blocks them unless any network is allowed anyway.
-    if args.network {
-        worker_args.push("--allow-unix-sockets".to_owned());
-    }
+    // Decides the sockets commands may create: no Unix ones, which lead to
+    // programs of the host, unless any network is allowed anyway, and no
+    // UDP ones when only some TCP ports are.
+    let access = if args.network {
+        "any"
+    } else if args.allow_connect.is_empty() {
+        "none"
+    } else {
+        "ports"
+    };
+    worker_args.extend(["--network-access".to_owned(), access.to_owned()]);
     if let Some(bytes) = args.max_memory {
         worker_args.push("--max-memory".to_owned());
         worker_args.push(bytes.to_string());

@@ -709,3 +709,13 @@ fn commands_cannot_reach_the_worker() {
     assert!(output.contains("ENV=denied"), "{output}");
     assert!(output.contains("PIPE=denied"), "{output}");
 }
+
+#[test]
+fn allowed_ports_do_not_open_udp() {
+    // Landlock only limits TCP: UDP would reach any host.
+    let home = tempdir();
+    let output = run_bash(home.path(), &["--allow-connect", "9"], &[], |_| {
+        "(exec 3<>/dev/udp/127.0.0.1/53) 2>&1".into()
+    });
+    assert!(output.contains("Permission denied"), "{output}");
+}

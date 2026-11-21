@@ -12,7 +12,8 @@
 - [ ] Check whether editor settings the model writes (`.zed/`, `.vscode/`, `.idea/`) can run commands when the project is opened
 - [x] Refuse a symlinked `AGENTS.md`: the host follows it at startup, pulling hidden files (`~/.kluis/auth.toml`, `~/.ssh`) into the prompt
 - [ ] Hide credentials readable in `$HOME` (`gh`, `npm`, `cargo`, `docker`, `kube`, `aws`, browser and mail profiles, chat apps, keyrings, shell history), or hide `$HOME` by default and show only toolchains
-- [ ] `--allow-connect`: Landlock allows the port on every host and UDP is unfiltered; refuse UDP sockets in ports mode and document it
+- [x] `--allow-connect`: refuse UDP sockets, which Landlock does not limit
+- [ ] `--allow-connect`: document that Landlock allows the port on every host, not only locally
 - [ ] Warn at startup when a shown folder (the project, `$HOME`) is itself on a FUSE or network filesystem: file access there reaches the network
 - [ ] Line mode prints model text raw: strip control characters so escape sequences (e.g. OSC 52 clipboard) cannot reach the terminal
 - [ ] Refuse more unneeded system calls (`keyctl`, `bpf`, `perf_event_open`, `userfaultfd`, mount family, `kexec`, module loading) for kernels with laxer defaults

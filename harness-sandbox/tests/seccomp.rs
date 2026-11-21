@@ -9,28 +9,29 @@ use std::net::TcpListener;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::process::Command;
 
-use harness_sandbox::restrict_syscalls;
+use harness_sandbox::{restrict_syscalls, NetworkAccess};
 
 /// Set in the copy of the test process that restricts its system calls,
-/// which cannot be undone: "sockets" when Unix sockets stay allowed.
+/// which cannot be undone, to its network access.
 const CHILD: &str = "HARNESS_TEST_SECCOMP_CHILD";
 
-/// Run `body` in a copy of this test process with Unix sockets blocked.
+/// Run `body` in a copy of this test process restricted as with no network.
 fn blocked(name: &str, body: fn()) {
-    restricted(name, false, body);
+    restricted(name, "none", body);
 }
 
 /// Run `body` in a copy of this test process with its system calls
-/// restricted, Unix sockets included unless `unix_sockets`.
-fn restricted(name: &str, unix_sockets: bool, body: fn()) {
-    if let Some(mode) = std::env::var_os(CHILD) {
-        restrict_syscalls(mode == "sockets").unwrap();
+/// restricted for `network` access (none, ports or any).
+fn restricted(name: &str, network: &str, body: fn()) {
+    if let Ok(network) = std::env::var(CHILD) {
+        let network: NetworkAccess = network.parse().unwrap();
+        restrict_syscalls(network).unwrap();
         body();
         return;
     }
     let status = Command::new(std::env::current_exe().unwrap())
         .args(["--exact", name, "--nocapture"])
-        .env(CHILD, if unix_sockets { "sockets" } else { "none" })
+        .env(CHILD, network)
         .status()
         .unwrap();
     assert!(
@@ -117,7 +118,7 @@ fn unix_socket_probe() {
 
 #[test]
 fn unix_sockets_can_stay_allowed() {
-    restricted("unix_sockets_can_stay_allowed", true, || {
+    restricted("unix_sockets_can_stay_allowed", "any", || {
         let dir = tempfile::tempdir().unwrap();
         UnixListener::bind(dir.path().join("app.sock")).unwrap();
     });
@@ -125,8 +126,8 @@ fn unix_sockets_can_stay_allowed() {
 
 #[test]
 fn user_namespaces_are_refused() {
-    // With Unix sockets allowed too: the network does not matter here.
-    restricted("user_namespaces_are_refused", true, || {
+    // With any network too: it does not matter here.
+    restricted("user_namespaces_are_refused", "any", || {
         // SAFETY: plain system calls; a clone that succeeded would leave
         // its child at once.
         unsafe {
@@ -148,7 +149,7 @@ fn user_namespaces_are_refused() {
 #[test]
 fn threads_and_programs_still_start() {
     // Without clone3, they fall back to clone.
-    restricted("threads_and_programs_still_start", false, || {
+    restricted("threads_and_programs_still_start", "none", || {
         std::thread::spawn(|| ()).join().unwrap();
         let status = Command::new("true").status().unwrap();
         assert!(status.success());
@@ -178,7 +179,7 @@ fn only_ip_and_netlink_sockets() {
 fn unix_sockets_do_not_open_other_families() {
     restricted(
         "unix_sockets_do_not_open_other_families",
-        true,
+        "any",
         check_families,
     );
 }
@@ -198,4 +199,40 @@ fn check_families() {
     assert_eq!(socket_error(libc::AF_INET, libc::SOCK_STREAM), None);
     assert_eq!(socket_error(libc::AF_INET6, libc::SOCK_STREAM), None);
     assert_eq!(socket_error(libc::AF_NETLINK, libc::SOCK_RAW), None);
+}
+
+#[test]
+fn udp_is_refused_with_only_ports() {
+    // Landlock only limits TCP.
+    restricted("udp_is_refused_with_only_ports", "ports", || {
+        let flags = libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC;
+        for family in [libc::AF_INET, libc::AF_INET6] {
+            assert_eq!(socket_error(family, libc::SOCK_DGRAM), Some(libc::EACCES));
+            assert_eq!(
+                socket_error(family, libc::SOCK_DGRAM | flags),
+                Some(libc::EACCES)
+            );
+            assert_eq!(socket_error(family, libc::SOCK_STREAM | flags), None);
+        }
+        assert_eq!(socket_error(libc::AF_NETLINK, libc::SOCK_DGRAM), None);
+        assert_eq!(
+            socket_error(libc::AF_UNIX, libc::SOCK_STREAM),
+            Some(libc::EACCES)
+        );
+    });
+}
+
+#[test]
+fn udp_stays_without_network() {
+    // The empty network namespace confines it.
+    blocked("udp_stays_without_network", || {
+        assert_eq!(socket_error(libc::AF_INET, libc::SOCK_DGRAM), None);
+    });
+}
+
+#[test]
+fn udp_stays_with_any_network() {
+    restricted("udp_stays_with_any_network", "any", || {
+        assert_eq!(socket_error(libc::AF_INET6, libc::SOCK_DGRAM), None);
+    });
 }

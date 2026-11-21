@@ -5,6 +5,7 @@
 //! host.
 
 use std::io;
+use std::str::FromStr;
 
 use nix::libc::{self, sock_filter, sock_fprog};
 
@@ -13,6 +14,7 @@ use nix::libc::{self, sock_filter, sock_fprog};
 const NR: u32 = 0;
 const ARCH: u32 = 4;
 const ARG0: u32 = 16;
+const ARG1: u32 = 24;
 
 #[cfg(target_arch = "x86_64")]
 const NATIVE_ARCH: u32 = 0xC000_003E; // AUDIT_ARCH_X86_64
@@ -29,6 +31,33 @@ const EPERM: u32 = libc::SECCOMP_RET_ERRNO | libc::EPERM as u32;
 const ENOSYS: u32 = libc::SECCOMP_RET_ERRNO | libc::ENOSYS as u32;
 const KILL: u32 = libc::SECCOMP_RET_KILL_PROCESS;
 
+/// The network commands get, which decides the sockets they may create.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkAccess {
+    /// None: the network namespace is empty.
+    None,
+    /// TCP to some ports, which Landlock enforces.
+    Ports,
+    /// Any network.
+    Any,
+}
+
+impl FromStr for NetworkAccess {
+    type Err = String;
+
+    /// `none`, `ports` or `any`.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "none" => Ok(Self::None),
+            "ports" => Ok(Self::Ports),
+            "any" => Ok(Self::Any),
+            _ => Err(format!(
+                "invalid network access '{s}' (expected none, ports or any)"
+            )),
+        }
+    }
+}
+
 /// Restrict the system calls of this process and the ones it starts.
 ///
 /// Creating a user namespace fails with `EPERM`: root inside one cannot
@@ -42,14 +71,16 @@ const KILL: u32 = libc::SECCOMP_RET_KILL_PROCESS;
 /// Creating a socket fails with `EACCES` unless it is an IPv4, IPv6 or
 /// netlink one, which a network namespace confines: others, such as vsock,
 /// reach the host or the hypervisor past it. Unix ones are allowed only
-/// with `unix_sockets`: a sandbox without network still shows sockets of
-/// the host below the folders it shows, such as the ones of an editor or a
-/// chat app, and the programs behind them can reach the network.
-/// `socketpair` keeps working: its sockets only reach each other.
+/// with [`NetworkAccess::Any`]: a sandbox without network still shows
+/// sockets of the host below the folders it shows, such as the ones of an
+/// editor or a chat app, and the programs behind them can reach the
+/// network. With [`NetworkAccess::Ports`], UDP ones are refused too, as
+/// Landlock only limits TCP. `socketpair` keeps working: its sockets only
+/// reach each other.
 ///
 /// It cannot be undone, and applies to every thread of the process.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-pub fn restrict_syscalls(unix_sockets: bool) -> io::Result<()> {
+pub fn restrict_syscalls(network: NetworkAccess) -> io::Result<()> {
     let mut program = vec![
         load(ARCH),
         // Another architecture: it could get around the filter.
@@ -72,10 +103,10 @@ pub fn restrict_syscalls(unix_sockets: bool) -> io::Result<()> {
         ret(EPERM),
     ]);
     let mut families = vec![libc::AF_INET, libc::AF_INET6, libc::AF_NETLINK];
-    if unix_sockets {
+    if network == NetworkAccess::Any {
         families.push(libc::AF_UNIX);
     }
-    program.extend(socket_rules(&families));
+    program.extend(socket_rules(&families, network != NetworkAccess::Ports));
     let filter = sock_fprog {
         len: program.len() as u16,
         filter: program.as_mut_ptr(),
@@ -105,7 +136,7 @@ pub fn restrict_syscalls(unix_sockets: bool) -> io::Result<()> {
 /// System calls cannot be restricted on this architecture: refuse to run
 /// rather than leave them open.
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-pub fn restrict_syscalls(_unix_sockets: bool) -> io::Result<()> {
+pub fn restrict_syscalls(_network: NetworkAccess) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "restricting system calls is not supported on this architecture",
@@ -113,11 +144,14 @@ pub fn restrict_syscalls(_unix_sockets: bool) -> io::Result<()> {
 }
 
 /// Instructions allowing system calls other than `socket`, and sockets of
-/// the address `families`, and refusing the others with `EACCES`.
-fn socket_rules(families: &[libc::c_int]) -> Vec<sock_filter> {
-    // Where each part lands: the call check, the family tests, then these.
+/// the address `families`, IP ones only for TCP unless `udp`, and refusing
+/// the others with `EACCES`.
+fn socket_rules(families: &[libc::c_int], udp: bool) -> Vec<sock_filter> {
+    // Where each part lands: the call check, the family tests, the refusal,
+    // the UDP test of IP sockets, the approval.
     let deny = 3 + families.len();
-    let allow = deny + 1;
+    let ip = deny + 1;
+    let allow = if udp { ip } else { ip + 4 };
     let skip = |from: usize, to: usize| (to - from - 1) as u8;
 
     let mut rules = vec![
@@ -126,14 +160,32 @@ fn socket_rules(families: &[libc::c_int]) -> Vec<sock_filter> {
         load(ARG0),
     ];
     for (i, &family) in families.iter().enumerate() {
-        rules.push(jump_eq(family as u32, skip(3 + i, allow), 0));
+        let to = match family {
+            libc::AF_INET | libc::AF_INET6 => ip,
+            _ => allow,
+        };
+        rules.push(jump_eq(family as u32, skip(3 + i, to), 0));
     }
-    rules.extend([ret(EACCES), ret(ALLOW)]);
+    rules.push(ret(EACCES));
+    if !udp {
+        // The type, without flags such as SOCK_NONBLOCK.
+        rules.extend([
+            load(ARG1),
+            and(0xf),
+            jump_eq(libc::SOCK_DGRAM as u32, 0, 1),
+            ret(EACCES),
+        ]);
+    }
+    rules.push(ret(ALLOW));
     rules
 }
 
 fn load(offset: u32) -> sock_filter {
     statement(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS, offset)
+}
+
+fn and(k: u32) -> sock_filter {
+    statement(libc::BPF_ALU | libc::BPF_AND | libc::BPF_K, k)
 }
 
 fn ret(action: u32) -> sock_filter {

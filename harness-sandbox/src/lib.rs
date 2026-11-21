@@ -32,7 +32,7 @@ pub use git::{GitGuard, NewRepository};
 pub use network::NoNetwork;
 pub use profile::Options;
 pub use protect::protect_self;
-pub use seccomp::restrict_syscalls;
+pub use seccomp::{restrict_syscalls, NetworkAccess};
 
 use std::collections::{HashMap, VecDeque};
 use std::ffi::OsString;
