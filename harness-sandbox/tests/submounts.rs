@@ -40,11 +40,6 @@ fn run(sandbox: &Sandbox, script: &str) -> (String, String) {
         .env("PATH", "/usr/bin:/bin")
         .output()
         .unwrap();
-    eprintln!(
-        "DBG status={:?} stderr={}",
-        out.status,
-        String::from_utf8_lossy(&out.stderr)
-    );
     (
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
