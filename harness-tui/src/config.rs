@@ -13,7 +13,7 @@
 //! [sandbox]
 //! # Also allow reading, or changing, these paths; `~` is $HOME.
 //! read = ["/etc/ssl"]
-//! write = ["~/.cache/sccache"]
+//! write = ["~/scratch"]
 //! # Hide these paths even inside a readable or writable folder.
 //! deny = ["~/.ssh", "~/.gnupg"]
 //! # Also let the harness connect to these TCP ports, e.g. for a local model.

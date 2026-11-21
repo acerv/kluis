@@ -51,7 +51,7 @@ thinking = "medium"
 
 [sandbox]
 read = ["/etc/ssl"]
-write = ["~/.cache/sccache"]
+write = ["~/scratch"]
 deny = ["~/.ssh", "~/.gnupg"]
 connect = [11434]
 network = false
@@ -140,7 +140,8 @@ precedence over `api_key`.
   the host.
 - Network access is off by default; allow specific TCP ports or all network
   access. Landlock enforces the TCP allowlist on Linux 6.7+, and the
-  container uses `CLONE_NEWNET` when no network is allowed.
+  container uses `CLONE_NEWNET` when no network is allowed. An allowed port is
+  open on every host, not only locally, and UDP stays closed.
 - Cloud drives and network shares are hidden, and commands can only create
   IP and netlink sockets (Unix ones too with `--network`), so they cannot
   reach the network through other programs or vsock.
