@@ -158,9 +158,14 @@ fn threads_and_programs_still_start() {
 
 /// The error of creating a socket of `family` and `kind`, if any.
 fn socket_error(family: libc::c_int, kind: libc::c_int) -> Option<i32> {
+    protocol_error(family, kind, 0)
+}
+
+/// Like [`socket_error`], for `protocol`.
+fn protocol_error(family: libc::c_int, kind: libc::c_int, protocol: libc::c_int) -> Option<i32> {
     // SAFETY: plain system calls.
     unsafe {
-        let fd = libc::socket(family, kind, 0);
+        let fd = libc::socket(family, kind, protocol);
         if fd < 0 {
             return std::io::Error::last_os_error().raw_os_error();
         }
@@ -234,5 +239,44 @@ fn udp_stays_without_network() {
 fn udp_stays_with_any_network() {
     restricted("udp_stays_with_any_network", "any", || {
         assert_eq!(socket_error(libc::AF_INET6, libc::SOCK_DGRAM), None);
+    });
+}
+
+#[test]
+fn usual_protocols_still_work() {
+    blocked("usual_protocols_still_work", || {
+        for family in [libc::AF_INET, libc::AF_INET6] {
+            assert_eq!(
+                protocol_error(family, libc::SOCK_STREAM, libc::IPPROTO_TCP),
+                None
+            );
+            assert_eq!(
+                protocol_error(family, libc::SOCK_DGRAM, libc::IPPROTO_UDP),
+                None
+            );
+        }
+        let route = libc::NETLINK_ROUTE;
+        assert_eq!(
+            protocol_error(libc::AF_NETLINK, libc::SOCK_RAW, route),
+            None
+        );
+    });
+}
+
+#[test]
+fn other_protocols_are_refused() {
+    // The kernel would look for a module for them, such as SCTP's. Tested
+    // with numbers no module provides, so that a broken filter fails the
+    // test rather than load one.
+    restricted("other_protocols_are_refused", "any", || {
+        for family in [libc::AF_INET, libc::AF_INET6] {
+            for kind in [libc::SOCK_STREAM, libc::SOCK_DGRAM] {
+                assert_eq!(protocol_error(family, kind, 253), Some(libc::EACCES));
+            }
+        }
+        assert_eq!(
+            protocol_error(libc::AF_NETLINK, libc::SOCK_RAW, 31),
+            Some(libc::EACCES)
+        );
     });
 }

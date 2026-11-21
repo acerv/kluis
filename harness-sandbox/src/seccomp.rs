@@ -15,6 +15,7 @@ const NR: u32 = 0;
 const ARCH: u32 = 4;
 const ARG0: u32 = 16;
 const ARG1: u32 = 24;
+const ARG2: u32 = 32;
 
 #[cfg(target_arch = "x86_64")]
 const NATIVE_ARCH: u32 = 0xC000_003E; // AUDIT_ARCH_X86_64
@@ -70,7 +71,10 @@ impl FromStr for NetworkAccess {
 ///
 /// Creating a socket fails with `EACCES` unless it is an IPv4, IPv6 or
 /// netlink one, which a network namespace confines: others, such as vsock,
-/// reach the host or the hypervisor past it. Unix ones are allowed only
+/// reach the host or the hypervisor past it. Those must use a common
+/// protocol, TCP, UDP or ping, or netlink routing: for any other the kernel
+/// would look for a module, loading rarely used code, such as SCTP, that
+/// kernel exploits go through. Unix ones are allowed only
 /// with [`NetworkAccess::Any`]: a sandbox without network still shows
 /// sockets of the host below the folders it shows, such as the ones of an
 /// editor or a chat app, and the programs behind them can reach the
@@ -102,9 +106,13 @@ pub fn restrict_syscalls(network: NetworkAccess) -> io::Result<()> {
         jump_set(libc::CLONE_NEWUSER as u32, 0, 1),
         ret(EPERM),
     ]);
-    let mut families = vec![libc::AF_INET, libc::AF_INET6, libc::AF_NETLINK];
+    let mut families: Vec<(libc::c_int, &[libc::c_int])> = vec![
+        (libc::AF_INET, INET_PROTOCOLS),
+        (libc::AF_INET6, INET6_PROTOCOLS),
+        (libc::AF_NETLINK, &[libc::NETLINK_ROUTE]),
+    ];
     if network == NetworkAccess::Any {
-        families.push(libc::AF_UNIX);
+        families.push((libc::AF_UNIX, &[]));
     }
     program.extend(socket_rules(&families, network != NetworkAccess::Ports));
     let filter = sock_fprog {
@@ -143,38 +151,92 @@ pub fn restrict_syscalls(_network: NetworkAccess) -> io::Result<()> {
     ))
 }
 
+/// IPv4 protocols commands may use: the default for the type, TCP, UDP
+/// and ping.
+const INET_PROTOCOLS: &[libc::c_int] =
+    &[0, libc::IPPROTO_TCP, libc::IPPROTO_UDP, libc::IPPROTO_ICMP];
+
+/// Like [`INET_PROTOCOLS`], for IPv6.
+const INET6_PROTOCOLS: &[libc::c_int] = &[
+    0,
+    libc::IPPROTO_TCP,
+    libc::IPPROTO_UDP,
+    libc::IPPROTO_ICMPV6,
+];
+
+/// An instruction of [`socket_rules`], whose jump, when taken, may lead to
+/// the final approval instead of the next instruction.
+struct Op {
+    op: sock_filter,
+    allows: bool,
+}
+
 /// Instructions allowing system calls other than `socket`, and sockets of
-/// the address `families`, IP ones only for TCP unless `udp`, and refusing
-/// the others with `EACCES`.
-fn socket_rules(families: &[libc::c_int], udp: bool) -> Vec<sock_filter> {
-    // Where each part lands: the call check, the family tests, the refusal,
-    // the UDP test of IP sockets, the approval.
-    let deny = 3 + families.len();
-    let ip = deny + 1;
-    let allow = if udp { ip } else { ip + 4 };
-    let skip = |from: usize, to: usize| (to - from - 1) as u8;
+/// the address `families` with one of their protocols, or any when there
+/// are none listed, IP ones only for TCP unless `udp`, and refusing the
+/// others with `EACCES`.
+fn socket_rules(families: &[(libc::c_int, &[libc::c_int])], udp: bool) -> Vec<sock_filter> {
+    let next = |op| Op { op, allows: false };
+    // Classic BPF only jumps forward: the family tests and their refusal
+    // come first, then a block per family listing protocols, which ends with
+    // its own refusal, and the approval last.
+    let blocks: Vec<Vec<Op>> = families
+        .iter()
+        .map(|&(family, protocols)| {
+            let mut block = Vec::new();
+            if protocols.is_empty() {
+                return block;
+            }
+            if !udp && matches!(family, libc::AF_INET | libc::AF_INET6) {
+                // The type, without flags such as SOCK_NONBLOCK.
+                block.extend(
+                    [
+                        load(ARG1),
+                        and(0xf),
+                        jump_eq(libc::SOCK_DGRAM as u32, 0, 1),
+                        ret(EACCES),
+                    ]
+                    .map(next),
+                );
+            }
+            block.push(next(load(ARG2)));
+            block.extend(protocols.iter().map(|&protocol| Op {
+                op: jump_eq(protocol as u32, 0, 0),
+                allows: true,
+            }));
+            block.push(next(ret(EACCES)));
+            block
+        })
+        .collect();
+
+    let tests = 3;
+    let mut starts = Vec::with_capacity(blocks.len());
+    let mut allow = tests + families.len() + 1;
+    for block in &blocks {
+        starts.push(allow);
+        allow += block.len();
+    }
+    let skip = |from: usize, to: usize| u8::try_from(to - from - 1).expect("jump too long");
 
     let mut rules = vec![
         load(NR),
         jump_eq(libc::SYS_socket as u32, 0, skip(1, allow)),
         load(ARG0),
     ];
-    for (i, &family) in families.iter().enumerate() {
-        let to = match family {
-            libc::AF_INET | libc::AF_INET6 => ip,
-            _ => allow,
+    for (i, &(family, _)) in families.iter().enumerate() {
+        let to = if blocks[i].is_empty() {
+            allow
+        } else {
+            starts[i]
         };
-        rules.push(jump_eq(family as u32, skip(3 + i, to), 0));
+        rules.push(jump_eq(family as u32, skip(tests + i, to), 0));
     }
     rules.push(ret(EACCES));
-    if !udp {
-        // The type, without flags such as SOCK_NONBLOCK.
-        rules.extend([
-            load(ARG1),
-            and(0xf),
-            jump_eq(libc::SOCK_DGRAM as u32, 0, 1),
-            ret(EACCES),
-        ]);
+    for Op { mut op, allows } in blocks.into_iter().flatten() {
+        if allows {
+            op.jt = skip(rules.len(), allow);
+        }
+        rules.push(op);
     }
     rules.push(ret(ALLOW));
     rules

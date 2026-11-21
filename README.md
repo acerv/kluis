@@ -143,8 +143,9 @@ precedence over `api_key`.
   container uses `CLONE_NEWNET` when no network is allowed. An allowed port is
   open on every host, not only locally, and UDP stays closed.
 - Cloud drives and network shares are hidden, and commands can only create
-  IP and netlink sockets (Unix ones too with `--network`), so they cannot
-  reach the network through other programs or vsock.
+  IP and netlink sockets of common protocols (Unix ones too with
+  `--network`), so they cannot reach the network through other programs or
+  vsock, nor make the kernel load rarely used modules.
 - Commands cannot create user namespaces, which most kernel exploits rely on.
 - Private `/tmp`, process/thread limit, virtual memory limit, and chosen
   environment variables passed to commands.

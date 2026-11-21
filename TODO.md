@@ -6,6 +6,9 @@
 - [x] Block Unix sockets without `--network`: they lead to host programs that reach the network
 - [x] Refuse user namespaces, `clone3` and io_uring to commands (kernel attack surface)
 - [x] Allow only the socket families commands need (`AF_INET`, `AF_INET6`, `AF_NETLINK`, `AF_UNIX` with `--network`): `AF_VSOCK` is not isolated by the network namespace and reaches host and hypervisor services, and MCTP, PPPoX, SMC, KCM and `AF_ALG` are open too
+- [x] Allow only common protocols (TCP, UDP, ping, netlink routing): for others the kernel loads a module as root, such as SCTP or L2TP
+- [ ] Running a file of unknown format makes the kernel run `modprobe` for a `binfmt-XXXX` module; seccomp cannot see it, only a host setting (`kernel.modprobe`, `modules_disabled`) can stop it
+- [ ] `/proc/interrupts` and `/proc/pressure` show host activity to commands
 - [x] Give the container its own IPC and UTS namespaces: commands share SysV memory with host programs, and their segments outlive the sandbox
 - [x] Call `protect_self()` in the tool worker: commands can read its environment and write forged results into its pipe to the host
 - [x] Never restart the tool worker from a replaced program: in a writable folder (a build of kl in its own project), a command could rename another program over it, which would run without the seccomp filter
