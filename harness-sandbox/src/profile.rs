@@ -60,6 +60,13 @@ const HOME_SECRETS: &[&str] = &[
     ".pypirc",
     ".gem/credentials",
     ".config/pip",
+    // AI tools, whose settings may hold the keys of the servers they run.
+    ".claude.json",
+    ".claude/.credentials.json",
+    ".codex/auth.json",
+    ".gemini",
+    ".config/github-copilot",
+    ".local/share/opencode/auth.json",
     // Containers.
     ".docker/config.json",
     ".config/containers/auth.json",

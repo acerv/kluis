@@ -258,6 +258,8 @@ fn credentials_in_home_stay_hidden() {
         ".config/gh/hosts.yml",
         ".aws/credentials",
         ".bash_history",
+        ".claude.json",
+        ".codex/auth.json",
         ".config/tool.toml",
     ];
     for file in files {
@@ -276,7 +278,7 @@ fn credentials_in_home_stay_hidden() {
             files.join(" ")
         )
     });
-    for file in &files[..4] {
+    for file in &files[..files.len() - 1] {
         assert!(output.contains(&format!("HIDDEN {file}")), "{output}");
     }
     assert!(output.contains("CONTENT-OF .config/tool.toml"), "{output}");

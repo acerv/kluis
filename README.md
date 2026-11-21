@@ -43,8 +43,8 @@ Want more control? `kl --strict` makes the project read-only, and
 
 The configuration file selects which parts of the container to expose or
 deny to the model. Credentials, keys and shell history in `$HOME` (`~/.ssh`,
-`~/.aws`, `gh` and registry tokens, browser profiles, ...) are always hidden;
-`deny` hides more.
+`~/.aws`, `gh`, registry and AI tool tokens, browser profiles, ...) are
+always hidden; `deny` hides more.
 
 ```toml
 [generic]
