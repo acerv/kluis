@@ -872,3 +872,18 @@ fn own_ipc_and_host_name() {
         );
     }
 }
+
+#[test]
+fn no_core_dumps() {
+    // A crash would hand a core file, as commands shape it, to the host's
+    // handler, such as systemd-coredump running as root; at one byte the
+    // kernel runs none.
+    let out = run(
+        &system(),
+        "grep 'core file' /proc/self/limits; ulimit -c unlimited 2>/dev/null || echo FIXED",
+    );
+    let text = stdout(&out);
+    let limits: Vec<&str> = text.lines().next().unwrap().split_whitespace().collect();
+    assert_eq!(limits[4..7], ["1", "1", "bytes"], "{text}");
+    assert!(text.contains("FIXED"), "{text}");
+}

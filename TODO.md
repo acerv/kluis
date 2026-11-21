@@ -7,6 +7,7 @@
 - [x] Refuse user namespaces, `clone3` and io_uring to commands (kernel attack surface)
 - [x] Allow only the socket families commands need (`AF_INET`, `AF_INET6`, `AF_NETLINK`, `AF_UNIX` with `--network`): `AF_VSOCK` is not isolated by the network namespace and reaches host and hypervisor services, and MCTP, PPPoX, SMC, KCM and `AF_ALG` are open too
 - [x] Allow only common protocols (TCP, UDP, ping, netlink routing): for others the kernel loads a module as root, such as SCTP or L2TP
+- [x] No core dumps: a crash handed a core file shaped by commands to the host's handler, such as systemd-coredump running as root
 - [ ] Running a file of unknown format makes the kernel run `modprobe` for a `binfmt-XXXX` module; seccomp cannot see it, only a host setting (`kernel.modprobe`, `modules_disabled`) can stop it
 - [ ] `/proc/interrupts` and `/proc/pressure` show host activity to commands
 - [x] Give the container its own IPC and UTS namespaces: commands share SysV memory with host programs, and their segments outlive the sandbox

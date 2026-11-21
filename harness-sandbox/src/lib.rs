@@ -59,6 +59,9 @@ pub struct Sandbox {
     max_tmp_size: Option<u64>,
 }
 
+/// Core file size limit of commands, in bytes: see [`Sandbox::container`].
+const CORE_LIMIT: u64 = 1;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Network {
     /// Private network namespace (`CLONE_NEWNET`) with no interfaces up.
@@ -174,7 +177,8 @@ impl Sandbox {
 
     /// A container showing only the allowed paths, at the same place, plus
     /// `/dev`, `/proc` and a private `/tmp`, with its own IPC and host name.
-    /// Commands run in it as the current user, on the host network.
+    /// Commands run in it as the current user, on the host network, and
+    /// leave no core dumps.
     ///
     /// Fails if a path is missing or not UTF-8. Starting a command in it
     /// fails without user namespaces, or without Landlock TCP support
@@ -232,6 +236,11 @@ impl Sandbox {
                 }
             }
         }
+        // A crash would hand a core file, as commands shape it, to the
+        // host's handler, such as systemd-coredump running as root. One byte
+        // is the limit at which the kernel runs no core handler at all; as
+        // the hard limit too, commands cannot raise it.
+        container.setrlimit(Rlimit::Core, CORE_LIMIT, CORE_LIMIT);
         if let Some(max) = self.max_processes {
             if max == 0 {
                 return Err(SandboxError {
