@@ -368,6 +368,15 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
         agent = agent.with_web_fetch()?;
     }
 
+    // Commands can write a repository only in a writable folder.
+    let writable = !args.no_sandbox && (!args.strict || !args.allow_write.is_empty());
+    let git_warning = writable.then(sandbox::bare_repository_warning).flatten();
+    let full_screen =
+        args.prompt.is_empty() && io::stdin().is_terminal() && io::stdout().is_terminal();
+    if let Some(warning) = git_warning.as_ref().filter(|_| !full_screen) {
+        eprintln!("warning: {warning}");
+    }
+
     if !args.prompt.is_empty() {
         let text = args.prompt.join(" ");
         prompt_and_persist(&mut agent, session.as_mut(), git_guard.as_mut(), &text).await?;
@@ -375,18 +384,19 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
     }
 
     let sandbox = sandbox_label(&args);
-    if io::stdin().is_terminal() && io::stdout().is_terminal() {
+    if full_screen {
         let status = Status {
             sandbox,
             folder: current_folder(),
         };
-        let banner = vec![
+        let mut banner = vec![
             BannerLine::new(format!("kluis v{}", env!("CARGO_PKG_VERSION"))),
             auth_line(&model, credential),
             BannerLine::new(sandbox_details(&args, &cwd)),
             BannerLine::new(context_line(&agents)),
             BannerLine::new(session_line(session.as_ref(), agent.history().len())),
         ];
+        banner.extend(git_warning.map(BannerLine::warning));
         let history = config::history_path().map(History::load);
         return harness_tui::run(
             agent,

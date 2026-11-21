@@ -22,6 +22,8 @@ struct RunResult {
     system: String,
     messages: Vec<Value>,
     output: String,
+    /// What `kl` printed to its standard error.
+    stderr: String,
 }
 
 /// Start a mock OpenAI SSE server that answers the first request with a
@@ -84,6 +86,7 @@ fn start_mock_llm(make_cmd: impl FnOnce(u16) -> String) -> (u16, JoinHandle<RunR
             system,
             messages,
             output,
+            stderr: String::new(),
         }
     });
 
@@ -125,7 +128,9 @@ fn run_bash_in(
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    server.join().unwrap()
+    let mut result = server.join().unwrap();
+    result.stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    result
 }
 
 /// Run `kl` with a single `bash` tool call in a fresh folder and return the
@@ -749,4 +754,31 @@ fn programs_left_behind_are_reaped() {
             .into()
     });
     assert_eq!(output.trim(), "0", "{output}");
+}
+
+/// What `kl` warns about git with `config` as the only git configuration.
+fn git_warning(config: &str) -> String {
+    let home = tempdir();
+    let cwd = tempdir();
+    let gitconfig = home.path().join("gitconfig");
+    std::fs::write(&gitconfig, config).unwrap();
+    let env = [
+        ("GIT_CONFIG_NOSYSTEM", "1"),
+        ("GIT_CONFIG_GLOBAL", gitconfig.to_str().unwrap()),
+    ];
+    let result = run_bash_in(cwd.path(), home.path(), &[], &env, |_| "true".into());
+    result.stderr
+}
+
+#[test]
+fn warns_when_git_uses_repositories_under_any_name() {
+    // Git would take a folder of commands for a repository.
+    let stderr = git_warning("");
+    assert!(stderr.contains("safe.bareRepository explicit"), "{stderr}");
+}
+
+#[test]
+fn no_git_warning_when_only_dot_git_is_used() {
+    let stderr = git_warning("[safe]\n\tbareRepository = explicit\n");
+    assert!(!stderr.contains("safe.bareRepository"), "{stderr}");
 }

@@ -100,3 +100,23 @@ pub fn executor(args: &Args, cwd: &Path) -> Result<(Executor, GitGuard), Error> 
     })?;
     Ok((executor, git_guard))
 }
+
+/// A warning when git on the host would use a repository that commands
+/// create under any name, not only `.git`: git takes any folder holding
+/// `HEAD`, `objects` and `refs` for one, and runs what its config names.
+/// Nothing without git.
+pub fn bare_repository_warning() -> Option<String> {
+    // From `/`, so that a repository's own config does not answer: git
+    // ignores this setting there.
+    let out = std::process::Command::new("git")
+        .args(["config", "--get", "safe.bareRepository"])
+        .current_dir("/")
+        .output()
+        .ok()?;
+    let value = String::from_utf8_lossy(&out.stdout);
+    (!value.trim().eq_ignore_ascii_case("explicit")).then(|| {
+        "git would run repositories that commands create under any name: run \
+         `git config --global safe.bareRepository explicit`"
+            .to_owned()
+    })
+}
