@@ -10,7 +10,10 @@ use std::path::{Path, PathBuf};
 use rustix::fs::{renameat_with, RenameFlags, CWD};
 use rustix::io::Errno;
 
-use crate::{checked, collect_git, resolve_denied, Sandbox, SandboxError};
+use crate::{
+    checked, collect_git, read_mountinfo, remote_points, resolve_denied, GitScan, Sandbox,
+    SandboxError,
+};
 
 /// Name a disabled `.git` gets, with a number when it is taken.
 const DISABLED: &str = ".git.kl-disabled";
@@ -31,10 +34,22 @@ pub struct GitGuard {
     /// Every writable path: a `.git` allowed itself is the user's choice.
     writable: Vec<PathBuf>,
     denied: Vec<(PathBuf, bool)>,
+    /// Mounts the sandbox hides, as on a network filesystem.
+    hidden: Vec<PathBuf>,
     known: HashSet<PathBuf>,
 }
 
-/// A `.git` that [`GitGuard::disable_new`] found.
+/// What [`GitGuard::disable_new`] found.
+#[derive(Debug)]
+pub struct GitCheck {
+    /// Each new `.git`.
+    pub new: Vec<NewRepository>,
+    /// The first folder that could not be read, where a command could hide
+    /// one.
+    pub unchecked: Option<SandboxError>,
+}
+
+/// A new `.git` in a writable folder.
 #[derive(Debug)]
 pub struct NewRepository {
     pub path: PathBuf,
@@ -44,6 +59,9 @@ pub struct NewRepository {
 
 impl GitGuard {
     /// Remember the repositories in the writable folders of `sandbox`.
+    ///
+    /// Fails if a folder there cannot be read, as a repository there could
+    /// not be told apart from a new one.
     pub fn new(sandbox: &Sandbox) -> Result<Self, SandboxError> {
         let writable = sandbox
             .write
@@ -64,35 +82,65 @@ impl GitGuard {
             })?;
             roots.push((path, canon));
         }
+        let shown = sandbox
+            .read
+            .iter()
+            .map(|path| checked(path))
+            .collect::<Result<Vec<_>, _>>()?;
+        let allowed: Vec<&Path> = shown
+            .iter()
+            .chain(&writable)
+            .map(PathBuf::as_path)
+            .collect();
+        let roots_ref: Vec<_> = roots
+            .iter()
+            .map(|(p, c)| (p.as_path(), c.as_path()))
+            .collect();
+        let hidden = remote_points(&roots_ref, &allowed, &read_mountinfo()?);
 
         let mut guard = Self {
             roots,
             writable,
             denied: resolve_denied(&sandbox.deny)?,
+            hidden,
             known: HashSet::new(),
         };
-        guard.known = guard.scan().into_iter().collect();
+        guard.known = guard.scan().complete()?.into_iter().collect();
         Ok(guard)
     }
 
     /// Rename each `.git` that appeared since the guard started.
-    pub fn disable_new(&mut self) -> Vec<NewRepository> {
-        self.scan()
+    pub fn disable_new(&mut self) -> GitCheck {
+        let scan = self.scan();
+        let new = scan
+            .found
             .into_iter()
             .filter(|path| !self.known.contains(path))
             .map(|path| {
                 let moved_to = disable(&path);
                 NewRepository { path, moved_to }
             })
-            .collect()
+            .collect();
+        GitCheck {
+            new,
+            unchecked: scan.unchecked,
+        }
     }
 
-    fn scan(&self) -> Vec<PathBuf> {
+    fn scan(&self) -> GitScan {
         let writable: Vec<&PathBuf> = self.writable.iter().collect();
-        self.roots
-            .iter()
-            .flat_map(|(root, canon)| collect_git(root, canon, &writable, &self.denied))
-            .collect()
+        let mut scan = GitScan::default();
+        for (root, canon) in &self.roots {
+            collect_git(
+                root,
+                canon,
+                &writable,
+                &self.denied,
+                &self.hidden,
+                &mut scan,
+            );
+        }
+        scan
     }
 }
 

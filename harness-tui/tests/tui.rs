@@ -1231,3 +1231,34 @@ fn git_guard_runs_only_after_tools_that_change_files() {
     assert!(notices[0].contains(".git.kl-disabled"), "{notices:?}");
     assert!(!dir.path().join(".git").exists());
 }
+
+#[test]
+fn git_guard_warns_about_folders_it_cannot_read() {
+    use std::os::unix::fs::PermissionsExt;
+
+    use harness_sandbox::{GitGuard, Sandbox};
+    use harness_tui::git_notices;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut guard = GitGuard::new(&Sandbox::new().allow_write(dir.path())).unwrap();
+    let sub = dir.path().join("sub");
+    std::fs::create_dir(&sub).unwrap();
+    let mode =
+        |mode| std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(mode)).unwrap();
+    let call = ToolCall {
+        call_id: "c1".into(),
+        fn_name: "bash".into(),
+        fn_arguments: serde_json::json!({}),
+        thought_signatures: None,
+    };
+    let prompt = [ChatMessage::assistant(MessageContent::from_tool_calls(
+        vec![call],
+    ))];
+
+    mode(0o300);
+    let notices = git_notices(Some(&mut guard), &prompt);
+    mode(0o700);
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert!(notices[0].starts_with("[warning: "), "{notices:?}");
+    assert!(notices[0].contains(&*sub.to_string_lossy()), "{notices:?}");
+}

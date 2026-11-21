@@ -18,8 +18,10 @@ fn repository(dir: &Path) -> PathBuf {
 
 /// Where the guard moved each new repository.
 fn disable_new(guard: &mut GitGuard) -> Vec<(PathBuf, PathBuf)> {
-    guard
-        .disable_new()
+    let check = guard.disable_new();
+    assert!(check.unchecked.is_none(), "{:?}", check.unchecked);
+    check
+        .new
         .into_iter()
         .map(|repo| (repo.path, repo.moved_to.unwrap()))
         .collect()
@@ -102,4 +104,42 @@ fn read_only_and_denied_folders_are_left_alone() {
     let in_denied = repository(&denied);
     assert!(disable_new(&mut guard).is_empty());
     assert!(in_read.exists() && in_denied.exists());
+}
+
+/// Set the permissions of `dir` to `mode`.
+fn chmod(dir: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+#[test]
+fn unreadable_folder_stops_the_guard() {
+    // A repository there could not be told apart from a new one.
+    let dir = tempfile::tempdir().unwrap();
+    let sub = dir.path().join("sub");
+    std::fs::create_dir(&sub).unwrap();
+    chmod(&sub, 0o300);
+    let res = GitGuard::new(&Sandbox::new().allow_write(dir.path()));
+    chmod(&sub, 0o700);
+    let err = res.unwrap_err();
+    assert!(
+        err.message.starts_with(&format!("{}:", sub.display())),
+        "{err}"
+    );
+}
+
+#[test]
+fn repository_in_an_unreadable_folder_is_reported() {
+    // A command can still use it by name.
+    let dir = tempfile::tempdir().unwrap();
+    let mut guard = GitGuard::new(&Sandbox::new().allow_write(dir.path())).unwrap();
+
+    let sub = dir.path().join("sub");
+    repository(&sub);
+    chmod(&sub, 0o300);
+    let check = guard.disable_new();
+    chmod(&sub, 0o700);
+    assert!(check.new.is_empty());
+    let err = check.unchecked.unwrap();
+    assert!(err.message.contains(&*sub.to_string_lossy()), "{err}");
 }

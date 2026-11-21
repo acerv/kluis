@@ -226,6 +226,29 @@ fn git_folder_writable_when_allowed() {
 }
 
 #[test]
+fn unreadable_folder_refuses_the_container() {
+    // `chmod 300` hides its `.git` from a scan, not from commands.
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, _) = repo();
+    let mode =
+        |mode| std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(mode)).unwrap();
+    mode(0o300);
+    let res = system().allow_write(dir.path()).container();
+    mode(0o700);
+    let err = res.unwrap_err();
+    assert!(err.message.contains("could hide a .git"), "{err}");
+}
+
+#[test]
+fn git_that_cannot_be_mounted_refuses_the_container() {
+    let (dir, _) = folder();
+    let git = dir.path().join(OsStr::from_bytes(b"x\xff")).join(".git");
+    std::fs::create_dir_all(&git).unwrap();
+    let err = system().allow_write(dir.path()).container().unwrap_err();
+    assert!(err.message.contains("not UTF-8"), "{err}");
+}
+
+#[test]
 fn kept_read_only_inside_writable_folder() {
     let (dir, file) = folder();
     let sandbox = system().allow_write(dir.path()).keep_read_only(&file);
@@ -505,21 +528,6 @@ fn nested_git_under_symlinked_writable_root_does_not_expose_canonical() {
         std::fs::read_to_string(git.join("config")).unwrap(),
         "cfg\n"
     );
-}
-
-#[test]
-fn non_utf8_nested_git_does_not_fail_startup() {
-    let (dir, _) = folder();
-    let bad = dir
-        .path()
-        .join(OsStr::from_bytes(b"bad\xffdir"))
-        .join(".git");
-    std::fs::create_dir_all(&bad).unwrap();
-
-    let sandbox = system().allow_write(dir.path());
-    let out = run(&sandbox, "echo ok");
-    assert!(out.status.success(), "{}", stderr(&out));
-    assert_eq!(stdout(&out), "ok\n");
 }
 
 #[test]

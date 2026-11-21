@@ -28,7 +28,7 @@ mod protect;
 mod seccomp;
 
 pub use env::command_env;
-pub use git::{GitGuard, NewRepository};
+pub use git::{GitCheck, GitGuard, NewRepository};
 pub use network::NoNetwork;
 pub use profile::Options;
 pub use protect::protect_self;
@@ -39,11 +39,14 @@ use std::ffi::OsString;
 use std::fmt;
 use std::io;
 use std::os::unix::ffi::OsStringExt;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
 use hakoniwa::landlock::{CompatMode, Resource, Ruleset};
 use hakoniwa::{Container, MountOptions, Namespace, Rlimit, Runctl};
 use indexmap::IndexSet;
+use nix::unistd::Uid;
+use rustix::fs::{access, Access};
 use thiserror::Error;
 use walkdir::WalkDir;
 
@@ -306,20 +309,32 @@ impl Sandbox {
             }
         }
         let all_writable: Vec<_> = all.iter().filter(|(_, w)| *w).map(|(p, _)| p).collect();
+        let allowed: Vec<&Path> = all.iter().map(|(path, _)| path.as_path()).collect();
+        let mountinfo = read_mountinfo()?;
 
+        // Every `.git` must be found and kept read-only, or commands could
+        // change one that git on the host then runs. Hidden mounts are out
+        // of their reach.
+        let writable_roots: Vec<_> = canon_mounts
+            .iter()
+            .filter(|(_, _, w)| *w)
+            .map(|(root, canon, _)| (root.as_path(), canon.as_path()))
+            .collect();
+        let remote = remote_points(&writable_roots, &allowed, &mountinfo);
+        let mut scan = GitScan::default();
+        for (root, canon_root) in &writable_roots {
+            collect_git(
+                root,
+                canon_root,
+                &all_writable,
+                &denied_targets,
+                &remote,
+                &mut scan,
+            );
+        }
         let mut ro_paths = IndexSet::new();
-        for (root, canon_root, writable) in &canon_mounts {
-            if !*writable {
-                continue;
-            }
-            for git in collect_git(root, canon_root, &all_writable, &denied_targets) {
-                // Skip `.git` entries that vanished or cannot be mounted
-                // (e.g. non-UTF-8 paths) instead of failing startup.
-                let mut found = IndexSet::new();
-                if resolve_read_only(&canon_mounts, &git, false, &mut found).is_ok() {
-                    ro_paths.extend(found);
-                }
-            }
+        for git in scan.complete()? {
+            resolve_read_only(&canon_mounts, &git, false, &mut ro_paths)?;
         }
         for path in &self.read_only {
             resolve_read_only(&canon_mounts, path, true, &mut ro_paths)?;
@@ -353,8 +368,7 @@ impl Sandbox {
         // up a file goes to a program or a server that can reach the
         // network, e.g. a cloud drive: hide those, like denied paths,
         // unless allowed themselves.
-        let allowed: Vec<&Path> = all.iter().map(|(path, _)| path.as_path()).collect();
-        let remote = remote_mounts(&canon_mounts, &allowed, &mask_paths, &read_mountinfo()?)?;
+        let remote = remote_mounts(&canon_mounts, &allowed, &mask_paths, &mountinfo)?;
         for (path, is_dir) in remote {
             mask_paths.push((path.clone(), is_dir));
             effective.push((path, false));
@@ -454,28 +468,24 @@ fn covered_by_denied(path: &Path, denied: &[(PathBuf, bool)]) -> bool {
         .any(|(d, _)| path.starts_with(d) || canon.as_deref().is_some_and(|c| c.starts_with(d)))
 }
 
-/// The mounts of `mountinfo` on a filesystem that could reach the network,
-/// below one of the `roots` (a mount path, its canonical path, and whether
-/// it is writable), as they show in the container.
+/// The mount points of `mountinfo` on a filesystem that could reach the
+/// network, below one of the `roots` (a mount path and its canonical
+/// path), as they show in the container: the sandbox hides them.
 ///
-/// Each comes with whether it is a directory. Mounts at or above an
-/// `allowed` path stay, as do mounts below a `hidden` one or below another
-/// returned mount, which hiding already covers. So do mounts this user
-/// cannot reach, whose program is gone or which deny access: the sandbox,
-/// running as the same user, cannot reach them either.
-fn remote_mounts(
-    roots: &[(PathBuf, PathBuf, bool)],
+/// Mounts at or above an `allowed` path stay, as do mounts below another
+/// returned one, which hiding already covers.
+pub(crate) fn remote_points(
+    roots: &[(&Path, &Path)],
     allowed: &[&Path],
-    hidden: &[(PathBuf, bool)],
     mountinfo: &str,
-) -> Result<Vec<(PathBuf, bool)>, SandboxError> {
+) -> Vec<PathBuf> {
     // Only the last mount on a path shows: it covers the earlier ones,
     // e.g. a disk mounted over its automount point.
     let top: HashMap<&str, &str> = mountinfo.lines().filter_map(mount_point_and_type).collect();
     let mut found = Vec::new();
     for (point, _) in top.into_iter().filter(|(_, fstype)| !is_local(fstype)) {
         let point = PathBuf::from(unescape(point));
-        for (mount, canon, _) in roots {
+        for (mount, canon) in roots {
             let Some(rest) = point
                 .strip_prefix(canon)
                 .ok()
@@ -484,9 +494,7 @@ fn remote_mounts(
                 continue;
             };
             let shown = mount.join(rest);
-            if !allowed.iter().any(|path| path.starts_with(&shown))
-                && !hidden.iter().any(|(path, _)| shown.starts_with(path))
-            {
+            if !allowed.iter().any(|path| path.starts_with(&shown)) {
                 found.push(shown);
             }
         }
@@ -494,8 +502,31 @@ fn remote_mounts(
     // Sorted, a path comes right before the ones below it.
     found.sort();
     found.dedup_by(|below, above| below.starts_with(above));
+    found
+}
+
+/// The [`remote_points`] of `mountinfo` below `roots` (a mount path, its
+/// canonical path, and whether it is writable) to hide, and whether each
+/// is a directory.
+///
+/// Mounts below a `hidden` path stay, which hiding already covers. So do
+/// mounts this user cannot reach, whose program is gone or which deny
+/// access: the sandbox, running as the same user, cannot reach them either.
+fn remote_mounts(
+    roots: &[(PathBuf, PathBuf, bool)],
+    allowed: &[&Path],
+    hidden: &[(PathBuf, bool)],
+    mountinfo: &str,
+) -> Result<Vec<(PathBuf, bool)>, SandboxError> {
+    let roots: Vec<_> = roots
+        .iter()
+        .map(|(mount, canon, _)| (mount.as_path(), canon.as_path()))
+        .collect();
     let mut out = Vec::new();
-    for path in found {
+    for path in remote_points(&roots, allowed, mountinfo) {
+        if hidden.iter().any(|(hidden, _)| path.starts_with(hidden)) {
+            continue;
+        }
         match std::fs::metadata(&path) {
             Ok(meta) => out.push((path, meta.is_dir())),
             Err(e)
@@ -561,7 +592,7 @@ fn unescape(field: &str) -> OsString {
 }
 
 /// The mount table of this namespace.
-fn read_mountinfo() -> Result<String, SandboxError> {
+pub(crate) fn read_mountinfo() -> Result<String, SandboxError> {
     std::fs::read_to_string("/proc/self/mountinfo").map_err(|e| SandboxError {
         message: format!("/proc/self/mountinfo: {e}"),
     })
@@ -594,22 +625,65 @@ fn map_denied(
         .collect()
 }
 
-/// `.git` folders and files inside `root`, unless already covered by
-/// `writable` or `denied`.
+/// What [`collect_git`] found in the writable folders.
+#[derive(Debug, Default)]
+pub(crate) struct GitScan {
+    /// `.git` folders and files.
+    pub found: Vec<PathBuf>,
+    /// The first folder it could not look into, where a command could hide
+    /// one.
+    pub unchecked: Option<SandboxError>,
+}
+
+impl GitScan {
+    /// The `.git` entries, or an error if a folder could not be checked.
+    pub fn complete(self) -> Result<Vec<PathBuf>, SandboxError> {
+        match self.unchecked {
+            Some(err) => Err(err),
+            None => Ok(self.found),
+        }
+    }
+}
+
+/// Add to `scan` the `.git` folders and files inside `root`, unless
+/// already covered by `writable`, or below `denied` paths or `hidden`
+/// mounts, which commands cannot reach.
+///
+/// Commands can make a folder unreadable (`chmod 300`) and still use a
+/// `.git` inside it by name, so a folder that cannot be read is reported,
+/// not skipped.
 pub(crate) fn collect_git(
     root: &Path,
     canon_root: &Path,
     writable: &[&PathBuf],
     denied: &[(PathBuf, bool)],
-) -> Vec<PathBuf> {
-    let mut found = Vec::new();
+    hidden: &[PathBuf],
+    scan: &mut GitScan,
+) {
     if !std::fs::metadata(root).is_ok_and(|m| m.is_dir()) {
-        return found;
+        return;
     }
     let mut it = WalkDir::new(root).into_iter();
     while let Some(entry) = it.next() {
-        let Ok(entry) = entry else {
-            continue;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                let path = err.path().unwrap_or(root);
+                // The first one is enough to act on: commands could create
+                // any number of them.
+                if scan.unchecked.is_none() && writable_by_commands(path) {
+                    scan.unchecked = Some(SandboxError {
+                        message: format!(
+                            "{}: {}: a command could hide a .git there; make it \
+                             readable or hide it",
+                            path.display(),
+                            err.io_error()
+                                .map_or_else(|| err.to_string(), ToString::to_string)
+                        ),
+                    });
+                }
+                continue;
+            }
         };
         if entry.depth() == 0 {
             continue;
@@ -617,7 +691,7 @@ pub(crate) fn collect_git(
         let path = entry.path();
         if entry.file_name() == ".git" {
             if path.exists() && !writable.iter().any(|w| w.starts_with(path)) {
-                found.push(path.to_path_buf());
+                scan.found.push(path.to_path_buf());
             }
             if entry.file_type().is_dir() {
                 it.skip_current_dir();
@@ -627,16 +701,26 @@ pub(crate) fn collect_git(
         // Real directories (not symlinks) have canonical paths under
         // `canon_root` without needing another syscall.
         if entry.file_type().is_dir()
-            && !denied.is_empty()
-            && path.strip_prefix(root).is_ok_and(|rel| {
-                let canon = canon_root.join(rel);
-                path_or_canon_denied(path, &canon, denied)
-            })
+            && (hidden.iter().any(|mount| mount == path)
+                || !denied.is_empty()
+                    && path.strip_prefix(root).is_ok_and(|rel| {
+                        let canon = canon_root.join(rel);
+                        path_or_canon_denied(path, &canon, denied)
+                    }))
         {
             it.skip_current_dir();
         }
     }
-    found
+}
+
+/// Whether commands could have written into `path`, which could not be
+/// read. Only a folder of another user that they cannot write to is safe
+/// to leave unchecked, such as the data folder of a database container:
+/// commands, running as this user, could make one of theirs unreadable.
+fn writable_by_commands(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).map_or(true, |meta| {
+        meta.uid() == Uid::effective().as_raw() || access(path, Access::WRITE_OK).is_ok()
+    })
 }
 
 /// Resolve `raw` while collecting its target (when inside a writable mount

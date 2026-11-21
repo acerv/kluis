@@ -142,23 +142,25 @@ pub fn git_notices(guard: Option<&mut GitGuard>, messages: &[ChatMessage]) -> Ve
     let Some(guard) = guard.filter(|_| changes_files) else {
         return Vec::new();
     };
-    guard
-        .disable_new()
+    let check = guard.disable_new();
+    let new = check.new.into_iter().map(|repo| match repo.moved_to {
+        Ok(to) => format!(
+            "[a command created the git repository {}: renamed to {}, check its \
+             config and hooks before renaming it back]",
+            repo.path.display(),
+            to.display()
+        ),
+        Err(err) => format!(
+            "[warning: a command created the git repository {} and it could not \
+             be disabled ({err}): check its config and hooks before using git there]",
+            repo.path.display()
+        ),
+    });
+    let unchecked = check
+        .unchecked
         .into_iter()
-        .map(|repo| match repo.moved_to {
-            Ok(to) => format!(
-                "[a command created the git repository {}: renamed to {}, check its \
-                 config and hooks before renaming it back]",
-                repo.path.display(),
-                to.display()
-            ),
-            Err(err) => format!(
-                "[warning: a command created the git repository {} and it could not \
-                 be disabled ({err}): check its config and hooks before using git there]",
-                repo.path.display()
-            ),
-        })
-        .collect()
+        .map(|err| format!("[warning: {err}; check it before using git there]"));
+    new.chain(unchecked).collect()
 }
 
 /// The start of a session `id`: its creation date and time.

@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
-use harness_sandbox::Sandbox;
+use harness_sandbox::{GitGuard, Sandbox};
 
 /// Set in the test that re-runs itself in a user and mount namespace.
 const CHILD: &str = "HARNESS_TEST_SUBMOUNTS_CHILD";
@@ -240,6 +240,26 @@ fn fuse_mount_in_writable_folder_is_hidden() {
         let (_, err) = run(&sandbox, &format!("touch {}/leak-me", drive.display()));
         assert!(!err.is_empty());
         assert!(!fuse.lookups().contains(&"leak-me".into()));
+    });
+}
+
+#[test]
+fn hidden_fuse_mounts_are_not_checked_for_git() {
+    // Commands cannot reach them, and a live one would get the requests.
+    in_namespace("hidden_fuse_mounts_are_not_checked_for_git", |dir| {
+        let (dir, drive) = home(dir);
+        let dead = dir.join("dead");
+        std::fs::create_dir(&dead).unwrap();
+        let fuse = Fuse::mount(&drive, true);
+        Fuse::mount(&dead, false);
+        let sandbox = system().allow_write(&dir);
+
+        let mut guard = GitGuard::new(&sandbox).unwrap();
+        let check = guard.disable_new();
+        assert!(check.new.is_empty() && check.unchecked.is_none());
+        let (out, err) = run(&sandbox, &format!("cat {}/mount.txt", dir.display()));
+        assert_eq!(out, "plain", "{err}");
+        assert!(fuse.lookups().is_empty(), "{:?}", fuse.lookups());
     });
 }
 
