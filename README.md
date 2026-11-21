@@ -63,6 +63,22 @@ max_memory = "4G"
 env = ["CC", "CFLAGS"]
 ```
 
+| Key | What it does | Default |
+|---|---|---|
+| `generic.model` | Model to use | `deepseek-chat` |
+| `generic.thinking` | Thinking effort: `default`, `low`, `medium`, `high` | `default` |
+| `sandbox.read` | Extra folders the model can read | none |
+| `sandbox.write` | Extra folders the model can change | none |
+| `sandbox.deny` | Paths to hide, on top of the built-in credentials | none |
+| `sandbox.connect` | TCP ports the model can connect to | none |
+| `sandbox.network` | Allow any network | `false` |
+| `sandbox.max_processes` | Processes and threads at once | `1024` |
+| `sandbox.tmp_size` | Size of the private `/tmp` | a quarter of RAM |
+| `sandbox.max_memory` | Virtual memory limit per command | none |
+| `sandbox.env` | Environment variables passed to commands | none |
+
+Paths may start with `~`; sizes take a `K`, `M` or `G` suffix.
+
 Lists add up with the matching command-line options, and switches turn on when
 either the file or the CLI enables them.
 
