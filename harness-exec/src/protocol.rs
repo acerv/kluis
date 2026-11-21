@@ -22,8 +22,19 @@ pub const RETAINED_BUF_CAP: usize = 64 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
-    Call { id: u64, name: String, args: Value },
-    Cancel { id: u64 },
+    Call {
+        id: u64,
+        name: String,
+        args: Value,
+    },
+    Cancel {
+        id: u64,
+    },
+    /// Stop what commands left running in the background, answered by an
+    /// empty result once they are gone.
+    StopBackground {
+        id: u64,
+    },
 }
 
 /// Messages sent from the sandboxed tool worker to the host over `stdout`.

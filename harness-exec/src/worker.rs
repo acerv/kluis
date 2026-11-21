@@ -19,9 +19,13 @@ type InFlightMap = Arc<Mutex<HashMap<u64, (u64, oneshot::Sender<()>)>>>;
 
 /// Run the NDJSON tool worker on `stdin`/`stdout` in `cwd`.
 ///
+/// `below_init` tells whether it runs below the container's init (see
+/// [`harness_sandbox::start_init`]), where it can stop what commands leave
+/// running.
+///
 /// Refuses to run when `stdin` is an interactive terminal so accidentally
 /// invoking the internal worker mode fails immediately instead of hanging.
-pub async fn run_worker(cwd: PathBuf, max_memory: Option<u64>) -> io::Result<()> {
+pub async fn run_worker(cwd: PathBuf, max_memory: Option<u64>, below_init: bool) -> io::Result<()> {
     if io::stdin().is_terminal() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -35,12 +39,18 @@ pub async fn run_worker(cwd: PathBuf, max_memory: Option<u64>) -> io::Result<()>
     if let Some(bytes) = max_memory {
         ctx.bash.pre_exec = Some(Arc::new(move || harness_sandbox::limit_memory(bytes)));
     }
-    run_worker_io(tokio::io::stdin(), tokio::io::stdout(), ctx).await
+    run_worker_io(tokio::io::stdin(), tokio::io::stdout(), ctx, below_init).await
 }
 
 /// Core async worker loop decoupled from stdio so it can be tested directly
-/// over in-memory duplex pipes.
-pub async fn run_worker_io<R, W>(reader: R, writer: W, ctx: ToolContext) -> io::Result<()>
+/// over in-memory duplex pipes. Without `below_init`, stopping background
+/// programs does nothing.
+pub async fn run_worker_io<R, W>(
+    reader: R,
+    writer: W,
+    ctx: ToolContext,
+    below_init: bool,
+) -> io::Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -128,6 +138,22 @@ where
                                     });
                                 }
                             }
+                        });
+                    }
+                    Ok(Request::StopBackground { id }) => {
+                        let out_tx_task = out_tx.clone();
+                        let done_token = tasks_done_tx.clone();
+                        tokio::spawn(async move {
+                            let _done = done_token;
+                            if below_init {
+                                let _ =
+                                    tokio::task::spawn_blocking(harness_sandbox::stop_others).await;
+                            }
+                            let _ = out_tx_task.send(Response::Result {
+                                id,
+                                content: "{}".into(),
+                                details: None,
+                            });
                         });
                     }
                     Ok(Request::Cancel { id }) => {

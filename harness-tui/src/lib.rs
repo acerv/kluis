@@ -256,6 +256,9 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
                     &prompt,
                 )
                 .await?;
+                // Before the git check: a program left running could
+                // recreate a repository right after it.
+                agent.stop_background().await;
                 let notices = git_notices(git_guard.as_mut(), &agent.history()[prev_len..]);
                 if quit {
                     // Once the screen is back.

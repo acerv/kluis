@@ -163,6 +163,29 @@ impl SandboxExecutor {
         (ToolResponse::from_tool_call(call, content), None)
     }
 
+    /// Stop what commands left running in the background, such as a program
+    /// started with `setsid`, and wait until it is gone. Call it when no
+    /// call runs.
+    pub async fn stop_background(&self) {
+        let alive = self.worker.lock().is_ok_and(|guard| {
+            guard
+                .as_ref()
+                .is_some_and(|w| w.alive.load(Ordering::Acquire))
+        });
+        // A dead worker took its container down with it.
+        if !alive {
+            return;
+        }
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        if let Ok((_, mut rx)) = self.send_call(id, &Request::StopBackground { id }) {
+            while let Some(resp) = rx.recv().await {
+                if matches!(resp, Response::Result { .. }) {
+                    break;
+                }
+            }
+        }
+    }
+
     fn send_call(
         &self,
         id: u64,

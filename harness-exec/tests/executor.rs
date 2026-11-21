@@ -71,7 +71,8 @@ async fn worker_runs_parallel_calls_streams_and_cancels_individually() {
         ..ToolContext::default()
     };
 
-    let worker = tokio::spawn(async move { run_worker_io(worker_read, worker_write, ctx).await });
+    let worker =
+        tokio::spawn(async move { run_worker_io(worker_read, worker_write, ctx, false).await });
     let mut lines = BufReader::new(host_read).lines();
 
     // First message is Ready.

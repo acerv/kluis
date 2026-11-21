@@ -14,6 +14,7 @@
 - [x] Call `protect_self()` in the tool worker: commands can read its environment and write forged results into its pipe to the host
 - [x] Never restart the tool worker from a replaced program: in a writable folder (a build of kl in its own project), a command could rename another program over it, which would run without the seccomp filter
 - [x] Protect `.git` of new `git init`: a model-made nested repo with `core.fsmonitor` runs commands when the user (or their shell prompt) runs git there
+- [x] Stop programs commands leave running after each prompt: one started with `setsid` outlived its command and could recreate a `.git` right after the check; an init in the container also reaps them
 - [x] Fail closed when a writable folder cannot be read: commands could `chmod 300` a folder to hide a `.git` from the scan, so the next session left it writable
 - [ ] Review mode: commands write to a copy of the project, and kl applies the changes after each prompt without `.git`, editor settings and other dangerous files (as AgentFS, Brood Box, yoloAI)
 - [ ] Check whether editor settings the model writes (`.zed/`, `.vscode/`, `.idea/`) can run commands when the project is opened

@@ -694,20 +694,22 @@ fn repositories_commands_create_are_disabled() {
 #[test]
 fn commands_cannot_reach_the_worker() {
     // Its pipes carry the tool results to the host. It is the process
-    // whose first argument is `--tool-executor`.
+    // whose first argument is `--tool-executor`, below an init forked
+    // from it.
     let home = tempdir();
     let output = run_bash(home.path(), &[], &[], |_| {
         r#"for p in /proc/[0-9]*; do
-             [ "$(tr '\0' '\n' < $p/cmdline | sed -n 2p)" = --tool-executor ] && W=${p#/proc/}
-           done
-           echo "WORKER=$W"
-           echo "ENV=$(head -c 1 /proc/$W/environ >/dev/null 2>&1 && echo readable || echo denied)"
-           echo "PIPE=$( (exec 3>>/proc/$W/fd/1) 2>/dev/null && echo writable || echo denied)""#
+             [ "$(tr '\0' '\n' < $p/cmdline | sed -n 2p)" = --tool-executor ] || continue
+             echo "WORKER=${p#/proc/}"
+             head -c 1 $p/environ >/dev/null 2>&1 && echo "ENV=readable"
+             (exec 3>>$p/fd/1) 2>/dev/null && echo "PIPE=writable"
+           done"#
             .into()
     });
     assert!(output.contains("WORKER=1"), "{output}");
-    assert!(output.contains("ENV=denied"), "{output}");
-    assert!(output.contains("PIPE=denied"), "{output}");
+    assert!(output.contains("WORKER=2"), "{output}");
+    assert!(!output.contains("readable"), "{output}");
+    assert!(!output.contains("writable"), "{output}");
 }
 
 #[test]
@@ -718,4 +720,33 @@ fn allowed_ports_do_not_open_udp() {
         "(exec 3<>/dev/udp/127.0.0.1/53) 2>&1".into()
     });
     assert!(output.contains("Permission denied"), "{output}");
+}
+
+#[test]
+fn programs_left_running_are_stopped_after_the_prompt() {
+    // Before the git check, which one could beat by recreating a repository.
+    let home = tempdir();
+    let cwd = tempdir();
+    run_bash_in(cwd.path(), home.path(), &[], &[], |_| {
+        r#"(setsid sh -c 'while :; do mkdir -p sub/.git; done' >/dev/null 2>&1 &)
+           while [ ! -d sub/.git ]; do sleep 0.01; done"#
+            .into()
+    });
+
+    let sub = cwd.path().join("sub");
+    assert!(sub.join(".git.kl-disabled").is_dir());
+    assert!(!sub.join(".git").exists());
+}
+
+#[test]
+fn programs_left_behind_are_reaped() {
+    // The kernel hands them to the container's init.
+    let home = tempdir();
+    let output = run_bash(home.path(), &[], &[], |_| {
+        r#"(setsid sleep 0.1 &)
+           sleep 0.5
+           grep -l '^State:.Z' /proc/[0-9]*/status | wc -l"#
+            .into()
+    });
+    assert_eq!(output.trim(), "0", "{output}");
 }

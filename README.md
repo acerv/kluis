@@ -137,6 +137,8 @@ precedence over `api_key`.
   and `config` cannot run code on the host, and a new `.git` that commands
   create is renamed to `.git.kl-disabled` after each prompt. kl refuses to
   start if it cannot read a folder there, where a `.git` could hide.
+- Programs that commands leave running in the background are stopped after
+  each prompt.
 - `--strict` makes the current folder read-only; `--no-sandbox` runs tools on
   the host.
 - Network access is off by default; allow specific TCP ports or all network

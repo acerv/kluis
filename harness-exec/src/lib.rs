@@ -86,4 +86,12 @@ impl Executor {
             Self::Sandbox(sandbox) => sandbox.execute(call, on_output).await,
         }
     }
+
+    /// Stop what commands left running in the background, in the sandbox
+    /// only: elsewhere they may be the user's own processes.
+    pub async fn stop_background(&self) {
+        if let Self::Sandbox(sandbox) = self {
+            sandbox.stop_background().await;
+        }
+    }
 }

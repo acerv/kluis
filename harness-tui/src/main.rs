@@ -152,6 +152,7 @@ fn main() -> ExitCode {
 }
 
 fn launch(mut args: Args) -> Result<ExitCode, Error> {
+    let mut below_init = false;
     if args.tool_executor {
         // Commands run as the same user: keep them from reading the
         // worker's environment or writing forged results into its pipes.
@@ -159,13 +160,16 @@ fn launch(mut args: Args) -> Result<ExitCode, Error> {
         // Before the runtime starts its threads, though the filter covers
         // them anyway.
         harness_sandbox::restrict_syscalls(args.network_access)?;
+        // An init reaps what commands leave behind, and lets the worker
+        // stop it between prompts.
+        below_init = harness_sandbox::start_init()?;
     }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     if args.tool_executor {
         let cwd = std::env::current_dir()?;
-        runtime.block_on(run_worker(cwd, args.max_memory))?;
+        runtime.block_on(run_worker(cwd, args.max_memory, below_init))?;
     } else if let Some(provider) = args.login {
         runtime.block_on(login(provider))?;
     } else if let Some(provider) = args.logout {
@@ -456,6 +460,9 @@ async fn prompt_and_persist(
             print_event(event);
         })
         .await;
+    // Before the git check: a program left running could recreate a
+    // repository right after it.
+    agent.stop_background().await;
     let added = &agent.history()[prev_len..];
     if let Some(session) = session {
         if let Err(err) = session.record_prompt(added, usage) {
