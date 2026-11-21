@@ -9,7 +9,7 @@
 - [x] Allow only common protocols (TCP, UDP, ping, netlink routing): for others the kernel loads a module as root, such as SCTP or L2TP
 - [x] No core dumps: a crash handed a core file shaped by commands to the host's handler, such as systemd-coredump running as root
 - [ ] Running a file of unknown format makes the kernel run `modprobe` for a `binfmt-XXXX` module; seccomp cannot see it, only a host setting (`kernel.modprobe`, `modules_disabled`) can stop it
-- [ ] `/proc/interrupts` and `/proc/pressure` show host activity to commands
+- [ ] `/proc/interrupts` and `/proc/pressure` show host activity to commands (interrupt counts can tell when the user types); hakoniwa mounts `/proc` last, over any mask, and commands have no capabilities: masking needs a user namespace of the worker's own
 - [x] Give the container its own IPC and UTS namespaces: commands share SysV memory with host programs, and their segments outlive the sandbox
 - [x] Call `protect_self()` in the tool worker: commands can read its environment and write forged results into its pipe to the host
 - [x] Never restart the tool worker from a replaced program: in a writable folder (a build of kl in its own project), a command could rename another program over it, which would run without the seccomp filter
