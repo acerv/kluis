@@ -164,6 +164,26 @@ The sandbox cannot vet what the model writes: build scripts, Makefiles,
 `.cargo/config.toml`, `package.json` scripts and editor settings run as you
 when you build, test or open the project. Review the changes like any patch.
 
+### Git safety
+
+Your own git, outside the sandbox, runs hooks and some config settings of
+any repository it finds, as you. For full protection, set it up once:
+
+```sh
+git config --global safe.bareRepository explicit
+```
+
+and turn hooks off everywhere (yours too), for example in
+`~/.config/environment.d/git-safety.conf` and your shell profile:
+
+```sh
+GIT_CONFIG_COUNT=2
+GIT_CONFIG_KEY_0=core.hooksPath
+GIT_CONFIG_VALUE_0=/dev/null
+GIT_CONFIG_KEY_1=core.fsmonitor
+GIT_CONFIG_VALUE_1=false
+```
+
 ### Auth & config
 
 - Provider API keys from environment variables (via `genai`).
