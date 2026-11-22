@@ -55,6 +55,9 @@ pub enum SessionEntry {
         output_tokens: u64,
         #[serde(default)]
         cached_tokens: u64,
+        /// Tokens the last request of the prompt sent: 0 when unknown.
+        #[serde(default)]
+        context_tokens: u64,
     },
 }
 
@@ -79,6 +82,7 @@ enum SessionEntryRef<'a> {
         input_tokens: u64,
         output_tokens: u64,
         cached_tokens: u64,
+        context_tokens: u64,
     },
 }
 
@@ -114,6 +118,12 @@ impl TokenUsage {
 
     pub fn is_empty(self) -> bool {
         self.input == 0 && self.output == 0 && self.cached == 0
+    }
+
+    /// Tokens the request sent, cached or not: for one request, the size of
+    /// the conversation.
+    pub fn prompt(self) -> u64 {
+        self.input.saturating_add(self.cached)
     }
 }
 
@@ -158,6 +168,8 @@ pub struct SessionData {
     pub meta: SessionMeta,
     pub messages: Vec<ChatMessage>,
     pub usage: TokenUsage,
+    /// Tokens the last request sent, or 0 when unknown.
+    pub context: u64,
     /// If the file had a truncated trailing line or lacked a final newline,
     /// the byte length of the valid prefix to repair before appending.
     repair_len: Option<u64>,
@@ -308,9 +320,10 @@ impl SessionWriter {
         writer.flush()
     }
 
-    /// Record token usage for a completed turn (ignored if the session has no
-    /// persisted messages yet).
-    pub fn append_usage(&mut self, usage: TokenUsage) -> io::Result<()> {
+    /// Record the token usage of a prompt and the tokens its last request
+    /// sent, 0 when unknown (ignored if the session has no persisted messages
+    /// yet).
+    pub fn append_usage(&mut self, usage: TokenUsage, context: u64) -> io::Result<()> {
         if !self.initialized || usage.is_empty() {
             return Ok(());
         }
@@ -321,6 +334,7 @@ impl SessionWriter {
                 input_tokens: usage.input,
                 output_tokens: usage.output,
                 cached_tokens: usage.cached,
+                context_tokens: context,
             },
         )?;
         writer.flush()
@@ -619,6 +633,7 @@ fn load_file(path: &Path) -> Result<SessionData, Error> {
 
     let mut messages = Vec::new();
     let mut usage = TokenUsage::default();
+    let mut context = 0;
     let mut last_valid_end = first_end;
     let mut truncated_tail = false;
 
@@ -634,12 +649,16 @@ fn load_file(path: &Path) -> Result<SessionData, Error> {
                 input_tokens,
                 output_tokens,
                 cached_tokens,
+                context_tokens,
             }) => {
                 usage += TokenUsage {
                     input: input_tokens,
                     output: output_tokens,
                     cached: cached_tokens,
                 };
+                if context_tokens > 0 {
+                    context = context_tokens;
+                }
                 last_valid_end = line_end;
             }
             Ok(SessionEntry::Model { model: next }) => {
@@ -675,6 +694,7 @@ fn load_file(path: &Path) -> Result<SessionData, Error> {
         },
         messages,
         usage,
+        context,
         repair_len,
     })
 }

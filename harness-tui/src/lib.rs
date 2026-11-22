@@ -60,22 +60,38 @@ pub struct Status {
 pub struct Session {
     store: SessionStore,
     writer: SessionWriter,
-    initial_tokens: TokenUsage,
+    /// Tokens the last request of the conversation sent, 0 when unknown.
+    context: u64,
 }
 
 impl Session {
-    pub fn new(store: SessionStore, writer: SessionWriter, initial_tokens: TokenUsage) -> Self {
+    /// A session whose last request sent `context` tokens, 0 when unknown.
+    pub fn new(store: SessionStore, writer: SessionWriter, context: u64) -> Self {
         Self {
             store,
             writer,
-            initial_tokens,
+            context,
         }
     }
 
-    /// Persist messages added during a prompt and any accumulated token usage.
-    pub fn record_prompt(&mut self, messages: &[ChatMessage], usage: TokenUsage) -> io::Result<()> {
+    /// Persist messages added during a prompt, its token usage, and the
+    /// tokens its last request sent, 0 when unknown.
+    pub fn record_prompt(
+        &mut self,
+        messages: &[ChatMessage],
+        usage: TokenUsage,
+        context: u64,
+    ) -> io::Result<()> {
+        if context > 0 {
+            self.context = context;
+        }
         self.writer.append_messages(messages)?;
-        self.writer.append_usage(usage)
+        self.writer.append_usage(usage, context)
+    }
+
+    /// Tokens the last request of the conversation sent, 0 when unknown.
+    pub fn context(&self) -> u64 {
+        self.context
     }
 
     /// Persist a model change.
@@ -106,14 +122,14 @@ impl Session {
     /// append to it.
     pub fn activate(&mut self, data: &SessionData) {
         self.writer = self.store.open(data);
-        self.initial_tokens = data.usage;
+        self.context = data.context;
     }
 
     /// Start a fresh lazy session file (e.g. after `/new`), leaving the
     /// previous session file intact on disk.
     pub fn rotate(&mut self, model: &str) {
         self.writer = self.store.create(model);
-        self.initial_tokens = TokenUsage::default();
+        self.context = 0;
     }
 }
 
@@ -191,12 +207,10 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
     if let Some(ref h) = history {
         app.set_history(h.entries());
     }
-    if let Some(ref s) = session {
-        app.set_tokens(s.initial_tokens);
-    }
     app.push_banner(&banner);
     if !agent.history().is_empty() {
         app.replay_history(agent.history());
+        app.set_context(session.as_ref().map_or(0, Session::context));
     } else if !picker_entries.is_empty() {
         app.open_picker(picker_entries, None);
     }
@@ -477,7 +491,6 @@ fn resume_session(id: &str, agent: &mut Agent, app: &mut App, session: Option<&m
     session.activate(&data);
     agent.set_model(&data.meta.model);
     app.set_model(&data.meta.model);
-    app.set_tokens(data.usage);
     agent.set_history(data.messages);
     let short = short_id(&data.meta.id);
     app.push_info(format!(
@@ -485,6 +498,7 @@ fn resume_session(id: &str, agent: &mut Agent, app: &mut App, session: Option<&m
         agent.history().len()
     ));
     app.replay_history(agent.history());
+    app.set_context(session.context());
 }
 
 /// Run one agent prompt while keeping the UI responsive to keys, resize and
@@ -586,7 +600,7 @@ async fn run_turn(
 
     if let Some(session) = session {
         let added = &agent.history()[prev_len..];
-        if let Err(err) = session.record_prompt(added, prompt_usage) {
+        if let Err(err) = session.record_prompt(added, prompt_usage, app.context()) {
             app.push_info(format!("[session save error: {err}]"));
         }
     }

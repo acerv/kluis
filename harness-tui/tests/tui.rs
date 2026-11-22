@@ -75,20 +75,28 @@ fn render_text(terminal: &Terminal<TestBackend>) -> String {
     out
 }
 
+/// The footer line of a rendered `screen`.
+fn footer_line(screen: &str) -> &str {
+    screen
+        .lines()
+        .find(|line| line.ends_with("sandboxed · ~/project"))
+        .expect(screen)
+}
+
 #[test]
-fn footer_shows_sandbox_folder_model_and_scaled_tokens() {
+fn footer_shows_model_context_sandbox_and_folder() {
     let mut term = inline_terminal(80, 14);
     let mut app = App::new("deepseek-chat", status(), Theme::new(true));
 
+    // No size before the first request of the conversation.
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
-    assert!(screen.contains("sandboxed · ~/project"), "{screen}");
-    assert!(
-        screen.contains("deepseek-chat (default) · ↑0 in ↓0 out ↻0 cached"),
-        "{screen}"
-    );
+    let footer = footer_line(&screen);
+    assert!(footer.starts_with("deepseek-chat (default)  "), "{screen}");
+    assert!(footer.ends_with("sandboxed · ~/project"), "{screen}");
     assert!(screen.contains("────────"), "{screen}");
 
+    // What the last request sent, cached or not.
     app.apply_update(AgentUpdate::TurnEnd(TokenUsage {
         input: 1_200,
         output: 300,
@@ -97,14 +105,14 @@ fn footer_shows_sandbox_folder_model_and_scaled_tokens() {
     app.set_model("gpt-4o");
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
-    let left_pos = screen
-        .find("gpt-4o (default) · ↑1.2K in ↓300 out ↻800 cached")
-        .expect("model (thinking) · tokens in footer");
-    let right_pos = screen
-        .find("sandboxed · ~/project")
-        .expect("sandbox · folder in footer");
-    assert!(left_pos < right_pos, "{screen}");
+    let footer = footer_line(&screen);
+    assert!(
+        footer.starts_with("gpt-4o (default) · 2K context  "),
+        "{screen}"
+    );
+    assert!(footer.ends_with("sandboxed · ~/project"), "{screen}");
 
+    // Only the last request counts, not all of them.
     app.apply_update(AgentUpdate::TurnEnd(TokenUsage {
         input: 2_000_000,
         output: 350_000,
@@ -113,9 +121,34 @@ fn footer_shows_sandbox_folder_model_and_scaled_tokens() {
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
     assert!(
-        screen.contains("gpt-4o (default) · ↑2M in ↓350.3K out ↻1.5M cached"),
+        screen.contains("gpt-4o (default) · 3.5M context  "),
         "{screen}"
     );
+}
+
+#[test]
+fn context_follows_the_conversation() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    let mut term = inline_terminal(80, 14);
+    let turn = TokenUsage {
+        input: 1_000,
+        output: 0,
+        cached: 0,
+    };
+
+    // Another conversation: unknown, until its saved size comes along.
+    app.apply_update(AgentUpdate::TurnEnd(turn));
+    app.replay_history(&[ChatMessage::user("an older session")]);
+    term.draw(|f| app.render(f)).unwrap();
+    assert!(!render_text(&term).contains("context"));
+    app.set_context(42_000);
+    term.draw(|f| app.render(f)).unwrap();
+    assert!(render_text(&term).contains("model (default) · 42K context"));
+
+    app.apply_update(AgentUpdate::TurnEnd(turn));
+    app.reset_session();
+    term.draw(|f| app.render(f)).unwrap();
+    assert!(!render_text(&term).contains("context"));
 }
 
 #[test]
@@ -472,14 +505,8 @@ fn markdown_rendering_and_code_highlighting() {
 }
 
 #[test]
-fn replay_history_and_restore_tokens() {
-    let mut term = inline_terminal(80, 14);
+fn replay_history() {
     let mut app = App::new("deepseek-chat", status(), Theme::new(true));
-    app.set_tokens(TokenUsage {
-        input: 1_200,
-        output: 300,
-        cached: 800,
-    });
 
     let history = vec![
         ChatMessage::user("check main"),
@@ -507,13 +534,6 @@ fn replay_history_and_restore_tokens() {
     assert!(plain.contains("42 lines"), "{plain}");
     assert!(plain.contains("Looks good."), "{plain}");
     assert!(!plain.contains("hidden thought"), "{plain}");
-
-    term.draw(|f| app.render(f)).unwrap();
-    let screen = render_text(&term);
-    assert!(
-        screen.contains("deepseek-chat (default) · ↑1.2K in ↓300 out ↻800 cached"),
-        "{screen}"
-    );
 }
 
 #[test]
@@ -727,10 +747,7 @@ fn thinking_effort_slash_keybinding_and_footer() {
 
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
-    assert!(
-        screen.contains("claude-sonnet-4-5 (low) · ↑0 in ↓0 out ↻0 cached"),
-        "{screen}"
-    );
+    assert!(screen.contains("claude-sonnet-4-5 (low)  "), "{screen}");
     assert!(screen.contains("Thinking: low"), "{screen}");
 
     // Footer model color changes by thinking effort when color is enabled.

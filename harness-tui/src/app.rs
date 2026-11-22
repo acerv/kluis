@@ -206,7 +206,9 @@ pub struct App {
     hidden_reasoning: String,
     /// Whether any reasoning lines were emitted during the current turn.
     emitted_reasoning: bool,
-    tokens: TokenUsage,
+    /// Tokens the last request sent, as the provider counted them: the
+    /// size of the conversation, or 0 before its first request.
+    context: u64,
     notice: Option<String>,
     picker: Option<Picker>,
     completion: CommandCompletion,
@@ -236,7 +238,7 @@ impl App {
             live_reasoning: String::new(),
             hidden_reasoning: String::new(),
             emitted_reasoning: false,
-            tokens: TokenUsage::default(),
+            context: 0,
             notice: None,
             picker: None,
             completion: CommandCompletion::default(),
@@ -353,22 +355,30 @@ impl App {
         }
     }
 
-    /// Reset displayed token counters and drop pending scrollback (e.g. on `/new`).
+    /// Forget the conversation and drop pending scrollback (e.g. on `/new`).
     pub fn reset_session(&mut self) {
-        self.set_tokens(TokenUsage::default());
+        self.context = 0;
         self.clear_live();
         self.scrollback.clear();
         self.todos.clear();
         self.notice = None;
     }
 
-    /// Set displayed token counters (e.g. when restoring a persisted session).
-    pub fn set_tokens(&mut self, usage: TokenUsage) {
-        self.tokens = usage;
+    /// Tokens the last request of the conversation sent, 0 when unknown.
+    pub fn context(&self) -> u64 {
+        self.context
     }
 
-    /// Replay a restored conversation history into scrollback.
+    /// Show `tokens` as the size of the conversation, 0 when unknown, as for
+    /// a restored one.
+    pub fn set_context(&mut self, tokens: u64) {
+        self.context = tokens;
+    }
+
+    /// Replay a restored conversation history into scrollback, with its size
+    /// unknown until [`App::set_context`] or its next request.
     pub fn replay_history(&mut self, messages: &[ChatMessage]) {
+        self.context = 0;
         let mut tool_names: HashMap<&str, &str> = HashMap::new();
         for msg in messages {
             match msg.role {
@@ -528,7 +538,7 @@ impl App {
                 }
             }
             AgentUpdate::TurnEnd(usage) => {
-                self.tokens += usage;
+                self.context = usage.prompt();
             }
             AgentUpdate::Retry {
                 attempt,
@@ -1144,17 +1154,18 @@ impl App {
         }
         let width = area.width as usize;
         let model_label = format!("{} ({})", self.model, self.thinking);
-        let tokens = format_usage(self.tokens);
-        let dot = " · ";
         let right = format!("{} · {}", self.status.sandbox, self.status.folder);
-        let left_w = model_label.width() + dot.width() + tokens.width();
-        let right_w = right.width();
-        let gap = width.saturating_sub(left_w + right_w).max(2);
+        // Unknown before the first request of the conversation.
+        let context = match self.context {
+            0 => String::new(),
+            tokens => format!(" · {} context", ScaledTokens(tokens)),
+        };
+        let left_w = model_label.width() + context.width();
+        let gap = width.saturating_sub(left_w + right.width()).max(2);
 
         let line = Line::from(vec![
             Span::styled(model_label, self.theme.thinking_model(self.thinking)),
-            Span::styled(dot, self.theme.status_bar),
-            Span::styled(tokens, self.theme.status_bar),
+            Span::styled(context, self.theme.status_bar),
             Span::raw(" ".repeat(gap)),
             Span::styled(right, self.theme.status_bar),
         ]);
@@ -1548,15 +1559,6 @@ impl std::fmt::Display for ScaledTokens {
             write!(f, "{whole}.{frac}{suffix}")
         }
     }
-}
-
-fn format_usage(usage: TokenUsage) -> String {
-    format!(
-        "↑{} in ↓{} out ↻{} cached",
-        ScaledTokens(usage.input),
-        ScaledTokens(usage.output),
-        ScaledTokens(usage.cached),
-    )
 }
 
 struct EditorLayout {

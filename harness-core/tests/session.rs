@@ -25,11 +25,14 @@ fn lazy_writer_creates_no_file_until_first_message() {
     let mut writer = store.create("deepseek-chat");
     writer.append_model("gpt-4o").unwrap();
     writer
-        .append_usage(TokenUsage {
-            input: 10,
-            output: 5,
-            cached: 2,
-        })
+        .append_usage(
+            TokenUsage {
+                input: 10,
+                output: 5,
+                cached: 2,
+            },
+            12,
+        )
         .unwrap();
     assert!(!writer.path().exists());
     assert!(store.latest().unwrap().is_none());
@@ -81,19 +84,36 @@ fn round_trip_preserves_messages_tools_reasoning_usage_and_model() {
         ])
         .unwrap();
     writer
-        .append_usage(TokenUsage {
-            input: 1_200,
-            output: 350,
-            cached: 400,
-        })
+        .append_usage(
+            TokenUsage {
+                input: 1_200,
+                output: 350,
+                cached: 400,
+            },
+            900,
+        )
         .unwrap();
     writer.append_model("claude-sonnet-4-5").unwrap();
     writer
-        .append_usage(TokenUsage {
-            input: 800,
-            output: 150,
-            cached: 600,
-        })
+        .append_usage(
+            TokenUsage {
+                input: 800,
+                output: 150,
+                cached: 600,
+            },
+            1_100,
+        )
+        .unwrap();
+    // A prompt whose provider reported no size keeps the last one known.
+    writer
+        .append_usage(
+            TokenUsage {
+                input: 1,
+                output: 0,
+                cached: 0,
+            },
+            0,
+        )
         .unwrap();
 
     let loaded = store.latest().unwrap().expect("session");
@@ -102,11 +122,12 @@ fn round_trip_preserves_messages_tools_reasoning_usage_and_model() {
     assert_eq!(
         loaded.usage,
         TokenUsage {
-            input: 2_000,
+            input: 2_001,
             output: 500,
             cached: 1_000,
         }
     );
+    assert_eq!(loaded.context, 1_100);
     assert_eq!(loaded.messages.len(), 4);
     assert_eq!(loaded.messages[0].role, ChatRole::User);
     assert_eq!(loaded.messages[1].role, ChatRole::Assistant);
@@ -302,7 +323,8 @@ fn token_usage_separates_cached_and_loads_legacy_entries() {
         }
     );
 
-    // Older session files without `cached_tokens` still deserialize cleanly.
+    // Older session files without `cached_tokens` or `context_tokens` still
+    // deserialize cleanly, with the size of the conversation unknown.
     let root = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let store = SessionStore::new(root.path(), cwd.path());
@@ -324,4 +346,5 @@ fn token_usage_separates_cached_and_loads_legacy_entries() {
             cached: 0,
         }
     );
+    assert_eq!(loaded.context, 0);
 }
