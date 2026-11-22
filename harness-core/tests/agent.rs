@@ -1029,3 +1029,81 @@ async fn non_openai_compatible_providers_do_not_receive_openai_cache_fields() {
         );
     }
 }
+
+#[tokio::test]
+async fn compact_summarizes_and_replaces_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let call = ("call_1", "bash", json!({ "command": "echo hi" }));
+    let model = MockModel::start(vec![
+        tool_calls(&[call]),
+        text("initial answer"),
+        text("Goal: echo hi. Done."),
+        text("continued"),
+    ])
+    .await;
+    let mut agent = agent(&model, dir.path());
+
+    assert_eq!(
+        prompt(&mut agent, "run echo").await.unwrap(),
+        "initial answer"
+    );
+    assert_eq!(agent.history().len(), 4);
+
+    let mut events = Vec::new();
+    let summary = agent
+        .compact(Some("the command result"), |ev| match ev {
+            Event::TurnStart => events.push("start"),
+            Event::Text(_) => events.push("text"),
+            Event::TurnEnd(_) => events.push("end"),
+            _ => {}
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(summary, "Goal: echo hi. Done.");
+    assert_eq!(events, ["start", "text", "end"]);
+    assert_eq!(roles(&agent), [ChatRole::User, ChatRole::Assistant]);
+    assert!(agent.history()[0]
+        .content
+        .first_text()
+        .unwrap()
+        .contains("Goal: echo hi. Done."));
+
+    // Compact sent the full prior history plus the transient focus prompt,
+    // and rotated OpenAI's prompt_cache_key for the compacted history.
+    let reqs = model.requests();
+    assert_eq!(reqs.len(), 3);
+    let compact_users = sent(&reqs[2], "user");
+    assert_eq!(compact_users.len(), 2);
+    assert!(compact_users[1]["content"]
+        .as_str()
+        .unwrap()
+        .contains("the command result"));
+
+    // Next prompt sends only the compacted handoff + new user turn.
+    assert_eq!(prompt(&mut agent, "next step").await.unwrap(), "continued");
+    let reqs = model.requests();
+    assert_eq!(reqs.len(), 4);
+    assert_eq!(sent(&reqs[3], "user").len(), 2);
+    assert_eq!(sent(&reqs[3], "assistant").len(), 1);
+    assert!(sent(&reqs[3], "tool").is_empty());
+    assert_ne!(reqs[2]["prompt_cache_key"], reqs[3]["prompt_cache_key"]);
+}
+
+#[tokio::test]
+async fn compact_preserves_history_when_empty_or_failed() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = MockModel::start(vec![text("hello"), text("   ")]).await;
+    let mut agent = agent(&model, dir.path());
+
+    let err = agent.compact(None, |_| {}).await.unwrap_err();
+    assert!(err.to_string().contains("nothing to compact"), "{err}");
+
+    assert_eq!(prompt(&mut agent, "hi").await.unwrap(), "hello");
+    let before = agent.history().len();
+
+    // Blank summary must not clobber existing history.
+    let err = agent.compact(None, |_| {}).await.unwrap_err();
+    assert!(err.to_string().contains("empty summary"), "{err}");
+    assert_eq!(agent.history().len(), before);
+}

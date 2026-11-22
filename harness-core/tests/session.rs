@@ -348,3 +348,91 @@ fn token_usage_separates_cached_and_loads_legacy_entries() {
     );
     assert_eq!(loaded.context, 0);
 }
+
+#[test]
+fn compact_entry_replaces_loaded_history_and_keeps_first_prompt() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(root.path(), cwd.path());
+
+    let mut writer = store.create("claude-sonnet-4-5");
+    writer
+        .append_messages(&[
+            ChatMessage::user("original task"),
+            ChatMessage::assistant("first reply"),
+            ChatMessage::user("second turn"),
+            ChatMessage::assistant("second reply"),
+        ])
+        .unwrap();
+    writer
+        .append_usage(
+            TokenUsage {
+                input: 400,
+                output: 100,
+                cached: 200,
+            },
+            600,
+        )
+        .unwrap();
+
+    // Compact replaces earlier messages when loaded and resets context to 0.
+    let compacted = vec![
+        ChatMessage::user("Summary: original task done."),
+        ChatMessage::assistant("Understood."),
+    ];
+    writer.append_compact(&compacted).unwrap();
+    writer
+        .append_usage(
+            TokenUsage {
+                input: 50,
+                output: 30,
+                cached: 550,
+            },
+            0,
+        )
+        .unwrap();
+
+    let after_compact = store.load(writer.id()).unwrap();
+    assert_eq!(after_compact.messages.len(), 2);
+    assert_eq!(
+        after_compact.messages[0].content.first_text(),
+        Some("Summary: original task done.")
+    );
+    assert_eq!(after_compact.context, 0);
+    assert_eq!(
+        after_compact.usage,
+        TokenUsage {
+            input: 450,
+            output: 130,
+            cached: 750,
+        }
+    );
+
+    // Further messages append on top of the compacted history.
+    writer
+        .append_messages(&[
+            ChatMessage::user("next task"),
+            ChatMessage::assistant("done"),
+        ])
+        .unwrap();
+    writer
+        .append_usage(
+            TokenUsage {
+                input: 120,
+                output: 40,
+                cached: 0,
+            },
+            120,
+        )
+        .unwrap();
+
+    let loaded = store.load(writer.id()).unwrap();
+    assert_eq!(loaded.messages.len(), 4);
+    assert_eq!(loaded.messages[2].content.first_text(), Some("next task"));
+    assert_eq!(loaded.context, 120);
+
+    // Session summary preserves the original first_prompt and tracks post-compact count.
+    let summary = &store.list().unwrap()[0];
+    assert_eq!(summary.first_prompt.as_deref(), Some("original task"));
+    assert_eq!(summary.message_count, 4);
+}

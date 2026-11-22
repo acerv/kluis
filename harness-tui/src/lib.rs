@@ -91,6 +91,18 @@ impl Session {
         self.writer.append_usage(usage, context)
     }
 
+    /// Persist a compacted conversation and the token usage spent building it,
+    /// resetting the recorded context size until the next request.
+    pub fn record_compact(
+        &mut self,
+        messages: &[ChatMessage],
+        usage: TokenUsage,
+    ) -> io::Result<()> {
+        self.context = 0;
+        self.writer.append_compact(messages)?;
+        self.writer.append_usage(usage, 0)
+    }
+
     /// Tokens the last request of the conversation sent, 0 when unknown.
     pub fn context(&self) -> u64 {
         self.context
@@ -241,6 +253,7 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
                     &mut agent,
                     &mut app,
                     &mut events,
+                    &mut questions,
                     session.as_mut(),
                     &mut models,
                 )
@@ -307,17 +320,35 @@ struct ModelCatalog {
 }
 
 /// Execute a slash command. Returns `true` when the user requested to quit.
+#[allow(clippy::too_many_arguments)]
 async fn handle_slash(
     cmd: SlashCommand,
     term: &mut InlineTerminal,
     agent: &mut Agent,
     app: &mut App,
     events: &mut EventReader,
+    questions: &mut mpsc::UnboundedReceiver<Question>,
     session: Option<&mut Session>,
     models: &mut ModelCatalog,
 ) -> Result<bool, Error> {
     match cmd {
         SlashCommand::Quit => return Ok(true),
+        SlashCommand::Compact(focus) => {
+            if agent.history().is_empty() {
+                app.push_info("[nothing to compact]");
+                return Ok(false);
+            }
+            return run_compact(
+                term,
+                app,
+                agent,
+                events,
+                questions,
+                session,
+                focus.as_deref(),
+            )
+            .await;
+        }
         SlashCommand::Copy => match clipboard::last_assistant_text(agent.history()) {
             None => app.push_info("[nothing to copy]"),
             Some(text) => match clipboard::copy(&text) {
@@ -509,35 +540,34 @@ fn resume_session(id: &str, agent: &mut Agent, app: &mut App, session: Option<&m
     app.set_context(session.context());
 }
 
-/// Run one agent prompt while keeping the UI responsive to keys, resize and
-/// streaming updates. Returns `true` if the user requested to quit.
-async fn run_turn(
+struct DriveResult {
+    cancelled: bool,
+    quit: bool,
+    outcome: Option<Result<String, Error>>,
+    usage: TokenUsage,
+}
+
+/// Drive an in-flight agent future (`prompt` or `compact`) while keeping the
+/// UI responsive to keys, resize, questions, and streaming updates.
+async fn drive_agent(
     term: &mut InlineTerminal,
     app: &mut App,
-    agent: &mut Agent,
     events: &mut EventReader,
     questions: &mut mpsc::UnboundedReceiver<Question>,
-    session: Option<&mut Session>,
-    prompt: &str,
-) -> Result<bool, Error> {
-    let prev_len = agent.history().len();
-    let (tx, mut rx) = mpsc::unbounded_channel::<AgentUpdate>();
+    mut rx: mpsc::UnboundedReceiver<AgentUpdate>,
+    fut: impl std::future::Future<Output = Result<String, Error>>,
+) -> Result<DriveResult, Error> {
     let mut cancelled = false;
     let mut quit = false;
     let mut outcome: Option<Result<String, Error>> = None;
-    let mut prompt_usage = TokenUsage::default();
+    let mut usage = TokenUsage::default();
     // The question of the model waiting for the user's answer.
     let mut question: Option<Question> = None;
 
-    // Scope `prompt_fut` so dropping it on exit runs `Agent::prompt`'s cancel
-    // cleanup and closes `tx` before we drain `rx`.
+    // Scope `fut` so dropping it on exit runs cancel cleanup and closes `tx`
+    // before we drain `rx`.
     {
-        let prompt_fut = agent.prompt(prompt, |event| {
-            if let Some(update) = AgentUpdate::from_event(event) {
-                let _ = tx.send(update);
-            }
-        });
-        tokio::pin!(prompt_fut);
+        tokio::pin!(fut);
 
         let mut ticker = interval_at(Instant::now() + SPINNER_TICK, SPINNER_TICK);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -578,7 +608,7 @@ async fn run_turn(
                     }
                 }
                 Some(update) = rx.recv() => {
-                    drain_updates(update, &mut rx, app, &mut prompt_usage);
+                    drain_updates(update, &mut rx, app, &mut usage);
                     draw(term, app)?;
                 }
                 // After `rx`, so the tool call shows before its question.
@@ -587,7 +617,7 @@ async fn run_turn(
                     question = Some(asked);
                     draw(term, app)?;
                 }
-                res = &mut prompt_fut => {
+                res = &mut fut => {
                     outcome = Some(res);
                     break;
                 }
@@ -600,29 +630,117 @@ async fn run_turn(
     }
 
     if let Ok(first) = rx.try_recv() {
-        drain_updates(first, &mut rx, app, &mut prompt_usage);
+        drain_updates(first, &mut rx, app, &mut usage);
     }
     // A question sent just before a cancel has nobody waiting for it: drop
     // it so the next prompt does not show it.
     while questions.try_recv().is_ok() {}
 
+    Ok(DriveResult {
+        cancelled,
+        quit,
+        outcome,
+        usage,
+    })
+}
+
+/// Run one agent prompt while keeping the UI responsive to keys, resize and
+/// streaming updates. Returns `true` if the user requested to quit.
+async fn run_turn(
+    term: &mut InlineTerminal,
+    app: &mut App,
+    agent: &mut Agent,
+    events: &mut EventReader,
+    questions: &mut mpsc::UnboundedReceiver<Question>,
+    session: Option<&mut Session>,
+    prompt: &str,
+) -> Result<bool, Error> {
+    let prev_len = agent.history().len();
+    let (tx, rx) = mpsc::unbounded_channel::<AgentUpdate>();
+    let res = drive_agent(
+        term,
+        app,
+        events,
+        questions,
+        rx,
+        agent.prompt(prompt, |event| forward_event(&tx, event)),
+    )
+    .await?;
+
     if let Some(session) = session {
         let added = &agent.history()[prev_len..];
-        if let Err(err) = session.record_prompt(added, prompt_usage, app.context()) {
+        if let Err(err) = session.record_prompt(added, res.usage, app.context()) {
             app.push_info(format!("[session save error: {err}]"));
         }
     }
 
-    if quit {
+    if finish_activity(app, res) {
         return Ok(true);
-    }
-    if cancelled {
-        app.cancel_prompt();
-    } else if let Some(res) = outcome {
-        app.finish_prompt(res.map(|_| ()).map_err(|e| e.to_string()));
     }
     draw(term, app)?;
     Ok(false)
+}
+
+/// Summarize the conversation with `/compact`, replacing history on success.
+/// Returns `true` if the user requested to quit.
+async fn run_compact(
+    term: &mut InlineTerminal,
+    app: &mut App,
+    agent: &mut Agent,
+    events: &mut EventReader,
+    questions: &mut mpsc::UnboundedReceiver<Question>,
+    session: Option<&mut Session>,
+    focus: Option<&str>,
+) -> Result<bool, Error> {
+    let before = agent.history().len();
+    app.start_activity();
+    app.push_info("[compacting conversation…]");
+    draw(term, app)?;
+
+    let (tx, rx) = mpsc::unbounded_channel::<AgentUpdate>();
+    let res = drive_agent(
+        term,
+        app,
+        events,
+        questions,
+        rx,
+        agent.compact(focus, |event| forward_event(&tx, event)),
+    )
+    .await?;
+
+    let compacted = !res.cancelled && !res.quit && matches!(res.outcome, Some(Ok(_)));
+    let usage = res.usage;
+    if finish_activity(app, res) {
+        return Ok(true);
+    }
+    if compacted {
+        app.set_context(0);
+        if let Some(session) = session {
+            if let Err(err) = session.record_compact(agent.history(), usage) {
+                app.push_info(format!("[session save error: {err}]"));
+            }
+        }
+        app.push_info(format!("[compacted {before} messages]"));
+    }
+    Ok(false)
+}
+
+fn forward_event(tx: &mpsc::UnboundedSender<AgentUpdate>, event: harness_core::Event<'_>) {
+    if let Some(update) = AgentUpdate::from_event(event) {
+        let _ = tx.send(update);
+    }
+}
+
+fn finish_activity(app: &mut App, res: DriveResult) -> bool {
+    if res.quit {
+        return true;
+    }
+    if res.cancelled {
+        app.cancel_prompt();
+    } else if let Some(outcome) = res.outcome {
+        app.finish_prompt(outcome.map(|_| ()).map_err(|e| e.to_string()));
+    }
+    false
 }
 
 /// Process `first` and any immediately queued terminal events, coalescing

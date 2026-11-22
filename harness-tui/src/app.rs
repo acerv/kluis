@@ -158,6 +158,7 @@ pub enum SlashCommand {
     Model(Option<String>),
     Thinking(Option<String>),
     Resume(Option<String>),
+    Compact(Option<String>),
     Copy,
     New,
     Quit,
@@ -501,6 +502,16 @@ impl App {
 
     /// Record a submitted user prompt and enter the busy state.
     pub fn start_prompt(&mut self, text: &str) {
+        self.enter_busy();
+        self.push_user_message(text);
+    }
+
+    /// Enter the busy state for a background model operation such as `/compact`.
+    pub fn start_activity(&mut self) {
+        self.enter_busy();
+    }
+
+    fn enter_busy(&mut self) {
         self.busy = true;
         self.spinner = 0;
         self.activity_started = Some(Instant::now());
@@ -508,7 +519,6 @@ impl App {
         self.clear_live();
         self.completion.clear();
         self.notice = None;
-        self.push_user_message(text);
     }
 
     fn push_user_message(&mut self, text: &str) {
@@ -1309,6 +1319,7 @@ fn parse_slash(input: &str) -> Option<Result<SlashCommand, String>> {
         "/model" => Ok(SlashCommand::Model(arg)),
         "/thinking" => Ok(SlashCommand::Thinking(arg)),
         "/resume" => Ok(SlashCommand::Resume(arg)),
+        "/compact" => Ok(SlashCommand::Compact(arg)),
         "/copy" => Ok(SlashCommand::Copy),
         "/new" => Ok(SlashCommand::New),
         "/quit" | "/exit" => Ok(SlashCommand::Quit),

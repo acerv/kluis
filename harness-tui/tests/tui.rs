@@ -228,6 +228,11 @@ fn slash_commands() {
             Action::Slash(SlashCommand::Model(Some("gpt-4o".into()))),
         ),
         ("/new", Action::Slash(SlashCommand::New)),
+        ("/compact", Action::Slash(SlashCommand::Compact(None))),
+        (
+            "/compact keep api",
+            Action::Slash(SlashCommand::Compact(Some("keep api".into()))),
+        ),
         ("/quit", Action::Slash(SlashCommand::Quit)),
         ("/help", Action::Slash(SlashCommand::Help)),
     ] {

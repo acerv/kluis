@@ -45,6 +45,11 @@ const COMMANDS: &[CommandSpec] = &[
         description: "copy last assistant reply to clipboard",
     },
     CommandSpec {
+        name: "/compact",
+        arg: Some("[focus]"),
+        description: "summarize the conversation to save tokens",
+    },
+    CommandSpec {
         name: "/new",
         arg: None,
         description: "clear screen and start a new session",

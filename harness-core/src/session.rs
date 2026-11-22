@@ -50,6 +50,9 @@ pub enum SessionEntry {
     Message {
         message: ChatMessage,
     },
+    Compact {
+        messages: Vec<ChatMessage>,
+    },
     Usage {
         input_tokens: u64,
         output_tokens: u64,
@@ -77,6 +80,9 @@ enum SessionEntryRef<'a> {
     },
     Message {
         message: &'a ChatMessage,
+    },
+    Compact {
+        messages: &'a [ChatMessage],
     },
     Usage {
         input_tokens: u64,
@@ -320,6 +326,17 @@ impl SessionWriter {
         writer.flush()
     }
 
+    /// Record a conversation compaction, replacing prior messages when the
+    /// session is loaded while keeping the file append-only.
+    pub fn append_compact(&mut self, messages: &[ChatMessage]) -> io::Result<()> {
+        if messages.is_empty() {
+            return Ok(());
+        }
+        let writer = self.writer()?;
+        write_entry(writer, &SessionEntryRef::Compact { messages })?;
+        writer.flush()
+    }
+
     /// Record the token usage of a prompt and the tokens its last request
     /// sent, 0 when unknown (ignored if the session has no persisted messages
     /// yet).
@@ -435,6 +452,9 @@ enum SummaryEntryLight {
         #[allow(dead_code)]
         message: IgnoredAny,
     },
+    Compact {
+        messages: Vec<IgnoredAny>,
+    },
     Usage {},
 }
 
@@ -510,6 +530,7 @@ fn summarize_file(path: &Path, modified: SystemTime) -> Option<SessionSummary> {
         if first_prompt.is_some() {
             match serde_json::from_str::<SummaryEntryLight>(trimmed) {
                 Ok(SummaryEntryLight::Message { .. }) => message_count += 1,
+                Ok(SummaryEntryLight::Compact { messages }) => message_count = messages.len(),
                 Ok(SummaryEntryLight::Model { model: next }) => model = next,
                 Ok(SummaryEntryLight::Usage {} | SummaryEntryLight::Header {}) => {}
                 Err(_) => saw_error = true,
@@ -526,6 +547,9 @@ fn summarize_file(path: &Path, modified: SystemTime) -> Option<SessionSummary> {
                             }
                         }
                     }
+                }
+                Ok(SessionEntry::Compact { messages }) => {
+                    message_count = messages.len();
                 }
                 Ok(SessionEntry::Model { model: next }) => model = next,
                 Ok(SessionEntry::Usage { .. } | SessionEntry::Header { .. }) => {}
@@ -643,6 +667,13 @@ fn load_file(path: &Path) -> Result<SessionData, Error> {
         match serde_json::from_str::<SessionEntry>(line.trim()) {
             Ok(SessionEntry::Message { message }) => {
                 messages.push(message);
+                last_valid_end = line_end;
+            }
+            Ok(SessionEntry::Compact {
+                messages: compacted,
+            }) => {
+                messages = compacted;
+                context = 0;
                 last_valid_end = line_end;
             }
             Ok(SessionEntry::Usage {

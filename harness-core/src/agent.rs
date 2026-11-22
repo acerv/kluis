@@ -3,6 +3,7 @@
 
 //! The agent loop.
 
+use std::borrow::Cow;
 use std::fmt;
 use std::str::FromStr;
 
@@ -304,7 +305,7 @@ impl Agent {
             turns += 1;
 
             on_event(Event::TurnStart);
-            let turn = self.next_turn_retrying(&mut on_event).await?;
+            let turn = self.next_turn_retrying(None, &mut on_event).await?;
 
             // Keep the whole assistant turn (text, tool calls, thought
             // signatures) in the history, before any tool result.
@@ -400,6 +401,47 @@ impl Agent {
         }
     }
 
+    /// Ask the model to summarize the conversation so far and replace the
+    /// history with a compact handoff, freeing context tokens for subsequent
+    /// prompts.
+    ///
+    /// An optional `focus` steers what the summary should preserve. If the
+    /// request fails, is cancelled, or returns empty text, the existing
+    /// history is left untouched.
+    pub async fn compact(
+        &mut self,
+        focus: Option<&str>,
+        mut on_event: impl FnMut(Event<'_>),
+    ) -> Result<String, Error> {
+        if self.req.messages.is_empty() {
+            return Err("nothing to compact".into());
+        }
+        let instruction = compact_instruction(focus);
+        on_event(Event::TurnStart);
+        let turn = self
+            .next_turn_retrying(Some(&instruction), &mut on_event)
+            .await?;
+
+        let mut raw = turn.content.joined_texts().unwrap_or_default();
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            on_event(Event::Text(trimmed));
+        }
+        on_event(Event::TurnEnd(turn.usage.as_ref()));
+
+        if trimmed.is_empty() {
+            return Err("model returned an empty summary".into());
+        }
+        self.set_history(vec![
+            ChatMessage::user(format!("{COMPACT_HEADER}\n\n{trimmed}")),
+            ChatMessage::assistant(COMPACT_ACK),
+        ]);
+        if trimmed.len() != raw.len() {
+            raw = trimmed.to_owned();
+        }
+        Ok(raw)
+    }
+
     /// Text the login used for `kind` requires as the first system prompt
     /// block.
     fn system_prefix(&self, kind: AdapterKind) -> Option<&'static str> {
@@ -410,11 +452,12 @@ impl Agent {
     /// as the [`RetryPolicy`] says.
     async fn next_turn_retrying(
         &self,
+        extra_user: Option<&str>,
         on_event: &mut impl FnMut(Event<'_>),
     ) -> Result<Turn, Error> {
         let mut attempt = 0;
         loop {
-            let err = match self.next_turn(on_event).await {
+            let err = match self.next_turn(extra_user, on_event).await {
                 Ok(turn) => return Ok(turn),
                 Err(err) => err,
             };
@@ -432,9 +475,15 @@ impl Agent {
     }
 
     /// Build the per-turn request for `model`, applying any OAuth system
-    /// prefix and Anthropic prompt-cache breakpoints without mutating `self.req`
-    /// or shifting the cloned message buffer.
-    fn build_request(&self, model: &ModelIden, prefix: Option<&'static str>) -> ChatRequest {
+    /// prefix, an optional transient trailing user message, and Anthropic
+    /// prompt-cache breakpoints without mutating `self.req` or shifting the
+    /// cloned message buffer.
+    fn build_request(
+        &self,
+        model: &ModelIden,
+        prefix: Option<&'static str>,
+        extra_user: Option<&str>,
+    ) -> ChatRequest {
         let anthropic_cache = uses_anthropic_cache(model);
         let (system, leading_system) = match (prefix, self.req.system.as_deref()) {
             (Some(prefix), Some(sys)) => (Some(prefix.to_owned()), Some(ChatMessage::system(sys))),
@@ -452,12 +501,18 @@ impl Agent {
             }
         });
 
-        let mut messages =
-            Vec::with_capacity(self.req.messages.len() + usize::from(has_leading_system));
+        let mut messages = Vec::with_capacity(
+            self.req.messages.len()
+                + usize::from(has_leading_system)
+                + usize::from(extra_user.is_some()),
+        );
         if let Some(msg) = leading_system {
             messages.push(msg);
         }
         messages.extend(self.req.messages.iter().cloned());
+        if let Some(text) = extra_user {
+            messages.push(ChatMessage::user(text));
+        }
 
         let mut tools = self.req.tools.clone();
         if anthropic_cache {
@@ -482,7 +537,11 @@ impl Agent {
     ///
     /// The turn joins the history only once complete: a cut stream, like
     /// pi does, is never sent back to the model.
-    async fn next_turn(&self, on_event: &mut impl FnMut(Event<'_>)) -> Result<Turn, Error> {
+    async fn next_turn(
+        &self,
+        extra_user: Option<&str>,
+        on_event: &mut impl FnMut(Event<'_>),
+    ) -> Result<Turn, Error> {
         let target = self.client.resolve_service_target(&self.model).await?;
         let mut options = ChatOptions::default()
             .with_capture_content(true)
@@ -498,7 +557,7 @@ impl Agent {
                 options.with_prompt_cache_key(&*self.cache_key.hyphenated().encode_lower(&mut buf));
         }
         let prefix = self.system_prefix(target.model.adapter_kind);
-        let req = self.build_request(&target.model, prefix);
+        let req = self.build_request(&target.model, prefix, extra_user);
         let res = self
             .client
             .exec_chat_stream(target, req, Some(&options))
@@ -628,6 +687,25 @@ const TRUNCATED: &str = "response was truncated at max_tokens; tool call was not
 /// Result of a tool call repeated identically too many times in a row.
 const REPEATED_CALL: &str =
     "repeated identical tool call; try a different approach or explain the blocker";
+
+const COMPACT_PROMPT: &str = "Summarize the conversation so far as a concise handoff so work can \
+continue seamlessly without the earlier messages. Do not call any tools. Include:\n\
+- The user's goal and key decisions or constraints\n\
+- Files inspected, created, or modified (with exact paths)\n\
+- Important findings, errors, or command results\n\
+- Remaining tasks and next steps";
+
+const COMPACT_HEADER: &str = "Summary of the earlier conversation:";
+const COMPACT_ACK: &str = "Understood. Continuing from the compacted summary.";
+
+fn compact_instruction(focus: Option<&str>) -> Cow<'static, str> {
+    match focus.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(focus) => Cow::Owned(format!(
+            "{COMPACT_PROMPT}\n\nPay particular attention to: {focus}"
+        )),
+        None => Cow::Borrowed(COMPACT_PROMPT),
+    }
+}
 
 fn same_call(a: &ToolCall, b: &ToolCall) -> bool {
     a.fn_name == b.fn_name && a.fn_arguments == b.fn_arguments
