@@ -233,6 +233,7 @@ fn slash_commands() {
             "/compact keep api",
             Action::Slash(SlashCommand::Compact(Some("keep api".into()))),
         ),
+        ("/status", Action::Slash(SlashCommand::Status)),
         ("/quit", Action::Slash(SlashCommand::Quit)),
         ("/help", Action::Slash(SlashCommand::Help)),
     ] {
@@ -822,6 +823,14 @@ fn slash_command_autocomplete_popup_and_tab_completion() {
         Action::Slash(SlashCommand::New)
     );
     assert!(!app.is_completion_open());
+
+    // Partial `/s` resolves to `/status`.
+    app.handle_event(key(KeyCode::Char('/')));
+    app.handle_event(key(KeyCode::Char('s')));
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Slash(SlashCommand::Status)
+    );
 
     app.handle_event(Event::Paste("/NEW".into()));
     assert_eq!(
@@ -1513,4 +1522,39 @@ fn no_color_keeps_code_plain_with_any_theme() {
     let mut app = App::new("model", status(), Theme::new(false));
     app.set_code_theme(code_theme("solarized-dark").unwrap());
     assert!(code_colors(&mut app).is_empty());
+}
+
+#[test]
+fn status_reports_model_session_context_and_cache_hit_rate() {
+    let mut app = App::new("claude-sonnet-4-5", status(), Theme::new(false));
+    assert_eq!(
+        app.status_text(None, 0),
+        "model:   claude-sonnet-4-5 (default)\nsession: off · 0 messages\ntokens:  0"
+    );
+
+    app.apply_update(AgentUpdate::TurnEnd(TokenUsage {
+        input: 2_000,
+        output: 500,
+        cached: 0,
+    }));
+    app.apply_update(AgentUpdate::TurnEnd(TokenUsage {
+        input: 1_000,
+        output: 600,
+        cached: 7_000,
+    }));
+    assert_eq!(
+        app.status_text(Some("20261122-171500"), 4),
+        "model:   claude-sonnet-4-5 (default)\n\
+         session: 20261122-171500 · 4 messages\n\
+         context: 8K tokens\n\
+         tokens:  3K input · 7K cached (70% hit) · 1.1K output"
+    );
+
+    // Restoring and resetting usage clears cumulative counts.
+    app.reset_session();
+    assert!(app.usage().is_empty());
+    assert_eq!(
+        app.status_text(Some("new"), 1),
+        "model:   claude-sonnet-4-5 (default)\nsession: new · 1 message\ntokens:  0"
+    );
 }

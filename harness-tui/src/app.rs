@@ -159,6 +159,7 @@ pub enum SlashCommand {
     Thinking(Option<String>),
     Resume(Option<String>),
     Compact(Option<String>),
+    Status,
     Copy,
     New,
     Quit,
@@ -210,6 +211,8 @@ pub struct App {
     hidden_reasoning: String,
     /// Whether any reasoning lines were emitted during the current turn.
     emitted_reasoning: bool,
+    /// Cumulative token usage across the active conversation.
+    usage: TokenUsage,
     /// Tokens the last request sent, as the provider counted them: the
     /// size of the conversation, or 0 before its first request.
     context: u64,
@@ -243,6 +246,7 @@ impl App {
             live_reasoning: String::new(),
             hidden_reasoning: String::new(),
             emitted_reasoning: false,
+            usage: TokenUsage::default(),
             context: 0,
             notice: None,
             picker: None,
@@ -367,11 +371,22 @@ impl App {
 
     /// Forget the conversation and drop pending scrollback (e.g. on `/new`).
     pub fn reset_session(&mut self) {
+        self.usage = TokenUsage::default();
         self.context = 0;
         self.clear_live();
         self.scrollback.clear();
         self.todos.clear();
         self.notice = None;
+    }
+
+    /// Cumulative token usage recorded for the current conversation.
+    pub fn usage(&self) -> TokenUsage {
+        self.usage
+    }
+
+    /// Restore cumulative token usage (e.g. from a resumed session).
+    pub fn set_usage(&mut self, usage: TokenUsage) {
+        self.usage = usage;
     }
 
     /// Tokens the last request of the conversation sent, 0 when unknown.
@@ -385,9 +400,43 @@ impl App {
         self.context = tokens;
     }
 
+    /// Multi-line summary of the active model, session, context, and token
+    /// usage shown by `/status`.
+    pub fn status_text(&self, session: Option<&str>, messages: usize) -> String {
+        use std::fmt::Write;
+
+        let mut out = String::with_capacity(128);
+        let _ = write!(out, "model:   {} ({})", self.model, self.thinking);
+        let session_label = session.unwrap_or("off");
+        let unit = if messages == 1 { "message" } else { "messages" };
+        let _ = write!(out, "\nsession: {session_label} · {messages} {unit}");
+        if self.context > 0 {
+            let _ = write!(out, "\ncontext: {} tokens", ScaledTokens(self.context));
+        }
+        if self.usage.is_empty() {
+            out.push_str("\ntokens:  0");
+        } else {
+            let _ = write!(
+                out,
+                "\ntokens:  {} input · {} cached",
+                ScaledTokens(self.usage.input),
+                ScaledTokens(self.usage.cached),
+            );
+            let prompt = self.usage.prompt();
+            if prompt > 0 {
+                let pct = ((self.usage.cached as u128 * 100 + prompt as u128 / 2) / prompt as u128)
+                    as u64;
+                let _ = write!(out, " ({pct}% hit)");
+            }
+            let _ = write!(out, " · {} output", ScaledTokens(self.usage.output));
+        }
+        out
+    }
+
     /// Replay a restored conversation history into scrollback, with its size
     /// unknown until [`App::set_context`] or its next request.
     pub fn replay_history(&mut self, messages: &[ChatMessage]) {
+        self.usage = TokenUsage::default();
         self.context = 0;
         let mut tool_calls: HashMap<&str, (&str, &Value)> = HashMap::new();
         for msg in messages {
@@ -576,6 +625,7 @@ impl App {
                 }
             }
             AgentUpdate::TurnEnd(usage) => {
+                self.usage += usage;
                 self.context = usage.prompt();
             }
             AgentUpdate::Retry {
@@ -1320,6 +1370,7 @@ fn parse_slash(input: &str) -> Option<Result<SlashCommand, String>> {
         "/thinking" => Ok(SlashCommand::Thinking(arg)),
         "/resume" => Ok(SlashCommand::Resume(arg)),
         "/compact" => Ok(SlashCommand::Compact(arg)),
+        "/status" => Ok(SlashCommand::Status),
         "/copy" => Ok(SlashCommand::Copy),
         "/new" => Ok(SlashCommand::New),
         "/quit" | "/exit" => Ok(SlashCommand::Quit),

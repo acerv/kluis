@@ -344,7 +344,11 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
             picker_entries = entries;
             let model = default_model.to_owned();
             let writer = store.create(&model);
-            (model, Vec::new(), Some(Session::new(store, writer, 0)))
+            (
+                model,
+                Vec::new(),
+                Some(Session::new(store, writer, TokenUsage::default(), 0)),
+            )
         } else {
             let data = store.load(query)?;
             open_loaded_session(store, data, args.model.as_deref())?
@@ -353,7 +357,7 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
         let model = default_model.to_owned();
         let session = store.map(|store| {
             let writer = store.create(&model);
-            Session::new(store, writer, 0)
+            Session::new(store, writer, TokenUsage::default(), 0)
         });
         (model, Vec::new(), session)
     };
@@ -478,7 +482,7 @@ fn open_loaded_session(
     if model_override.is_some() && model != data.meta.model {
         writer.append_model(&model)?;
     }
-    let session = Session::new(store, writer, data.context);
+    let session = Session::new(store, writer, data.usage, data.context);
     Ok((model, data.messages, Some(session)))
 }
 

@@ -37,6 +37,6 @@
 - Spinner with elapsed time and live `bash` output preview.
 - Persistent input history, model and session pickers, and `/copy` of the last
   reply.
-- Slash commands: `/model`, `/thinking`, `/resume`, `/compact`, `/copy`, `/new`, `/help`,
-  `/quit`.
+- Slash commands: `/model`, `/thinking`, `/resume`, `/copy`, `/compact`, `/status`, `/new`,
+  `/help`, `/quit`.
 - Falls back to line mode when stdin or stdout is not a terminal.

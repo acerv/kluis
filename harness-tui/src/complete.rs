@@ -15,7 +15,7 @@ use crate::style::Theme;
 use crate::terminal::truncate_width;
 
 /// Maximum visible completion rows below the editor.
-const MAX_COMPLETION_ROWS: u16 = 8;
+const MAX_COMPLETION_ROWS: u16 = 10;
 
 struct CommandSpec {
     name: &'static str,
@@ -48,6 +48,11 @@ const COMMANDS: &[CommandSpec] = &[
         name: "/compact",
         arg: Some("[focus]"),
         description: "summarize the conversation to save tokens",
+    },
+    CommandSpec {
+        name: "/status",
+        arg: None,
+        description: "show model, session, and token usage",
     },
     CommandSpec {
         name: "/new",

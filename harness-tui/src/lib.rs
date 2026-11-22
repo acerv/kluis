@@ -62,16 +62,25 @@ pub struct Status {
 pub struct Session {
     store: SessionStore,
     writer: SessionWriter,
+    /// Cumulative token usage recorded in this session.
+    usage: TokenUsage,
     /// Tokens the last request of the conversation sent, 0 when unknown.
     context: u64,
 }
 
 impl Session {
-    /// A session whose last request sent `context` tokens, 0 when unknown.
-    pub fn new(store: SessionStore, writer: SessionWriter, context: u64) -> Self {
+    /// A session with cumulative `usage` and last request size `context` (0
+    /// when unknown).
+    pub fn new(
+        store: SessionStore,
+        writer: SessionWriter,
+        usage: TokenUsage,
+        context: u64,
+    ) -> Self {
         Self {
             store,
             writer,
+            usage,
             context,
         }
     }
@@ -84,6 +93,7 @@ impl Session {
         usage: TokenUsage,
         context: u64,
     ) -> io::Result<()> {
+        self.usage += usage;
         if context > 0 {
             self.context = context;
         }
@@ -98,9 +108,15 @@ impl Session {
         messages: &[ChatMessage],
         usage: TokenUsage,
     ) -> io::Result<()> {
+        self.usage += usage;
         self.context = 0;
         self.writer.append_compact(messages)?;
         self.writer.append_usage(usage, 0)
+    }
+
+    /// Cumulative token usage recorded in this session.
+    pub fn usage(&self) -> TokenUsage {
+        self.usage
     }
 
     /// Tokens the last request of the conversation sent, 0 when unknown.
@@ -136,6 +152,7 @@ impl Session {
     /// append to it.
     pub fn activate(&mut self, data: &SessionData) {
         self.writer = self.store.open(data);
+        self.usage = data.usage;
         self.context = data.context;
     }
 
@@ -143,6 +160,7 @@ impl Session {
     /// previous session file intact on disk.
     pub fn rotate(&mut self, model: &str) {
         self.writer = self.store.create(model);
+        self.usage = TokenUsage::default();
         self.context = 0;
     }
 }
@@ -230,7 +248,10 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
     app.push_banner(&banner);
     if !agent.history().is_empty() {
         app.replay_history(agent.history());
-        app.set_context(session.as_ref().map_or(0, Session::context));
+        if let Some(session) = session.as_ref() {
+            app.set_usage(session.usage());
+            app.set_context(session.context());
+        }
     } else if !picker_entries.is_empty() {
         app.open_picker(picker_entries, None);
     }
@@ -348,6 +369,13 @@ async fn handle_slash(
                 focus.as_deref(),
             )
             .await;
+        }
+        SlashCommand::Status => {
+            let messages = agent.history().len();
+            let label = session
+                .as_deref()
+                .map(|s| if messages == 0 { "new" } else { s.short_id() });
+            app.push_info(app.status_text(label, messages));
         }
         SlashCommand::Copy => match clipboard::last_assistant_text(agent.history()) {
             None => app.push_info("[nothing to copy]"),
@@ -537,6 +565,7 @@ fn resume_session(id: &str, agent: &mut Agent, app: &mut App, session: Option<&m
         agent.history().len()
     ));
     app.replay_history(agent.history());
+    app.set_usage(session.usage());
     app.set_context(session.context());
 }
 
