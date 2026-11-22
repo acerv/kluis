@@ -1,253 +1,123 @@
-# K-Luis
+<p align="center">
+  <img src="logo.png" alt="K-Luis logo" width="160">
+</p>
 
-![K-Luis logo](logo.png)
+<h1 align="center">K-Luis</h1>
 
-> Simplicity-focused AI harness with a fully configurable native sandbox.
+<p align="center">
+  Simplicity-focused AI harness with a fully configurable native sandbox.
+</p>
 
-[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
-[![Platform: Linux](https://img.shields.io/badge/platform-Linux-9cf)](https://www.kernel.org/)
+<p align="center">
+  <a href="https://github.com/acerv/kluis/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/acerv/kluis/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="License: GPL-3.0" src="https://img.shields.io/badge/license-GPL--3.0-blue"></a>
+  <a href="https://www.kernel.org/"><img alt="Platform: Linux" src="https://img.shields.io/badge/platform-Linux-9cf"></a>
+</p>
 
-<!-- TODO: record a 10-second GIF of `kl "fix the failing tests"` and
-     replace this with: ![K-Luis demo](demo.gif) -->
+K-Luis is the project, `kl` is the command you run. The Cargo crates and
+`HARNESS_*` environment variables use the internal name, `harness`.
 
 ## Why K-Luis
 
-Most coding agents either interrupt you with permission prompts or run
-whatever the model asks directly on the host. K-Luis is sandboxed by default:
+K-Luis is a minimal harness. It has what you need and nothing more:
 
-- Choose exactly which folders and ports the model can touch.
-- Model commands run in a `hakoniwa` container, not on your machine.
+- Everything a coding agent needs: read, search and edit files, run commands,
+  fetch web pages, and ask you questions. See [Features](docs/features.md).
+- A small terminal UI with sessions, model switching and streaming replies.
+- One short config file, and an option for each setting.
+- Any provider supported by `genai`, plus a Claude subscription login.
+
+It also has a good sandbox, on by default. Most coding agents either
+interrupt you with permission prompts or run whatever the model asks directly
+on the host. K-Luis does neither:
+
+- You choose which folders and ports the model can touch.
+- Commands run in a `hakoniwa` container, not on your machine.
 - `.git` stays read-only, so hooks and config cannot run code as you.
 - API keys and `~/.kluis` are never exposed to the sandbox.
-- No network unless you explicitly allow it.
+- There is no network unless you allow it.
 
-Prompt injection stops being a disaster: the worst a malicious instruction can
-do is mess with the folders you gave it.
+A malicious instruction in a file or web page can only affect the folders you
+gave the model.
 
-## Quick start
+## Install
+
+K-Luis needs Linux and a recent stable Rust toolchain. Allowing individual TCP
+ports needs Linux 6.7 or later.
 
 ```sh
 cargo install --path harness-tui
-
 export DEEPSEEK_API_KEY="sk-..."
-kl "fix the typo in README.md"   # one task, one command
-kl                                # interactive chat, Ctrl-D to quit
-kl --login anthropic             # use a Claude subscription instead
-kl --resume                       # continue a previous session
 ```
 
-Want more control? `kl --strict` makes the project read-only, and
-`kl --no-sandbox` turns the container off.
+## Usage
 
-## Configuration
+```sh
+kl "fix the typo in README.md"   # one task, one command
+kl                               # interactive chat, Ctrl-D to quit
+kl --login anthropic             # use a Claude subscription instead
+kl --resume                      # continue a previous session
+kl --strict                      # make the project read-only
+kl --no-sandbox                  # run tools on the host
+```
 
-The configuration file selects which parts of the container to expose or
-deny to the model. Credentials, keys and shell history in `$HOME` (`~/.ssh`,
-`~/.aws`, `gh`, registry and AI tool tokens, browser profiles, ...) are
-always hidden; `deny` hides more.
+Settings live in `~/.kluis/config.toml`:
 
 ```toml
 [generic]
-model = "deepseek-chat"
-thinking = "medium"
+model = "ollama::qwen2.5-coder"   # a local model, no API key needed
+thinking = "medium"               # default, low, medium or high
 
 [sandbox]
-read = ["/etc/ssl"]
-write = ["~/scratch"]
-deny = ["~/work/secrets"]
-connect = [11434]
-network = false
-max_processes = 1024
-tmp_size = "512M"
-max_memory = "4G"
-env = ["CC", "CFLAGS"]
+read = ["/etc/ssl"]               # extra folders the model can read
+write = ["~/scratch"]             # extra folders the model can change
+deny = ["~/work/secrets"]         # folders to hide
+connect = [5432]                  # TCP ports commands can reach, e.g. a local PostgreSQL
+max_memory = "4G"                 # memory limit per command
 ```
 
-| Key | What it does | Default |
-|---|---|---|
-| `generic.model` | Model to use | `deepseek-chat` |
-| `generic.thinking` | Thinking effort: `default`, `low`, `medium`, `high` | `default` |
-| `sandbox.read` | Extra folders the model can read | none |
-| `sandbox.write` | Extra folders the model can change | none |
-| `sandbox.deny` | Paths to hide, on top of the built-in credentials | none |
-| `sandbox.connect` | TCP ports the model can connect to | none |
-| `sandbox.network` | Allow any network | `false` |
-| `sandbox.max_processes` | Processes and threads at once | `1024` |
-| `sandbox.tmp_size` | Size of the private `/tmp` | a quarter of RAM |
-| `sandbox.max_memory` | Virtual memory limit per command | none |
-| `sandbox.env` | Environment variables passed to commands | none |
+All settings are listed in [Configuration](docs/configuration.md).
 
-Paths may start with `~`; sizes take a `K`, `M` or `G` suffix.
+### Local and remote models
 
-Lists add up with the matching command-line options, and switches turn on when
-either the file or the CLI enables them.
-
-| Environment variable | What it does |
-|---|---|
-| `HARNESS_MODEL` | Model to use, like `--model` |
-| `HARNESS_THINKING` | Thinking effort, like `--thinking` |
-| `HARNESS_CONFIG` | Config file to read, like `--config` |
-| `NO_COLOR` | Turn colors off |
-
-| Command-line option | What it does |
-|---|---|
-| `-c`, `--continue` | Continue the latest session in this folder |
-| `--resume [ID]` | Resume a session, with a picker when no ID is given |
-| `--no-session` | Do not read or write session files |
-| `--strict` | Make the current folder read-only |
-| `--no-sandbox` | Run tools on the host |
-| `--login`, `--logout` | Log in to or out of a subscription (`anthropic`) |
-
-Every setting of the file also has an option: see `kl --help`.
-
-### API keys
-
-Provider credentials go in `~/.kluis/auth.toml`, keyed by the lowercase
-provider name. Each entry may set `api_key` and/or `endpoint`:
+Every provider in `~/.kluis/auth.toml` is available at the same time. Add a
+local Ollama server next to a remote provider:
 
 ```toml
 [deepseek]
 api_key = "sk-..."
 
-[anthropic]
-api_key = "sk-ant-..."
-
-[openai]
-api_key = "sk-..."
-
-# Custom endpoint, for example a local OpenAI-compatible server.
-[genai_1]
-endpoint = "http://localhost:8000/v1"
+[ollama]
+endpoint = "http://localhost:11434"
 ```
 
-Keep the file private: `chmod 600 ~/.kluis/auth.toml`. Environment variables
-such as `DEEPSEEK_API_KEY` still take precedence, and an OAuth login takes
-precedence over `api_key`.
-
-## Features
-
-### Agent
-
-- Streaming replies and reasoning, with configurable thinking effort.
-- Rate limits, overloaded servers and dropped connections are retried up to
-  five times with exponential backoff (1 s to 16 s), honoring `Retry-After`.
-- Read-only tools (`read`, `ls`, `find`, `grep`) run in parallel.
-- `AGENTS.md` instructions loaded from `~/.kluis/AGENTS.md`, the repository
-  root, and the current folder. Project ones must not be symlinks, which
-  could point at files the sandbox hides.
-- Live model discovery across configured providers, with a per-provider
-  timeout.
-- Sessions persisted as append-only JSONL per workspace; continue the latest
-  or resume any session by ID.
-
-### Tools
-
-- `read`, `write`, `edit`, `ls`, `find`, `grep`, `bash`, `todo`, `ask_user`,
-  `web_fetch`.
-- `edit` applies changes atomically and shows a unified diff.
-- `bash` streams cleaned output with a timeout and line limits.
-- `todo` keeps the plan of a multi-step task.
-- `ask_user` asks you a question mid-task, with suggested answers to pick
-  from or your own text (interactive mode only).
-- `web_fetch` reads a web page as Markdown (or raw with `raw: true`), 50 KB
-  at a time. It runs outside the sandbox, so it is offered only with
-  `--network` (or `network = true`) or `--no-sandbox`.
-- Tool results are bounded JSON, with `{"error": "..."}` responses so the
-  model recovers instead of derailing.
-
-### TUI
-
-- Inline terminal UI that keeps native scrollback.
-- Live streaming Markdown and reasoning; `Ctrl-O` toggles thinking display.
-- Spinner with elapsed time and live `bash` output preview.
-- Persistent input history, model and session pickers, and `/copy` of the
-  last reply.
-- Slash commands: `/model`, `/thinking`, `/resume`, `/copy`, `/new`, `/help`,
-  `/quit`.
-- Falls back to line mode when stdin or stdout is not a terminal.
-
-### Sandbox
-
-- Commands run in a `hakoniwa` container that shows only the configured
-  folders. The current folder is writable (`--strict`: read-only);
-  `--no-sandbox` turns the container off.
-- `.git` stays read-only, and a new `.git` is disabled after each prompt.
-- No network by default; allow all of it, or some TCP ports (Linux 6.7+),
-  which are then open on every host, not only locally.
-- Cloud drives, network shares and credentials in `$HOME` are hidden.
-- Kernel attack surface is reduced: no user namespaces, only common socket
-  types, no core dumps.
-- Limits on processes and `/tmp`; leftover programs are stopped after each
-  prompt, and on low memory commands are killed first.
-
-The sandbox cannot vet what the model writes: build scripts, Makefiles,
-`.cargo/config.toml`, `package.json` scripts and editor settings run as you
-when you build, test or open the project. Review the changes like any patch.
-
-### Git safety
-
-Your own git, outside the sandbox, runs hooks and some config settings of
-any repository it finds, as you. For full protection, set it up once:
+Then pick the model per run, or switch inside a chat with `/model`:
 
 ```sh
-git config --global safe.bareRepository explicit
+kl --model ollama::qwen2.5-coder "explain this function"   # local
+kl --model deepseek-flash "refactor the parser"             # remote
 ```
 
-and turn hooks off everywhere (yours too), for example in
-`~/.config/environment.d/git-safety.conf` and your shell profile:
+## Security model
 
-```sh
-GIT_CONFIG_COUNT=2
-GIT_CONFIG_KEY_0=core.hooksPath
-GIT_CONFIG_VALUE_0=/dev/null
-GIT_CONFIG_KEY_1=core.fsmonitor
-GIT_CONFIG_VALUE_1=false
-```
+The sandbox limits what commands can read, write and connect to. It cannot vet
+what the model writes: build scripts, Makefiles, `.cargo/config.toml`,
+`package.json` scripts and editor settings run as you when you build, test or
+open the project. Review the changes like any patch.
 
-### Auth & config
+Your own git, outside the sandbox, also runs repository hooks. See
+[Sandbox](docs/sandbox.md#git-safety) for how to turn them off.
 
-- Provider API keys from environment variables (via `genai`).
-- `~/.kluis/auth.toml` for per-provider `api_key` and `endpoint` (mode `0600`).
-- OAuth login to a Claude Pro/Max subscription: `kl --login anthropic`.
-- `~/.kluis/config.toml` for the default model, thinking effort, and sandbox
-  settings.
+## Documentation
 
-## Architecture
+- [Configuration](docs/configuration.md): settings, options, environment
+  variables and API keys
+- [Sandbox](docs/sandbox.md): what is isolated, what is not, and git safety
+- [Features](docs/features.md): agent, tools and terminal UI
+- [Architecture](docs/architecture.md): crates, process model and design
+  choices
+- [Roadmap](TODO.md): planned features
 
-The repository is a Cargo workspace with four crates:
+## License
 
-| Crate             | Responsibility                                                      |
-| ----------------- | ------------------------------------------------------------------- |
-| `harness-core`    | Agent loop, tool dispatch, auth, model discovery, sessions, prompts |
-| `harness-exec`    | Tool implementations and the async tool executor                    |
-| `harness-sandbox` | `hakoniwa` container configuration                                  |
-| `harness-tui`     | The `kl` frontend and inline terminal UI                            |
-
-When the sandbox is on, `kl` starts a worker process (`kl --tool-executor`)
-inside the container. The host agent and the worker talk over an async NDJSON
-protocol on stdio, supporting parallel tool calls and per-call cancellation.
-Commands and file access therefore never run in the host process. Only
-`ask_user` and `web_fetch` run there, as they need the user and the network.
-
-The agent is a plain state machine: it keeps the conversation as a
-`ChatRequest`, reports progress through a borrowed `Event` callback, and runs
-tool calls through an `Executor`, local or sandboxed. This keeps the UI and
-persistence out of the core loop.
-
-## Design choices
-
-- Linux only, sandboxed by default.
-- Tool results are bounded JSON, so one noisy command cannot flood the model
-  context.
-- Sessions are append-only JSONL files, one workspace folder per directory.
-- The TUI state machine is decoupled from terminal I/O and tested directly.
-- Credentials are never passed into the sandbox, and `~/.kluis` is hidden from
-  sandboxed tools.
-
-## Roadmap
-
-Planned features are tracked in [TODO.md](TODO.md).
-
----
-
-`cargo install --path harness-tui` and let the model work — safely.
+GPL-3.0-or-later. See [LICENSE](LICENSE).

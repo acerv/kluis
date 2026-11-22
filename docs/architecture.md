@@ -1,0 +1,31 @@
+# Architecture
+
+The repository is a Cargo workspace with four crates:
+
+| Crate             | Responsibility                                                      |
+| ----------------- | ------------------------------------------------------------------- |
+| `harness-core`    | Agent loop, tool dispatch, auth, model discovery, sessions, prompts |
+| `harness-exec`    | Tool implementations and the async tool executor                    |
+| `harness-sandbox` | `hakoniwa` container configuration                                  |
+| `harness-tui`     | The `kl` frontend and inline terminal UI                            |
+
+When the sandbox is on, `kl` starts a worker process (`kl --tool-executor`)
+inside the container. The host agent and the worker talk over an async NDJSON
+protocol on stdio, supporting parallel tool calls and per-call cancellation.
+Commands and file access therefore never run in the host process. Only
+`ask_user` and `web_fetch` run there, as they need the user and the network.
+
+The agent is a plain state machine. It keeps the conversation as a
+`ChatRequest`, reports progress through a borrowed `Event` callback, and runs
+tool calls through an `Executor`, local or sandboxed. This keeps the UI and
+persistence out of the core loop.
+
+## Design choices
+
+- Linux only, sandboxed by default.
+- Tool results are bounded JSON, so one noisy command cannot flood the model
+  context.
+- Sessions are append-only JSONL files, one workspace folder per directory.
+- The TUI state machine is decoupled from terminal I/O and tested directly.
+- Credentials are never passed into the sandbox, and `~/.kluis` is hidden from
+  sandboxed tools.
