@@ -7,18 +7,69 @@
 //! network unless `--network` or `--allow-connect` is given. Commands
 //! cannot create user namespaces, nor Unix sockets without `--network`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use harness_core::tools::{Executor, SandboxConfig};
 use harness_core::Error;
-use harness_sandbox::{GitGuard, Options, Sandbox};
+use harness_sandbox::{apparmor, GitGuard, Options, Sandbox};
 
 use crate::Args;
+
+/// Name of the AppArmor profile of `kl`.
+const PROFILE: &str = "kl";
+
+/// Where the AppArmor help suggests to copy `kl`, as only root may change it.
+const SYSTEM_DIR: &str = "/usr/local/bin";
+
+/// The documentation of the AppArmor setup.
+const APPARMOR_DOCS: &str = concat!(
+    env!("CARGO_PKG_REPOSITORY"),
+    "/blob/main/docs/sandbox.md#ubuntu"
+);
+
+/// The AppArmor profile that lets the running `kl` create its sandbox on
+/// Ubuntu, if only root may change it.
+pub fn apparmor_profile() -> Result<String, Error> {
+    let exe = std::env::current_exe()?;
+    apparmor::check_owner(&exe).map_err(|e| {
+        format!("{e}\nCopy kl to a folder only root may change first, see {APPARMOR_DOCS}")
+    })?;
+    Ok(apparmor::profile(PROFILE, &exe)?)
+}
+
+/// How to let `exe` create its sandbox when AppArmor blocks it.
+fn apparmor_help(exe: &Path) -> String {
+    let mut steps = String::new();
+    let target = if apparmor::check_owner(exe).is_ok() {
+        exe.to_path_buf()
+    } else {
+        let target = PathBuf::from(SYSTEM_DIR).join(exe.file_name().unwrap_or(PROFILE.as_ref()));
+        steps += &format!(
+            "  sudo install -m 755 {} {}\n",
+            exe.display(),
+            target.display()
+        );
+        target
+    };
+    let target = target.display();
+    format!(
+        "AppArmor blocks the user namespaces the sandbox needs.\n\n\
+         To allow kl, run once:\n\n\
+         {steps}  \
+         {target} --apparmor-profile | sudo tee /etc/apparmor.d/{PROFILE} > /dev/null\n  \
+         sudo apparmor_parser -r /etc/apparmor.d/{PROFILE}\n\n\
+         Then start {target}, or run with --no-sandbox. Details and alternatives:\n\
+         {APPARMOR_DOCS}"
+    )
+}
 
 /// Spawn the sandboxed tool executor for `args` in `cwd`, with the guard
 /// against git repositories its commands create.
 pub fn executor(args: &Args, cwd: &Path) -> Result<(Executor, GitGuard), Error> {
     let exe = std::env::current_exe()?;
+    if apparmor::userns_blocked() {
+        return Err(apparmor_help(&exe).into());
+    }
     let mut read = args.allow_read.clone();
     let mut write = args.allow_write.clone();
     let mut deny = args.deny_read.clone();

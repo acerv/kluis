@@ -50,3 +50,46 @@ GIT_CONFIG_VALUE_0=/dev/null
 GIT_CONFIG_KEY_1=core.fsmonitor
 GIT_CONFIG_VALUE_1=false
 ```
+
+## Ubuntu
+
+Since 23.10, Ubuntu lets a program create user namespaces only when an
+AppArmor profile allows it, and the sandbox needs them. `kl` detects this
+and stops with the commands to run. It never changes the system itself.
+
+### Option A: an AppArmor profile for kl
+
+The profile is attached to a copy of `kl` that only root can change. A
+profile for `~/.cargo/bin/kl` would let any program saved there get around
+the restriction.
+
+```sh
+sudo install -m 755 ~/.cargo/bin/kl /usr/local/bin/kl
+/usr/local/bin/kl --apparmor-profile | sudo tee /etc/apparmor.d/kl > /dev/null
+sudo apparmor_parser -r /etc/apparmor.d/kl
+```
+
+Then start `/usr/local/bin/kl`. After an upgrade, run the `install` command
+again. The profile follows Ubuntu's own profile for bubblewrap: `kl` may
+create the namespaces of its container, and every program it starts,
+sandboxed or not, gets no capabilities. `kl --apparmor-profile` refuses to
+print a profile for a binary that users other than root can change.
+
+To remove it:
+
+```sh
+sudo apparmor_parser -R /etc/apparmor.d/kl
+sudo rm /etc/apparmor.d/kl /usr/local/bin/kl
+```
+
+`kl` is linked dynamically, so `LD_PRELOAD` can still run other code under
+its profile, as with bubblewrap.
+
+### Option B: turn the restriction off
+
+```sh
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+```
+
+This lifts the restriction for every program, until the next boot. To keep
+it, write the same setting to `/etc/sysctl.d/60-apparmor-namespace.conf`.

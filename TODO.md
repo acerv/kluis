@@ -23,13 +23,10 @@
 - [ ] Warn when the project or `$HOME` is on a FUSE or network filesystem
 - [ ] Refuse more unneeded system calls (`keyctl`, `bpf`, `perf_event_open`,
   `userfaultfd`, mount family, `kexec`, module loading)
+- [ ] Static `kl` build (musl), so `LD_PRELOAD` cannot run code under its
+  AppArmor profile
 - [ ] Limit the memory of all commands together with a cgroup
   (`memory.max`), where systemd delegates the memory controller
-
-## Compatibility
-
-- [ ] Ubuntu 23.10+: AppArmor blocks unprivileged user namespaces; fail with
-  a clear message and document the setup
 
 ## Tools
 

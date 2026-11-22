@@ -20,6 +20,7 @@
 #[cfg(not(target_os = "linux"))]
 compile_error!("harness-sandbox only supports Linux");
 
+pub mod apparmor;
 mod env;
 mod git;
 mod init;

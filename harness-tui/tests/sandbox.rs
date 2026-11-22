@@ -32,6 +32,15 @@ fn default_runs_sandboxed() {
 }
 
 #[test]
+fn apparmor_profile_refuses_a_binary_users_can_change() {
+    let out = run_cli(&["--apparmor-profile"]);
+    assert!(!out.status.success());
+    assert!(out.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("other than root"), "{stderr}");
+}
+
+#[test]
 fn no_sandbox_runs_directly() {
     let out = run_cli(&["--no-sandbox"]);
     assert!(out.status.success());

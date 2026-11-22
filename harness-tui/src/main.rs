@@ -129,6 +129,11 @@ pub struct Args {
     #[arg(long, value_name = "PROVIDER", conflicts_with = "prompt")]
     logout: Option<OAuthProvider>,
 
+    /// Print an AppArmor profile that lets kl create its sandbox on Ubuntu,
+    /// then exit.
+    #[arg(long, conflicts_with_all = ["login", "logout", "prompt"])]
+    apparmor_profile: bool,
+
     /// Internal mode: run the NDJSON tool worker inside the sandbox container.
     #[arg(long, hide = true)]
     tool_executor: bool,
@@ -153,6 +158,10 @@ fn main() -> ExitCode {
 }
 
 fn launch(mut args: Args) -> Result<ExitCode, Error> {
+    if args.apparmor_profile {
+        print!("{}", sandbox::apparmor_profile()?);
+        return Ok(ExitCode::SUCCESS);
+    }
     let mut below_init = false;
     if args.tool_executor {
         // When memory runs out, the kernel kills commands before the
