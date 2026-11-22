@@ -651,7 +651,9 @@ async fn oauth_login_prefixes_system_prompt() {
         system[0]["text"],
         "You are Claude Code, Anthropic's official CLI for Claude."
     );
+    assert!(system[0].get("cache_control").is_none());
     assert_eq!(system[1]["text"], "own prompt");
+    assert_eq!(system[1]["cache_control"], json!({"type": "ephemeral"}));
     assert_eq!(system.as_array().unwrap().len(), 2);
 }
 
@@ -667,5 +669,8 @@ async fn api_key_keeps_system_prompt() {
     ))
     .unwrap();
 
-    assert_eq!(sent_system(auth, &server).await, "own prompt");
+    let system = sent_system(auth, &server).await;
+    assert_eq!(system.as_array().unwrap().len(), 1);
+    assert_eq!(system[0]["text"], "own prompt");
+    assert_eq!(system[0]["cache_control"], json!({"type": "ephemeral"}));
 }

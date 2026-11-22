@@ -711,3 +711,192 @@ async fn parallel_read_only_calls_preserve_paired_events_and_order() {
     assert!(sent_tools[1]["content"].as_str().unwrap().contains("beta"));
     assert!(sent_tools[3]["content"].as_str().unwrap().contains("gamma"));
 }
+
+/// Whether `message` carries an Anthropic `cache_control` breakpoint on its
+/// final content block.
+fn has_cache_control(message: &Value) -> bool {
+    message["content"]
+        .as_array()
+        .and_then(|parts| parts.last())
+        .and_then(|last| last.get("cache_control"))
+        == Some(&json!({ "type": "ephemeral" }))
+}
+
+/// Count every `cache_control` object in an Anthropic request payload.
+fn count_cache_breakpoints(value: &Value) -> usize {
+    match value {
+        Value::Object(map) => {
+            usize::from(map.contains_key("cache_control"))
+                + map.values().map(count_cache_breakpoints).sum::<usize>()
+        }
+        Value::Array(items) => items.iter().map(count_cache_breakpoints).sum(),
+        _ => 0,
+    }
+}
+
+#[tokio::test]
+async fn anthropic_caches_static_prefix_and_rolling_conversation_breakpoints() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "alpha\n").unwrap();
+    std::fs::write(dir.path().join("b.txt"), "beta\n").unwrap();
+
+    let first_calls = [
+        ("c1", "read", json!({ "path": "a.txt" })),
+        ("c2", "read", json!({ "path": "b.txt" })),
+    ];
+    let second_calls = [("c3", "bash", json!({ "command": "echo hi" }))];
+    let model = MockModel::start_anthropic(vec![
+        tool_calls(&first_calls),
+        tool_calls(&second_calls),
+        text("done"),
+        text("follow up"),
+    ])
+    .await;
+    let mut agent =
+        Agent::with_client(model.client_as(AdapterKind::Anthropic), "claude-sonnet-4-5")
+            .with_system("be concise")
+            .with_tool_context(ToolContext {
+                cwd: dir.path().to_owned(),
+                ..ToolContext::default()
+            });
+
+    assert_eq!(prompt(&mut agent, "inspect").await.unwrap(), "done");
+    assert_eq!(prompt(&mut agent, "next").await.unwrap(), "follow up");
+
+    let reqs = model.requests();
+    assert_eq!(reqs.len(), 4);
+
+    // Every request caches the system prompt and stays within Anthropic's 4-breakpoint cap.
+    for req in &reqs {
+        assert_eq!(
+            req["system"],
+            json!([{ "type": "text", "text": "be concise", "cache_control": { "type": "ephemeral" } }])
+        );
+        assert!(count_cache_breakpoints(req) <= 4, "{req}");
+    }
+
+    // Turn 1: [U1*]
+    let m0 = reqs[0]["messages"].as_array().unwrap();
+    assert_eq!(m0.len(), 1);
+    assert!(has_cache_control(&m0[0]));
+    assert_eq!(count_cache_breakpoints(&reqs[0]), 2);
+
+    // Turn 2: [U1*, A1, T1a, T1b*] — U1 stays marked (hits Turn 1 cache), T1b writes Turn 2.
+    let m1 = reqs[1]["messages"].as_array().unwrap();
+    assert_eq!(m1.len(), 4);
+    assert!(has_cache_control(&m1[0]));
+    assert!(!has_cache_control(&m1[1]));
+    assert!(!has_cache_control(&m1[2]));
+    assert!(has_cache_control(&m1[3]));
+    assert_eq!(count_cache_breakpoints(&reqs[1]), 3);
+
+    // Turn 3: [U1, A1, T1a, T1b*, A2, T2*] — breakpoint rolls forward from U1 to T1b.
+    let m2 = reqs[2]["messages"].as_array().unwrap();
+    assert_eq!(m2.len(), 6);
+    assert!(!has_cache_control(&m2[0]));
+    assert!(!has_cache_control(&m2[2]));
+    assert!(has_cache_control(&m2[3]));
+    assert!(!has_cache_control(&m2[4]));
+    assert!(has_cache_control(&m2[5]));
+    assert_eq!(count_cache_breakpoints(&reqs[2]), 3);
+
+    // Turn 4 (next user prompt): [..., T2*, A3, U2*] — hits Turn 3 cache at T2 and writes U2.
+    let m3 = reqs[3]["messages"].as_array().unwrap();
+    assert_eq!(m3.len(), 8);
+    assert!(!has_cache_control(&m3[3]));
+    assert!(has_cache_control(&m3[5]));
+    assert!(!has_cache_control(&m3[6]));
+    assert!(has_cache_control(&m3[7]));
+    assert_eq!(count_cache_breakpoints(&reqs[3]), 3);
+
+    // Stored history is never mutated with transient per-request cache options.
+    assert!(agent.history().iter().all(|m| m.options.is_none()));
+}
+
+#[tokio::test]
+async fn anthropic_without_system_prompt_caches_last_tool_and_skips_empty_user() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = MockModel::start_anthropic(vec![text("first"), text("second")]).await;
+    let mut agent =
+        Agent::with_client(model.client_as(AdapterKind::Anthropic), "claude-sonnet-4-5")
+            .with_tool_context(ToolContext {
+                cwd: dir.path().to_owned(),
+                ..ToolContext::default()
+            });
+
+    assert_eq!(prompt(&mut agent, "hi").await.unwrap(), "first");
+    // Empty user prompt must not get a cache_control block (Anthropic rejects empty text blocks).
+    assert_eq!(prompt(&mut agent, "").await.unwrap(), "second");
+
+    let reqs = model.requests();
+    assert!(reqs[0].get("system").is_none());
+    let tools = reqs[0]["tools"].as_array().unwrap();
+    assert_eq!(
+        tools.last().unwrap()["cache_control"],
+        json!({ "type": "ephemeral" })
+    );
+    assert!(has_cache_control(&reqs[0]["messages"][0]));
+
+    let m1 = reqs[1]["messages"].as_array().unwrap();
+    assert!(has_cache_control(&m1[0]));
+    assert!(!has_cache_control(&m1[2]));
+}
+
+#[tokio::test]
+async fn openai_sends_stable_prompt_cache_key_per_conversation() {
+    let dir = tempfile::tempdir().unwrap();
+    let call = ("call_1", "bash", json!({ "command": "echo ok" }));
+    let model = MockModel::start(vec![
+        tool_calls(&[call]),
+        text("done"),
+        text("after clear"),
+        text("after set_history"),
+    ])
+    .await;
+    let mut agent = agent(&model, dir.path());
+
+    assert_eq!(prompt(&mut agent, "first").await.unwrap(), "done");
+    agent.clear();
+    assert_eq!(prompt(&mut agent, "second").await.unwrap(), "after clear");
+    agent.set_history(vec![ChatMessage::user("restored")]);
+    assert_eq!(
+        prompt(&mut agent, "third").await.unwrap(),
+        "after set_history"
+    );
+
+    let reqs = model.requests();
+    assert_eq!(reqs.len(), 4);
+    let k0 = reqs[0]["prompt_cache_key"].as_str().unwrap();
+    let k1 = reqs[1]["prompt_cache_key"].as_str().unwrap();
+    let k2 = reqs[2]["prompt_cache_key"].as_str().unwrap();
+    let k3 = reqs[3]["prompt_cache_key"].as_str().unwrap();
+    assert!(!k0.is_empty());
+    assert_eq!(
+        k0, k1,
+        "turns in one conversation must share prompt_cache_key"
+    );
+    assert_ne!(k1, k2, "clear() must rotate prompt_cache_key");
+    assert_ne!(k2, k3, "set_history() must rotate prompt_cache_key");
+    assert!(reqs[0].get("prompt_cache_retention").is_none());
+}
+
+#[tokio::test]
+async fn non_openai_compatible_providers_do_not_receive_openai_cache_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    for kind in [AdapterKind::DeepSeek, AdapterKind::Mistral] {
+        let model = MockModel::start(vec![text("ok")]).await;
+        let mut agent = Agent::with_client(model.client_as(kind), "test-model").with_tool_context(
+            ToolContext {
+                cwd: dir.path().to_owned(),
+                ..ToolContext::default()
+            },
+        );
+        assert_eq!(prompt(&mut agent, "hi").await.unwrap(), "ok");
+        let req = &model.requests()[0];
+        assert!(req.get("prompt_cache_key").is_none(), "{kind:?}: {req}");
+        assert!(
+            req.get("prompt_cache_retention").is_none(),
+            "{kind:?}: {req}"
+        );
+    }
+}

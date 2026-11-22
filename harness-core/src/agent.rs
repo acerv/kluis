@@ -9,12 +9,13 @@ use std::str::FromStr;
 use futures_util::StreamExt;
 use genai::adapter::AdapterKind;
 use genai::chat::{
-    CacheControl, ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, ContentPart,
+    CacheControl, ChatMessage, ChatOptions, ChatRequest, ChatRole, ChatStreamEvent, ContentPart,
     MessageContent, ReasoningEffort, StopReason, ToolCall, ToolResponse, Usage,
 };
-use genai::Client;
+use genai::{Client, ModelIden};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use uuid::Uuid;
 
 use crate::models::{discover_models, ModelList};
 use crate::oauth::OAuthLogins;
@@ -106,6 +107,7 @@ pub struct Agent {
     model: String,
     thinking: Thinking,
     req: ChatRequest,
+    cache_key: Uuid,
     executor: Executor,
     host: HostTools,
     retry: RetryPolicy,
@@ -126,6 +128,7 @@ impl Agent {
             model: model.into(),
             thinking: Thinking::Default,
             req: ChatRequest::default().with_tools(tools::definitions()),
+            cache_key: Uuid::new_v4(),
             executor: Executor::default(),
             host: HostTools::default(),
             retry: RetryPolicy::default(),
@@ -222,13 +225,15 @@ impl Agent {
     /// Drop the conversation history, keeping the model, system prompt, and
     /// tool context.
     pub fn clear(&mut self) {
-        self.req.messages.clear();
+        self.req.messages = Vec::new();
+        self.cache_key = Uuid::new_v4();
     }
 
     /// Replace the conversation history, keeping the model, system prompt, and
     /// tool context.
     pub fn set_history(&mut self, messages: Vec<ChatMessage>) {
         self.req.messages = messages;
+        self.cache_key = Uuid::new_v4();
     }
 
     /// Initialize the agent with an existing conversation history.
@@ -336,10 +341,9 @@ impl Agent {
         }
     }
 
-    /// Text the login used for the model requires as the first system
-    /// prompt block.
-    fn system_prefix(&self) -> Option<&'static str> {
-        let kind = AdapterKind::from_model(&self.model).ok()?;
+    /// Text the login used for `kind` requires as the first system prompt
+    /// block.
+    fn system_prefix(&self, kind: AdapterKind) -> Option<&'static str> {
         self.oauth.as_ref()?.system_prefix(kind)
     }
 
@@ -368,12 +372,59 @@ impl Agent {
         }
     }
 
+    /// Build the per-turn request for `model`, applying any OAuth system
+    /// prefix and Anthropic prompt-cache breakpoints without mutating `self.req`
+    /// or shifting the cloned message buffer.
+    fn build_request(&self, model: &ModelIden, prefix: Option<&'static str>) -> ChatRequest {
+        let anthropic_cache = uses_anthropic_cache(model);
+        let (system, leading_system) = match (prefix, self.req.system.as_deref()) {
+            (Some(prefix), Some(sys)) => (Some(prefix.to_owned()), Some(ChatMessage::system(sys))),
+            (Some(prefix), None) if anthropic_cache => (None, Some(ChatMessage::system(prefix))),
+            (Some(prefix), None) => (Some(prefix.to_owned()), None),
+            (None, Some(sys)) if anthropic_cache => (None, Some(ChatMessage::system(sys))),
+            (None, sys) => (sys.map(str::to_owned), None),
+        };
+        let has_leading_system = leading_system.is_some();
+        let leading_system = leading_system.map(|msg| {
+            if anthropic_cache {
+                msg.with_options(CacheControl::Ephemeral)
+            } else {
+                msg
+            }
+        });
+
+        let mut messages =
+            Vec::with_capacity(self.req.messages.len() + usize::from(has_leading_system));
+        if let Some(msg) = leading_system {
+            messages.push(msg);
+        }
+        messages.extend(self.req.messages.iter().cloned());
+
+        let mut tools = self.req.tools.clone();
+        if anthropic_cache {
+            if !has_leading_system {
+                if let Some(last_tool) = tools.as_mut().and_then(|t| t.last_mut()) {
+                    last_tool.cache_control = Some(CacheControl::Ephemeral);
+                }
+            }
+            mark_conversation_cache(&mut messages);
+        }
+
+        ChatRequest {
+            system,
+            messages,
+            tools,
+            ..ChatRequest::default()
+        }
+    }
+
     /// Ask the model for its next turn, reporting its text as it streams,
     /// and return it with its token usage.
     ///
     /// The turn joins the history only once complete: a cut stream, like
     /// pi does, is never sent back to the model.
     async fn next_turn(&self, on_event: &mut impl FnMut(Event<'_>)) -> Result<Turn, Error> {
+        let target = self.client.resolve_service_target(&self.model).await?;
         let mut options = ChatOptions::default()
             .with_capture_content(true)
             .with_capture_tool_calls(true)
@@ -382,18 +433,16 @@ impl Agent {
         if let Some(effort) = self.thinking.reasoning_effort() {
             options = options.with_reasoning_effort(effort);
         }
-        let mut req = self.req.clone();
-        if let Some(prefix) = self.system_prefix() {
-            // Keep our prompt as a separate block: with a cache breakpoint,
-            // genai sends system blocks apart instead of joining them.
-            if let Some(system) = req.system.replace(prefix.to_owned()) {
-                req.messages.insert(0, ChatMessage::system(system));
-            }
-            options = options.with_cache_control(CacheControl::Ephemeral);
+        if uses_openai_cache_key(target.model.adapter_kind) {
+            let mut buf = Uuid::encode_buffer();
+            options =
+                options.with_prompt_cache_key(&*self.cache_key.hyphenated().encode_lower(&mut buf));
         }
+        let prefix = self.system_prefix(target.model.adapter_kind);
+        let req = self.build_request(&target.model, prefix);
         let res = self
             .client
-            .exec_chat_stream(&self.model, req, Some(&options))
+            .exec_chat_stream(target, req, Some(&options))
             .await?;
         let reasoning_back = needs_reasoning_back(res.model_iden.adapter_kind);
         let mut stream = res.stream;
@@ -458,6 +507,57 @@ fn needs_reasoning_back(kind: AdapterKind) -> bool {
         kind,
         AdapterKind::DeepSeek | AdapterKind::Kimi | AdapterKind::Moonshot
     )
+}
+
+/// Whether `model` uses Anthropic's block-level `cache_control` protocol.
+fn uses_anthropic_cache(model: &ModelIden) -> bool {
+    let (_, name) = model.model_name.namespace_and_name();
+    match model.adapter_kind {
+        AdapterKind::Anthropic => true,
+        AdapterKind::Vertex => name.starts_with("claude"),
+        _ => false,
+    }
+}
+
+/// Whether `kind` accepts OpenAI's `prompt_cache_key` routing hint.
+fn uses_openai_cache_key(kind: AdapterKind) -> bool {
+    matches!(kind, AdapterKind::OpenAI | AdapterKind::OpenAIResp)
+}
+
+/// Place rolling Anthropic prompt-cache breakpoints on `messages`:
+///
+/// 1. Last cacheable user/tool message so the request writes the current
+///    prefix into the cache for the next turn.
+/// 2. Last cacheable user/tool message before the final assistant turn,
+///    matching the previous turn's write breakpoint even when the latest
+///    turn added more than 20 content blocks.
+fn mark_conversation_cache(messages: &mut [ChatMessage]) {
+    mark_last_cacheable(messages);
+    if let Some(last_assistant) = messages.iter().rposition(|m| m.role == ChatRole::Assistant) {
+        mark_last_cacheable(&mut messages[..last_assistant]);
+    }
+}
+
+fn mark_last_cacheable(messages: &mut [ChatMessage]) {
+    if let Some(msg) = messages.iter_mut().rfind(|m| is_cacheable_message(m)) {
+        msg.options
+            .get_or_insert_with(Default::default)
+            .cache_control = Some(CacheControl::Ephemeral);
+    }
+}
+
+/// Whether `msg` is a user or tool turn with non-empty content that
+/// Anthropic accepts a `cache_control` breakpoint on.
+fn is_cacheable_message(msg: &ChatMessage) -> bool {
+    match msg.role {
+        ChatRole::User => msg.content.parts().iter().any(|part| match part {
+            ContentPart::Text(text) => !text.is_empty(),
+            ContentPart::Binary(_) | ContentPart::ToolResponse(_) | ContentPart::Custom(_) => true,
+            _ => false,
+        }),
+        ChatRole::Tool => !msg.content.tool_responses().is_empty(),
+        ChatRole::System | ChatRole::Assistant => false,
+    }
 }
 
 /// Result of a tool call the agent stopped waiting for.

@@ -111,6 +111,13 @@ fn tool_calls_turn(calls: &[(&str, &str, String)], finish_reason: Option<String>
     }
 }
 
+/// Wire protocol spoken by [`MockModel`].
+#[derive(Clone, Copy)]
+enum Wire {
+    OpenAi,
+    Anthropic,
+}
+
 /// A server answering chat requests with scripted replies, in order.
 pub struct MockModel {
     url: String,
@@ -119,6 +126,14 @@ pub struct MockModel {
 
 impl MockModel {
     pub async fn start(replies: Vec<Reply>) -> Self {
+        Self::start_with(replies, Wire::OpenAi).await
+    }
+
+    pub async fn start_anthropic(replies: Vec<Reply>) -> Self {
+        Self::start_with(replies, Wire::Anthropic).await
+    }
+
+    async fn start_with(replies: Vec<Reply>, wire: Wire) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/v1/", listener.local_addr().unwrap());
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -128,7 +143,7 @@ impl MockModel {
         tokio::spawn(async move {
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
-                tokio::spawn(serve(stream, seen.clone(), replies.clone()));
+                tokio::spawn(serve(stream, seen.clone(), replies.clone(), wire));
             }
         });
         Self { url, requests }
@@ -173,6 +188,7 @@ async fn serve(
     stream: TcpStream,
     seen: Arc<Mutex<Vec<Value>>>,
     replies: Arc<Mutex<VecDeque<Reply>>>,
+    wire: Wire,
 ) {
     let mut stream = BufReader::new(stream);
     let mut length = 0;
@@ -219,13 +235,27 @@ async fn serve(
     }
     let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n";
     out.write_all(head.as_bytes()).await.unwrap();
-    match reply {
-        Reply::Turn {
-            reasoning,
-            text,
-            calls,
-            finish_reason,
-        } => {
+    match (wire, reply) {
+        (
+            Wire::Anthropic,
+            Reply::Turn {
+                text,
+                calls,
+                finish_reason,
+                ..
+            },
+        ) => {
+            serve_anthropic_turn(out, &text, &calls, finish_reason.as_deref()).await;
+        }
+        (
+            Wire::OpenAi,
+            Reply::Turn {
+                reasoning,
+                text,
+                calls,
+                finish_reason,
+            },
+        ) => {
             for piece in pieces(&reasoning) {
                 send(out, delta(json!({ "reasoning_content": piece }), None)).await;
             }
@@ -250,20 +280,136 @@ async fn serve(
             send(out, json!({ "choices": [], "usage": usage }).to_string()).await;
             send(out, "[DONE]".into()).await;
         }
-        Reply::Partial(text) => {
+        (_, Reply::Partial(text)) => {
             for piece in pieces(&text) {
                 send(out, delta(json!({ "content": piece }), None)).await;
             }
             std::future::pending::<()>().await;
         }
         // Returning drops the connection in the middle of the reply.
-        Reply::Broken(text) => {
+        (_, Reply::Broken(text)) => {
             for piece in pieces(&text) {
                 send(out, delta(json!({ "content": piece }), None)).await;
             }
         }
-        Reply::Hang | Reply::Status(..) => unreachable!(),
+        (_, Reply::Hang | Reply::Status(..)) => unreachable!(),
     }
+}
+
+async fn serve_anthropic_turn(
+    out: &mut TcpStream,
+    text: &str,
+    calls: &[Value],
+    finish_reason: Option<&str>,
+) {
+    let (prompt, completion) = USAGE;
+    send_event(
+        out,
+        "message_start",
+        json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_test",
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "model": "claude-sonnet-4-5",
+                "stop_reason": null,
+                "usage": { "input_tokens": prompt, "output_tokens": 0 }
+            }
+        }),
+    )
+    .await;
+
+    let mut index = 0usize;
+    if !text.is_empty() {
+        send_event(
+            out,
+            "content_block_start",
+            json!({
+                "type": "content_block_start",
+                "index": index,
+                "content_block": { "type": "text", "text": "" }
+            }),
+        )
+        .await;
+        for piece in pieces(text) {
+            send_event(
+                out,
+                "content_block_delta",
+                json!({
+                    "type": "content_block_delta",
+                    "index": index,
+                    "delta": { "type": "text_delta", "text": piece }
+                }),
+            )
+            .await;
+        }
+        send_event(
+            out,
+            "content_block_stop",
+            json!({ "type": "content_block_stop", "index": index }),
+        )
+        .await;
+        index += 1;
+    }
+
+    for call in calls {
+        let id = call["id"].as_str().unwrap();
+        let name = call["function"]["name"].as_str().unwrap();
+        let args = call["function"]["arguments"].as_str().unwrap();
+        send_event(
+            out,
+            "content_block_start",
+            json!({
+                "type": "content_block_start",
+                "index": index,
+                "content_block": { "type": "tool_use", "id": id, "name": name, "input": {} }
+            }),
+        )
+        .await;
+        send_event(
+            out,
+            "content_block_delta",
+            json!({
+                "type": "content_block_delta",
+                "index": index,
+                "delta": { "type": "input_json_delta", "partial_json": args }
+            }),
+        )
+        .await;
+        send_event(
+            out,
+            "content_block_stop",
+            json!({ "type": "content_block_stop", "index": index }),
+        )
+        .await;
+        index += 1;
+    }
+
+    let reason = finish_reason.unwrap_or(if calls.is_empty() {
+        "end_turn"
+    } else {
+        "tool_use"
+    });
+    send_event(
+        out,
+        "message_delta",
+        json!({
+            "type": "message_delta",
+            "delta": { "stop_reason": reason },
+            "usage": { "output_tokens": completion }
+        }),
+    )
+    .await;
+    send_event(out, "message_stop", json!({ "type": "message_stop" })).await;
+}
+
+async fn send_event(out: &mut TcpStream, event: &str, data: Value) {
+    out.write_all(format!("event: {event}\ndata: {data}\n\n").as_bytes())
+        .await
+        .unwrap();
+    out.flush().await.unwrap();
 }
 
 /// `text` in pieces of [`PIECE`] characters.
