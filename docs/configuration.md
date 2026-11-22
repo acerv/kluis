@@ -8,6 +8,7 @@ option: see `kl --help`.
 model = "deepseek-chat"
 thinking = "medium"
 code_theme = "solarized-dark"
+auto_compact_tokens = 100000
 
 [sandbox]
 read = ["/etc/ssl"]
@@ -32,7 +33,8 @@ either the file or the CLI enables them.
 | ----------------------- | ---------------------------------------------------- | ------------------- |
 | `generic.model`         | Model to use                                         | `deepseek-chat`     |
 | `generic.thinking`      | Thinking effort: `default`, `off`, `low`, `medium`, `high` | `default`           |
-| `generic.code_theme`    | Colors of code blocks, see [Code theme](#code-theme) | `base16-ocean-dark` |
+| `generic.code_theme`          | Colors of code blocks, see [Code theme](#code-theme)            | `base16-ocean-dark` |
+| `generic.auto_compact_tokens` | Auto-compact context at this many prompt tokens (`0` disables) | `100000`            |
 | `sandbox.read`          | Extra folders the model can read                     | none                |
 | `sandbox.write`         | Extra folders the model can change                   | none                |
 | `sandbox.deny`          | Paths to hide, on top of the built-in credentials    | none                |
@@ -83,8 +85,9 @@ inline code, keep a plain style. With `NO_COLOR`, all of it stays plain.
 | Variable           | What it does                        |
 | ------------------ | ----------------------------------- |
 | `HARNESS_MODEL`    | Model to use, like `--model`        |
-| `HARNESS_THINKING` | Thinking effort, like `--thinking`  |
-| `HARNESS_CONFIG`   | Config file to read, like `--config` |
+| `HARNESS_THINKING`            | Thinking effort, like `--thinking`                              |
+| `HARNESS_AUTO_COMPACT_TOKENS` | Auto-compact threshold, like `--auto-compact-tokens`            |
+| `HARNESS_CONFIG`              | Config file to read, like `--config`                            |
 | `NO_COLOR`         | Turn colors off                     |
 
 ## API keys

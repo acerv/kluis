@@ -7,8 +7,10 @@
 //! [generic]
 //! # Default model when `--model` / `HARNESS_MODEL` is not set.
 //! model = "deepseek-chat"
-//! # Default thinking effort: "default", "low", "medium", or "high".
+//! # Default thinking effort: "default", "off", "low", "medium", or "high".
 //! thinking = "medium"
+//! # Auto-compact context at this many prompt tokens (`0` disables it).
+//! auto_compact_tokens = 100000
 //! # Colors of code blocks: base16-ocean-dark (default), base16-ocean-light,
 //! # base16-eighties-dark, base16-mocha-dark, inspired-github,
 //! # solarized-dark, solarized-light, or a TextMate theme file.
@@ -70,6 +72,7 @@ impl Default for Config {
                 model: Some(DEFAULT_MODEL.to_owned()),
                 thinking: None,
                 code_theme: None,
+                auto_compact_tokens: None,
             },
             sandbox: SandboxConfig::default(),
         }
@@ -83,13 +86,16 @@ pub struct GenericConfig {
     /// Default model when `--model` / `HARNESS_MODEL` is not set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// Default thinking effort (`default`, `low`, `medium`, `high`).
+    /// Default thinking effort (`default`, `off`, `low`, `medium`, `high`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<Thinking>,
     /// Colors of code blocks, like `--code-theme`: a built-in theme, or a
     /// TextMate theme file when it holds a `/`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code_theme: Option<String>,
+    /// Prompt-token threshold that triggers auto-compaction (`0` disables it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_compact_tokens: Option<u64>,
 }
 
 /// The `[sandbox]` section.

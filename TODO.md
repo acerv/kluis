@@ -39,7 +39,6 @@
 
 ## Agent & Session
 
-- [ ] Auto-compaction when `input_tokens` approaches the context limit
 - [ ] Recover when the provider rejects an oversized request
 - [ ] Steering: add a user message between tool calls of a running turn
 - [ ] Cost tracking: token usage as money per session

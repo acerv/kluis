@@ -28,14 +28,15 @@ use genai::adapter::AdapterKind;
 use genai::chat::ChatMessage;
 use harness_core::oauth::flow::Login;
 use harness_core::oauth::{OAuthProvider, OAuthStore};
-use harness_core::tools::{run_worker, Executor, ToolContext};
+use harness_core::tools::{is_read_only, run_worker, Executor, ToolContext};
 use harness_core::{
     provider_name, Agent, AuthConfig, CredentialSource, Error, Event, SessionData, SessionStore,
     Thinking, TokenUsage,
 };
 use harness_sandbox::{GitGuard, NetworkAccess};
 use harness_tui::{
-    git_notices, printable, retry_notice, summary, BannerLine, History, RunOptions, Session, Status,
+    check_git_guard, printable, retry_notice, summary, BannerLine, History, RunOptions, Session,
+    Status,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -55,6 +56,11 @@ pub struct Args {
     /// TextMate theme file [default: base16-ocean-dark].
     #[arg(long, value_name = "NAME|PATH")]
     code_theme: Option<String>,
+
+    /// Auto-compact conversation when prompt tokens reach this threshold
+    /// (0 disables) [default: 100000].
+    #[arg(long, env = "HARNESS_AUTO_COMPACT_TOKENS", value_name = "TOKENS")]
+    auto_compact_tokens: Option<u64>,
 
     /// Continue the most recent session for the current folder.
     #[arg(short = 'c', long = "continue", conflicts_with = "no_session")]
@@ -277,6 +283,9 @@ fn apply_config(args: &mut Args) -> Result<Option<String>, Error> {
     let config = config::load(&path, required)?;
     args.thinking = args.thinking.or(config.generic.thinking);
     args.code_theme = args.code_theme.take().or(config.generic.code_theme);
+    args.auto_compact_tokens = args
+        .auto_compact_tokens
+        .or(config.generic.auto_compact_tokens);
     args.allow_read.extend(config.sandbox.read);
     args.allow_write.extend(config.sandbox.write);
     args.deny_read.extend(config.sandbox.deny);
@@ -387,6 +396,9 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
         .with_system(system)
         .with_history(history)
         .with_executor(executor);
+    if let Some(tokens) = args.auto_compact_tokens {
+        agent = agent.with_auto_compact(Some(tokens));
+    }
     // Fetching runs on the host: only when the model may reach the network
     // anyway, which is always the case without the sandbox.
     if args.network || args.no_sandbox {
@@ -495,26 +507,55 @@ async fn prompt_and_persist(
     let prev_len = agent.history().len();
     let mut usage = TokenUsage::default();
     let mut context = 0;
+    let mut compacted = false;
+    let mut in_compact = false;
+    let mut changed_files = false;
     let res = agent
         .prompt(text, |event| {
-            if let Event::TurnEnd(Some(u)) = event {
-                let turn = TokenUsage::from_genai(u);
-                usage += turn;
-                context = turn.prompt();
+            let suppress_stdout =
+                in_compact && matches!(event, Event::TextDelta(_) | Event::Text(_));
+            match event {
+                Event::TurnEnd(Some(u)) => {
+                    let turn = TokenUsage::from_genai(u);
+                    usage += turn;
+                    context = turn.prompt();
+                    in_compact = false;
+                }
+                Event::TurnEnd(None) => {
+                    in_compact = false;
+                }
+                Event::Compacting { .. } => {
+                    in_compact = true;
+                }
+                Event::Compacted { .. } => {
+                    compacted = true;
+                    in_compact = false;
+                    context = 0;
+                }
+                Event::ToolCall(call) if !is_read_only(&call.fn_name) => {
+                    changed_files = true;
+                }
+                _ => {}
             }
-            print_event(event);
+            if !suppress_stdout {
+                print_event(event);
+            }
         })
         .await;
     // Before the git check: a program left running could recreate a
     // repository right after it.
     agent.stop_background().await;
-    let added = &agent.history()[prev_len..];
     if let Some(session) = session {
-        if let Err(err) = session.record_prompt(added, usage, context) {
+        let save = if compacted {
+            session.record_compact(agent.history(), usage, context)
+        } else {
+            session.record_prompt(&agent.history()[prev_len..], usage, context)
+        };
+        if let Err(err) = save {
             eprintln!("warning: could not save session: {err}");
         }
     }
-    for notice in git_notices(git_guard, added) {
+    for notice in check_git_guard(git_guard, changed_files) {
         eprintln!("{}", printable(&notice));
     }
     res.map(|_| ())
@@ -639,6 +680,12 @@ fn print_event(event: Event<'_>) {
             // End any line the failed attempt left half printed.
             println!();
             eprintln!("{}", printable(&retry_notice(attempt, delay, reason)));
+        }
+        Event::Compacting { context_tokens } => {
+            eprintln!("[auto-compacting ({context_tokens} tokens)…]");
+        }
+        Event::Compacted { before } => {
+            eprintln!("[compacted {before} messages]");
         }
     }
 }

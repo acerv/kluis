@@ -43,4 +43,9 @@ pub enum Event<'a> {
     /// The result of a tool call, as sent back to the model, with optional
     /// UI-only details (such as a diff for `edit`).
     ToolResult(&'a ToolResponse, Option<&'a ToolDetails>),
+    /// Context usage crossed the auto-compaction threshold and the agent is
+    /// summarizing the conversation.
+    Compacting { context_tokens: u64 },
+    /// Auto-compaction replaced `before` messages with a compact summary.
+    Compacted { before: usize },
 }

@@ -13,6 +13,8 @@
   timeout.
 - Sessions are persisted as append-only JSONL per workspace. Continue the
   latest or resume any session by ID.
+- Automatic conversation compaction when prompt tokens reach the configured
+  threshold (default 100K), plus manual `/compact [focus]`.
 
 ## Tools
 

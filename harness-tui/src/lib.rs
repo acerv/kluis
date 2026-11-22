@@ -101,17 +101,18 @@ impl Session {
         self.writer.append_usage(usage, context)
     }
 
-    /// Persist a compacted conversation and the token usage spent building it,
-    /// resetting the recorded context size until the next request.
+    /// Persist a compacted conversation, the token usage spent during the
+    /// prompt or `/compact`, and the latest context size (`0` when reset).
     pub fn record_compact(
         &mut self,
         messages: &[ChatMessage],
         usage: TokenUsage,
+        context: u64,
     ) -> io::Result<()> {
         self.usage += usage;
-        self.context = 0;
+        self.context = context;
         self.writer.append_compact(messages)?;
-        self.writer.append_usage(usage, 0)
+        self.writer.append_usage(usage, context)
     }
 
     /// Cumulative token usage recorded in this session.
@@ -190,7 +191,13 @@ pub fn git_notices(guard: Option<&mut GitGuard>, messages: &[ChatMessage]) -> Ve
         .iter()
         .flat_map(|message| message.content.tool_calls())
         .any(|call| !is_read_only(&call.fn_name));
-    let Some(guard) = guard.filter(|_| changes_files) else {
+    check_git_guard(guard, changes_files)
+}
+
+/// Like [`git_notices`], when the caller already tracked whether any tool call
+/// in the prompt could change files (even if auto-compaction replaced history).
+pub fn check_git_guard(guard: Option<&mut GitGuard>, changed_files: bool) -> Vec<String> {
+    let Some(guard) = guard.filter(|_| changed_files) else {
         return Vec::new();
     };
     let check = guard.disable_new();
@@ -302,8 +309,7 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
                 }
                 app.start_prompt(&prompt);
                 draw(&mut term, &mut app)?;
-                let prev_len = agent.history().len();
-                let quit = run_turn(
+                let turn = run_turn(
                     &mut term,
                     &mut app,
                     &mut agent,
@@ -316,8 +322,8 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
                 // Before the git check: a program left running could
                 // recreate a repository right after it.
                 agent.stop_background().await;
-                let notices = git_notices(git_guard.as_mut(), &agent.history()[prev_len..]);
-                if quit {
+                let notices = check_git_guard(git_guard.as_mut(), turn.changed_files);
+                if turn.quit {
                     // Once the screen is back.
                     drop(term);
                     for notice in &notices {
@@ -569,11 +575,23 @@ fn resume_session(id: &str, agent: &mut Agent, app: &mut App, session: Option<&m
     app.set_context(session.context());
 }
 
+#[derive(Default)]
+struct DriveStats {
+    usage: TokenUsage,
+    compacted: bool,
+    changed_files: bool,
+}
+
 struct DriveResult {
     cancelled: bool,
     quit: bool,
     outcome: Option<Result<String, Error>>,
-    usage: TokenUsage,
+    stats: DriveStats,
+}
+
+struct TurnOutcome {
+    quit: bool,
+    changed_files: bool,
 }
 
 /// Drive an in-flight agent future (`prompt` or `compact`) while keeping the
@@ -589,7 +607,7 @@ async fn drive_agent(
     let mut cancelled = false;
     let mut quit = false;
     let mut outcome: Option<Result<String, Error>> = None;
-    let mut usage = TokenUsage::default();
+    let mut stats = DriveStats::default();
     // The question of the model waiting for the user's answer.
     let mut question: Option<Question> = None;
 
@@ -637,7 +655,7 @@ async fn drive_agent(
                     }
                 }
                 Some(update) = rx.recv() => {
-                    drain_updates(update, &mut rx, app, &mut usage);
+                    drain_updates(update, &mut rx, app, &mut stats);
                     draw(term, app)?;
                 }
                 // After `rx`, so the tool call shows before its question.
@@ -659,7 +677,7 @@ async fn drive_agent(
     }
 
     if let Ok(first) = rx.try_recv() {
-        drain_updates(first, &mut rx, app, &mut usage);
+        drain_updates(first, &mut rx, app, &mut stats);
     }
     // A question sent just before a cancel has nobody waiting for it: drop
     // it so the next prompt does not show it.
@@ -669,12 +687,12 @@ async fn drive_agent(
         cancelled,
         quit,
         outcome,
-        usage,
+        stats,
     })
 }
 
 /// Run one agent prompt while keeping the UI responsive to keys, resize and
-/// streaming updates. Returns `true` if the user requested to quit.
+/// streaming updates.
 async fn run_turn(
     term: &mut InlineTerminal,
     app: &mut App,
@@ -683,7 +701,7 @@ async fn run_turn(
     questions: &mut mpsc::UnboundedReceiver<Question>,
     session: Option<&mut Session>,
     prompt: &str,
-) -> Result<bool, Error> {
+) -> Result<TurnOutcome, Error> {
     let prev_len = agent.history().len();
     let (tx, rx) = mpsc::unbounded_channel::<AgentUpdate>();
     let res = drive_agent(
@@ -696,18 +714,30 @@ async fn run_turn(
     )
     .await?;
 
+    let changed_files = res.stats.changed_files;
     if let Some(session) = session {
-        let added = &agent.history()[prev_len..];
-        if let Err(err) = session.record_prompt(added, res.usage, app.context()) {
+        let save = if res.stats.compacted {
+            session.record_compact(agent.history(), res.stats.usage, app.context())
+        } else {
+            let added = &agent.history()[prev_len..];
+            session.record_prompt(added, res.stats.usage, app.context())
+        };
+        if let Err(err) = save {
             app.push_info(format!("[session save error: {err}]"));
         }
     }
 
     if finish_activity(app, res) {
-        return Ok(true);
+        return Ok(TurnOutcome {
+            quit: true,
+            changed_files,
+        });
     }
     draw(term, app)?;
-    Ok(false)
+    Ok(TurnOutcome {
+        quit: false,
+        changed_files,
+    })
 }
 
 /// Summarize the conversation with `/compact`, replacing history on success.
@@ -738,14 +768,14 @@ async fn run_compact(
     .await?;
 
     let compacted = !res.cancelled && !res.quit && matches!(res.outcome, Some(Ok(_)));
-    let usage = res.usage;
+    let usage = res.stats.usage;
     if finish_activity(app, res) {
         return Ok(true);
     }
     if compacted {
         app.set_context(0);
         if let Some(session) = session {
-            if let Err(err) = session.record_compact(agent.history(), usage) {
+            if let Err(err) = session.record_compact(agent.history(), usage, 0) {
                 app.push_info(format!("[session save error: {err}]"));
             }
         }
@@ -802,7 +832,7 @@ fn drain_updates(
     first: AgentUpdate,
     rx: &mut mpsc::UnboundedReceiver<AgentUpdate>,
     app: &mut App,
-    prompt_usage: &mut TokenUsage,
+    stats: &mut DriveStats,
 ) {
     let mut pending = first;
     while let Ok(next) = rx.try_recv() {
@@ -812,17 +842,20 @@ fn drain_updates(
                 acc.push_str(&more);
             }
             (_, next) => {
-                apply_and_track(pending, app, prompt_usage);
+                apply_and_track(pending, app, stats);
                 pending = next;
             }
         }
     }
-    apply_and_track(pending, app, prompt_usage);
+    apply_and_track(pending, app, stats);
 }
 
-fn apply_and_track(update: AgentUpdate, app: &mut App, prompt_usage: &mut TokenUsage) {
-    if let AgentUpdate::TurnEnd(usage) = update {
-        *prompt_usage += usage;
+fn apply_and_track(update: AgentUpdate, app: &mut App, stats: &mut DriveStats) {
+    match &update {
+        AgentUpdate::TurnEnd(usage) => stats.usage += *usage,
+        AgentUpdate::Compacted(_) => stats.compacted = true,
+        AgentUpdate::ToolCall { name, .. } if !is_read_only(name) => stats.changed_files = true,
+        _ => {}
     }
     app.apply_update(update);
 }

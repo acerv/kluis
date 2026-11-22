@@ -1595,3 +1595,34 @@ fn grep_tool_result_shows_match_count_and_truncation() {
         "{lines:?}"
     );
 }
+
+#[test]
+fn auto_compact_updates_scrollback_and_resets_context() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    app.apply_update(AgentUpdate::TurnEnd(TokenUsage {
+        input: 105_000,
+        output: 500,
+        cached: 0,
+    }));
+    assert_eq!(app.context(), 105_000);
+
+    app.apply_update(AgentUpdate::Compacting(105_000));
+    app.apply_update(AgentUpdate::Compacted(12));
+
+    assert_eq!(app.context(), 0);
+    let lines: Vec<String> = app
+        .take_scrollback()
+        .into_iter()
+        .map(|l| l.to_string())
+        .collect();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l == "[auto-compacting (105K tokens)…]"),
+        "{lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l == "[compacted 12 messages]"),
+        "{lines:?}"
+    );
+}

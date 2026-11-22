@@ -6,13 +6,13 @@ mod common;
 use std::path::Path;
 use std::time::Duration;
 
-use common::{text, thinking, tool_calls, truncated_tool_calls, MockModel, Reply};
+use common::{text, thinking, tool_calls, truncated_tool_calls, with_usage, MockModel, Reply};
 use genai::adapter::AdapterKind;
 use genai::chat::{ChatMessage, ChatRole};
 use harness_core::tools::ToolContext;
 use harness_core::{
     find_agents_files, system_prompt, Agent, Event, RetryPolicy, Thinking, ToolDetails,
-    AGENTS_FILE, DEFAULT_MAX_TURNS, MAX_AGENTS_BYTES,
+    AGENTS_FILE, DEFAULT_AUTO_COMPACT_TOKENS, DEFAULT_MAX_TURNS, MAX_AGENTS_BYTES,
 };
 use serde_json::{json, Value};
 use tokio::sync::Notify;
@@ -176,6 +176,8 @@ async fn tool_call_round_trip() {
                 Event::ToolOutput(chunk) => format!("out {}", chunk.trim_end()),
                 Event::ToolResult(resp, _) => format!("result {}", resp.call_id),
                 Event::Retry { reason, .. } => format!("retry {reason}"),
+                Event::Compacting { context_tokens } => format!("compacting {context_tokens}"),
+                Event::Compacted { before } => format!("compacted {before}"),
             })
         })
         .await
@@ -1142,4 +1144,115 @@ async fn anthropic_compact_reads_prior_cache_without_marking_transient_prompt() 
     assert!(!has_cache_control(&compact_msgs[1]));
     assert!(!has_cache_control(&compact_msgs[2]));
     assert_eq!(count_cache_breakpoints(&reqs[1]), 2);
+}
+
+#[tokio::test]
+async fn auto_compact_triggers_mid_loop_and_continues_task() {
+    let dir = tempfile::tempdir().unwrap();
+    let call1 = ("c1", "bash", json!({ "command": "echo step1" }));
+    let call2 = ("c2", "bash", json!({ "command": "echo step2" }));
+    let model = MockModel::start(vec![
+        // Turn 1 crosses threshold (1200 >= 1000) -> triggers mid-loop auto-compact.
+        with_usage(1_200, 20, tool_calls(&[call1])),
+        // Compaction summary turn.
+        with_usage(1_250, 30, text("Summary: ran step1.")),
+        // Turn 2 runs on compacted history under threshold (300 < 1000) -> re-arms guard.
+        with_usage(300, 20, tool_calls(&[call2])),
+        // Turn 3 finishes under threshold.
+        with_usage(400, 20, text("all done")),
+    ])
+    .await;
+    let mut agent = agent(&model, dir.path()).with_auto_compact(Some(1_000));
+    assert_eq!(agent.auto_compact(), Some(1_000));
+
+    let mut events = Vec::new();
+    let answer = agent
+        .prompt("do both steps", |ev| match ev {
+            Event::Compacting { context_tokens } => {
+                events.push(format!("compacting:{context_tokens}"))
+            }
+            Event::Compacted { before } => events.push(format!("compacted:{before}")),
+            _ => {}
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(answer, "all done");
+    assert_eq!(events, ["compacting:1200", "compacted:3"]);
+
+    // Request 2 (after mid-loop compaction) must start from [User(summary), Assistant(ack), User(continue)].
+    let reqs = model.requests();
+    assert_eq!(reqs.len(), 4);
+    assert_eq!(sent(&reqs[2], "user").len(), 2);
+    assert_eq!(sent(&reqs[2], "assistant").len(), 1);
+    assert!(sent(&reqs[2], "tool").is_empty());
+    assert!(sent(&reqs[2], "user")[0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("Summary: ran step1."));
+    assert_eq!(
+        roles(&agent),
+        [
+            ChatRole::User,
+            ChatRole::Assistant,
+            ChatRole::User,
+            ChatRole::Assistant,
+            ChatRole::Tool,
+            ChatRole::Assistant,
+        ]
+    );
+}
+
+#[tokio::test]
+async fn auto_compact_triggers_at_end_of_prompt_and_guards_repeat_loop() {
+    let dir = tempfile::tempdir().unwrap();
+    let call = ("c1", "bash", json!({ "command": "echo hi" }));
+    let model = MockModel::start(vec![
+        // Turn 1 crosses threshold -> mid-loop compact.
+        with_usage(2_000, 10, tool_calls(&[call])),
+        with_usage(2_000, 10, text("summary 1")),
+        // Turn 2 STILL reports >= threshold (e.g. static prefix > threshold): must not loop.
+        with_usage(1_500, 10, text("final answer")),
+    ])
+    .await;
+    let mut a1 = agent(&model, dir.path());
+    assert_eq!(a1.auto_compact(), Some(DEFAULT_AUTO_COMPACT_TOKENS));
+    a1 = a1.with_auto_compact(Some(1_000));
+
+    let mut compacted = 0usize;
+    let answer = a1
+        .prompt("go", |ev| {
+            if matches!(ev, Event::Compacted { .. }) {
+                compacted += 1;
+            }
+        })
+        .await
+        .unwrap();
+    assert_eq!(answer, "final answer");
+    assert_eq!(
+        compacted, 1,
+        "must not re-compact when floor already exceeds threshold"
+    );
+
+    // End-of-prompt compaction on a fresh prompt, and disabling with Some(0).
+    let model2 = MockModel::start(vec![
+        with_usage(1_500, 10, text("answer one")),
+        with_usage(1_500, 10, text("end summary")),
+        with_usage(1_500, 10, text("answer two")),
+    ])
+    .await;
+    let mut agent2 = agent(&model2, dir.path()).with_auto_compact(Some(1_000));
+    assert_eq!(prompt(&mut agent2, "first").await.unwrap(), "answer one");
+    assert_eq!(roles(&agent2), [ChatRole::User, ChatRole::Assistant]);
+    assert!(agent2.history()[0]
+        .content
+        .first_text()
+        .unwrap()
+        .contains("end summary"));
+
+    // Some(0) disables auto-compaction.
+    agent2 = agent2.with_auto_compact(Some(0));
+    assert_eq!(agent2.auto_compact(), None);
+    assert_eq!(prompt(&mut agent2, "second").await.unwrap(), "answer two");
+    assert_eq!(model2.requests().len(), 3);
 }

@@ -21,6 +21,7 @@ use uuid::Uuid;
 use crate::models::{discover_models, ModelList};
 use crate::oauth::OAuthLogins;
 use crate::retry::{EndedEarly, RetryPolicy};
+use crate::session::TokenUsage;
 use crate::tools::{
     self, error_response, AskTool, Asker, Executor, FetchTool, HostTools, ToolContext,
 };
@@ -31,6 +32,10 @@ pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
 /// Default maximum model turns executed in a single [`Agent::prompt`] call.
 pub const DEFAULT_MAX_TURNS: usize = 50;
+
+/// Default prompt-token threshold at which [`Agent::prompt`] automatically
+/// compacts the conversation while the prompt cache is still warm.
+pub const DEFAULT_AUTO_COMPACT_TOKENS: u64 = 100_000;
 
 /// Consecutive identical turns (or identical calls within one turn) before the
 /// agent refuses to re-run them and asks the model to change approach.
@@ -128,6 +133,7 @@ pub struct Agent {
     host: HostTools,
     retry: RetryPolicy,
     max_turns: Option<usize>,
+    auto_compact_tokens: Option<u64>,
 }
 
 impl Agent {
@@ -150,6 +156,7 @@ impl Agent {
             host: HostTools::default(),
             retry: RetryPolicy::default(),
             max_turns: Some(DEFAULT_MAX_TURNS),
+            auto_compact_tokens: Some(DEFAULT_AUTO_COMPACT_TOKENS),
         }
     }
 
@@ -215,6 +222,19 @@ impl Agent {
     /// Maximum model turns per [`Agent::prompt`] call, or `None` when unlimited.
     pub fn max_turns(&self) -> Option<usize> {
         self.max_turns
+    }
+
+    /// Automatically compact the conversation when a turn's prompt tokens reach
+    /// `tokens`, or pass `None` / `Some(0)` to disable auto-compaction.
+    /// Defaults to `Some(DEFAULT_AUTO_COMPACT_TOKENS)`.
+    pub fn with_auto_compact(mut self, tokens: Option<u64>) -> Self {
+        self.auto_compact_tokens = tokens.filter(|&n| n > 0);
+        self
+    }
+
+    /// Prompt-token threshold that triggers auto-compaction, or `None` when disabled.
+    pub fn auto_compact(&self) -> Option<u64> {
+        self.auto_compact_tokens
     }
 
     /// Set how local tools run (shorthand for `with_executor(Executor::Local(tools))`).
@@ -303,6 +323,7 @@ impl Agent {
         let mut turns = 0usize;
         let mut prev_assistant_idx: Option<usize> = None;
         let mut repeat_streak = 0usize;
+        let mut compact_blocked = false;
 
         loop {
             if let Some(limit) = self.max_turns {
@@ -327,10 +348,27 @@ impl Agent {
             }
             on_event(Event::TurnEnd(turn.usage.as_ref()));
 
+            let context = turn
+                .usage
+                .as_ref()
+                .map_or(0, |u| TokenUsage::from_genai(u).prompt());
+            let need_compact = match self.auto_compact_tokens {
+                Some(limit) if context >= limit => !compact_blocked,
+                Some(_) if context > 0 => {
+                    compact_blocked = false;
+                    false
+                }
+                _ => false,
+            };
+
             // A copy, so results can join the history while calls run.
             let calls: Vec<ToolCall> = content.tool_calls().into_iter().cloned().collect();
             if calls.is_empty() {
-                return Ok(answer.to_owned());
+                let answer = answer.to_owned();
+                if need_compact {
+                    self.run_auto_compact(context, false, &mut on_event).await;
+                }
+                return Ok(answer);
             }
 
             let same_as_prev = !turn.truncated
@@ -406,6 +444,16 @@ impl Agent {
                 }
                 idx = batch_end;
             }
+            drop(pending);
+            drop(calls);
+
+            if need_compact && self.max_turns.is_none_or(|limit| turns < limit) {
+                if self.run_auto_compact(context, true, &mut on_event).await {
+                    prev_assistant_idx = None;
+                    repeat_streak = 0;
+                }
+                compact_blocked = true;
+            }
         }
     }
 
@@ -421,13 +469,42 @@ impl Agent {
         focus: Option<&str>,
         mut on_event: impl FnMut(Event<'_>),
     ) -> Result<String, Error> {
+        self.compact_inner(focus, false, &mut on_event).await
+    }
+
+    async fn run_auto_compact(
+        &mut self,
+        context_tokens: u64,
+        continue_task: bool,
+        on_event: &mut impl FnMut(Event<'_>),
+    ) -> bool {
+        let before = self.req.messages.len();
+        on_event(Event::Compacting { context_tokens });
+        if self
+            .compact_inner(None, continue_task, on_event)
+            .await
+            .is_ok()
+        {
+            on_event(Event::Compacted { before });
+            true
+        } else {
+            false
+        }
+    }
+
+    async fn compact_inner(
+        &mut self,
+        focus: Option<&str>,
+        continue_task: bool,
+        on_event: &mut impl FnMut(Event<'_>),
+    ) -> Result<String, Error> {
         if self.req.messages.is_empty() {
             return Err("nothing to compact".into());
         }
         let instruction = compact_instruction(focus);
         on_event(Event::TurnStart);
         let turn = self
-            .next_turn_retrying(Some(&instruction), &mut on_event)
+            .next_turn_retrying(Some(&instruction), on_event)
             .await?;
 
         let mut raw = turn.content.joined_texts().unwrap_or_default();
@@ -440,12 +517,18 @@ impl Agent {
         if trimmed.is_empty() {
             return Err("model returned an empty summary".into());
         }
-        self.set_history(vec![
-            ChatMessage::user(format!("{COMPACT_HEADER}\n\n{trimmed}")),
-            ChatMessage::assistant(COMPACT_ACK),
-        ]);
-        if trimmed.len() != raw.len() {
-            raw = trimmed.to_owned();
+        let mut compacted = Vec::with_capacity(2 + usize::from(continue_task));
+        compacted.push(ChatMessage::user(format!("{COMPACT_HEADER}\n\n{trimmed}")));
+        compacted.push(ChatMessage::assistant(COMPACT_ACK));
+        if continue_task {
+            compacted.push(ChatMessage::user(COMPACT_CONTINUE));
+        }
+        self.set_history(compacted);
+        let end = raw.trim_end().len();
+        let start = raw.len() - raw.trim_start().len();
+        raw.truncate(end);
+        if start > 0 {
+            raw.drain(..start);
         }
         Ok(raw)
     }
@@ -707,6 +790,7 @@ continue seamlessly without the earlier messages. Do not call any tools. Include
 
 const COMPACT_HEADER: &str = "Summary of the earlier conversation:";
 const COMPACT_ACK: &str = "Understood. Continuing from the compacted summary.";
+const COMPACT_CONTINUE: &str = "Continue with the task from the compacted summary above.";
 
 fn compact_instruction(focus: Option<&str>) -> Cow<'static, str> {
     match focus.map(str::trim).filter(|s| !s.is_empty()) {

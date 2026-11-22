@@ -119,6 +119,8 @@ pub enum AgentUpdate {
         content: String,
         details: Option<ToolDetails>,
     },
+    Compacting(u64),
+    Compacted(usize),
 }
 
 impl AgentUpdate {
@@ -148,6 +150,8 @@ impl AgentUpdate {
                 content: resp.content.clone(),
                 details: details.cloned(),
             },
+            AgentEvent::Compacting { context_tokens } => Self::Compacting(context_tokens),
+            AgentEvent::Compacted { before } => Self::Compacted(before),
         })
     }
 }
@@ -670,6 +674,25 @@ impl App {
                     self.theme,
                     &mut self.scrollback,
                 );
+                self.scrollback.push(Line::raw(String::new()));
+            }
+            AgentUpdate::Compacting(tokens) => {
+                self.flush_reasoning();
+                self.flush_text();
+                self.scrollback.push(Line::styled(
+                    format!("[auto-compacting ({} tokens)…]", ScaledTokens(tokens)),
+                    self.theme.muted,
+                ));
+                self.scrollback.push(Line::raw(String::new()));
+            }
+            AgentUpdate::Compacted(before) => {
+                self.flush_reasoning();
+                self.flush_text();
+                self.context = 0;
+                self.scrollback.push(Line::styled(
+                    format!("[compacted {before} messages]"),
+                    self.theme.muted,
+                ));
                 self.scrollback.push(Line::raw(String::new()));
             }
         }

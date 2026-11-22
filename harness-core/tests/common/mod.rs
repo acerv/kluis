@@ -32,6 +32,7 @@ pub enum Reply {
         text: String,
         calls: Vec<Value>,
         finish_reason: Option<String>,
+        usage: (i32, i32),
     },
     /// The first pieces of some text, then nothing more.
     Partial(String),
@@ -50,6 +51,27 @@ pub fn text(text: &str) -> Reply {
         text: text.into(),
         calls: Vec::new(),
         finish_reason: None,
+        usage: USAGE,
+    }
+}
+
+/// `reply`, with custom `(prompt, completion)` token usage.
+pub fn with_usage(prompt: i32, completion: i32, reply: Reply) -> Reply {
+    match reply {
+        Reply::Turn {
+            reasoning,
+            text,
+            calls,
+            finish_reason,
+            ..
+        } => Reply::Turn {
+            reasoning,
+            text,
+            calls,
+            finish_reason,
+            usage: (prompt, completion),
+        },
+        _ => panic!("only a whole turn has usage"),
     }
 }
 
@@ -60,12 +82,14 @@ pub fn thinking(reasoning: &str, reply: Reply) -> Reply {
             text,
             calls,
             finish_reason,
+            usage,
             ..
         } => Reply::Turn {
             reasoning: reasoning.into(),
             text,
             calls,
             finish_reason,
+            usage,
         },
         _ => panic!("only a whole turn has reasoning"),
     }
@@ -108,6 +132,7 @@ fn tool_calls_turn(calls: &[(&str, &str, String)], finish_reason: Option<String>
         text: String::new(),
         calls,
         finish_reason,
+        usage: USAGE,
     }
 }
 
@@ -242,10 +267,11 @@ async fn serve(
                 text,
                 calls,
                 finish_reason,
+                usage,
                 ..
             },
         ) => {
-            serve_anthropic_turn(out, &text, &calls, finish_reason.as_deref()).await;
+            serve_anthropic_turn(out, &text, &calls, finish_reason.as_deref(), usage).await;
         }
         (
             Wire::OpenAi,
@@ -254,6 +280,7 @@ async fn serve(
                 text,
                 calls,
                 finish_reason,
+                usage: (prompt, completion),
             },
         ) => {
             for piece in pieces(&reasoning) {
@@ -271,7 +298,6 @@ async fn serve(
                 "tool_calls"
             });
             send(out, delta(json!({}), Some(reason))).await;
-            let (prompt, completion) = USAGE;
             let usage = json!({
                 "prompt_tokens": prompt,
                 "completion_tokens": completion,
@@ -301,8 +327,8 @@ async fn serve_anthropic_turn(
     text: &str,
     calls: &[Value],
     finish_reason: Option<&str>,
+    (prompt, completion): (i32, i32),
 ) {
-    let (prompt, completion) = USAGE;
     send_event(
         out,
         "message_start",
