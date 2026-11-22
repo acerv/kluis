@@ -43,7 +43,8 @@ gave the model.
 ## Install
 
 K-Luis needs Linux and a recent stable Rust toolchain. Allowing individual TCP
-ports needs Linux 6.7 or later.
+ports needs Linux 6.7 or later. On Ubuntu 23.10 and later, AppArmor needs a
+one-time setup: `kl` prints the commands, see [Ubuntu](docs/sandbox.md#ubuntu).
 
 ```sh
 cargo install --path harness-tui
