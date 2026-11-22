@@ -40,20 +40,37 @@ pub fn code_theme(value: &str) -> Result<CodeTheme, Error> {
 #[derive(Debug, Clone)]
 pub struct MarkdownStyle {
     color: bool,
+    table_width: u16,
     options: Options,
 }
 
 impl MarkdownStyle {
-    pub fn new(color: bool) -> Self {
+    pub fn new(color: bool, table_width: u16) -> Self {
+        let mut options = Options::default().table_row_dividers(true);
+        if table_width > 0 {
+            options = options.table_width(table_width);
+        }
         Self {
             color,
-            options: Options::default(),
+            table_width,
+            options,
         }
     }
 
-    /// Highlight code blocks with `theme`.
+    /// Highlight code blocks with `theme`, preserving table layout options.
     pub fn set_code_theme(&mut self, theme: CodeTheme) {
-        self.options = Options::default().code_theme(theme);
+        self.options = std::mem::take(&mut self.options).code_theme(theme);
+    }
+
+    /// Fit rendered tables inside `width` terminal columns. Returns `true` when
+    /// the effective width changed.
+    pub fn set_table_width(&mut self, width: u16) -> bool {
+        if width == 0 || width == self.table_width {
+            return false;
+        }
+        self.table_width = width;
+        self.options = std::mem::take(&mut self.options).table_width(width);
+        true
     }
 }
 
@@ -118,11 +135,11 @@ struct Scan {
 
 impl MarkdownStream {
     pub fn clear(&mut self) {
-        self.buf.clear();
+        self.buf = String::new();
         self.committed = 0;
         self.parsed_prefix_end = 0;
         self.in_unclosed_fence = false;
-        self.live.clear();
+        self.live = Vec::new();
     }
 
     /// Append a streaming chunk, push any newly finalized Markdown lines into
@@ -172,6 +189,25 @@ impl MarkdownStream {
     /// spinner.
     pub fn live_lines(&self) -> &[Line<'static>] {
         &self.live
+    }
+
+    /// Whether any lines of the current turn have already been committed to
+    /// scrollback.
+    pub fn has_committed(&self) -> bool {
+        self.committed > 0
+    }
+
+    /// Re-render uncommitted live lines with `style` (e.g. after a terminal
+    /// resize while a table is still streaming).
+    pub fn rerender_live(&mut self, style: &MarkdownStyle) {
+        if self.buf.is_empty() || self.committed > 0 {
+            return;
+        }
+        let mut lines = render_markdown(&self.buf, style);
+        if self.in_unclosed_fence {
+            lines.pop();
+        }
+        self.live = lines;
     }
 
     /// Flush all remaining uncommitted lines of the current turn into `out` and

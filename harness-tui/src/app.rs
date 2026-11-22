@@ -248,7 +248,7 @@ impl App {
             active_tool: None,
             tool_preview: ToolPreview::default(),
             markdown: MarkdownStream::default(),
-            markdown_style: MarkdownStyle::new(theme.color),
+            markdown_style: MarkdownStyle::new(theme.color, DEFAULT_WIDTH),
             live_reasoning: String::new(),
             hidden_reasoning: String::new(),
             emitted_reasoning: false,
@@ -334,6 +334,20 @@ impl App {
     /// Highlight code blocks with `theme`.
     pub fn set_code_theme(&mut self, theme: CodeTheme) {
         self.markdown_style.set_code_theme(theme);
+    }
+
+    /// Update the terminal width used for wrapping and Markdown table layout.
+    pub fn set_width(&mut self, width: u16) {
+        if width > 0 {
+            self.width.set(width);
+            if self.sync_markdown_width() {
+                self.markdown.rerender_live(&self.markdown_style);
+            }
+        }
+    }
+
+    fn sync_markdown_width(&mut self) -> bool {
+        !self.markdown.has_committed() && self.markdown_style.set_table_width(self.width.get())
     }
 
     /// Push the logo into scrollback, with `info` next to it.
@@ -444,6 +458,7 @@ impl App {
     pub fn replay_history(&mut self, messages: &[ChatMessage]) {
         self.usage = TokenUsage::default();
         self.context = 0;
+        self.sync_markdown_width();
         let mut tool_calls: HashMap<&str, (&str, &Value)> = HashMap::new();
         for msg in messages {
             match msg.role {
@@ -618,17 +633,13 @@ impl App {
             }
             AgentUpdate::TextDelta(delta) => {
                 self.flush_reasoning();
+                self.sync_markdown_width();
                 self.markdown
                     .push_delta(&delta, &self.markdown_style, &mut self.scrollback);
             }
             AgentUpdate::Text(text) => {
                 self.flush_reasoning();
-                if self
-                    .markdown
-                    .finish(Some(&text), &self.markdown_style, &mut self.scrollback)
-                {
-                    self.scrollback.push(Line::raw(String::new()));
-                }
+                self.finish_markdown(Some(&text));
             }
             AgentUpdate::TurnEnd(usage) => {
                 self.usage += usage;
@@ -737,7 +748,7 @@ impl App {
         match event {
             TermEvent::Resize(w, _) => {
                 if w > 0 {
-                    self.width.set(w);
+                    self.set_width(w);
                     if self.show_thinking && !self.live_reasoning.is_empty() {
                         stream_reasoning(
                             &mut self.live_reasoning,
@@ -961,9 +972,16 @@ impl App {
     }
 
     fn flush_text(&mut self) {
+        self.finish_markdown(None);
+    }
+
+    fn finish_markdown(&mut self, fallback: Option<&str>) {
+        if self.sync_markdown_width() {
+            self.markdown.rerender_live(&self.markdown_style);
+        }
         if self
             .markdown
-            .finish(None, &self.markdown_style, &mut self.scrollback)
+            .finish(fallback, &self.markdown_style, &mut self.scrollback)
         {
             self.scrollback.push(Line::raw(String::new()));
         }

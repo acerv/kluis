@@ -147,6 +147,11 @@ impl InlineTerminal {
         }
     }
 
+    /// Current terminal width in columns.
+    pub fn width(&self) -> u16 {
+        self.size.width
+    }
+
     /// Schedule a full screen and scrollback clear on the next [`draw_app`](Self::draw_app),
     /// executed atomically inside its synchronized update.
     pub fn request_clear(&mut self) {

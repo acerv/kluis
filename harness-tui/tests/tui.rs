@@ -1647,3 +1647,61 @@ fn auto_compact_updates_scrollback_and_resets_context() {
         "{lines:?}"
     );
 }
+
+#[test]
+fn markdown_tables_scale_to_terminal_width_with_multiline_cells() {
+    let table = "\
+| Column A | Column B | Description |
+| --- | --- | --- |
+| short | value | A very long cell description that should wrap onto multiple lines inside the table cell |
+| row2 | other | Another long cell description to check row dividers and terminal width scaling |";
+
+    let mut app = App::new("model", status(), Theme::new(false));
+    app.set_width(50);
+    app.set_code_theme(code_theme("solarized-dark").unwrap());
+    app.start_prompt("show table");
+    let _ = app.take_scrollback();
+
+    // Stream the table without a trailing blank line, then resize narrower before finishing.
+    app.apply_update(AgentUpdate::TextDelta(table.into()));
+    assert_eq!(app.handle_event(Event::Resize(44, 20)), Action::Redraw);
+    app.apply_update(AgentUpdate::Text(table.into()));
+    app.finish_prompt(Ok(()));
+
+    let lines = app.take_scrollback();
+    let table_lines: Vec<String> = lines
+        .iter()
+        .map(ToString::to_string)
+        .filter(|l| !l.is_empty())
+        .collect();
+    assert!(
+        table_lines.len() > 6,
+        "expected wrapped multiline table rows: {table_lines:#?}"
+    );
+    for line in &lines {
+        assert!(
+            line.width() <= 44,
+            "table line exceeded terminal width 44 ({}): {:?}",
+            line.width(),
+            line.to_string()
+        );
+    }
+    // Row dividers separate wrapped body rows cleanly.
+    let divider_count = table_lines.iter().filter(|l| l.starts_with('├')).count();
+    assert_eq!(divider_count, 2, "{table_lines:#?}");
+
+    // Replayed history also respects the configured terminal width.
+    let mut replayed = App::new("model", status(), Theme::new(false));
+    replayed.set_width(48);
+    replayed.replay_history(&[ChatMessage::assistant(table)]);
+    let replayed_lines = replayed.take_scrollback();
+    assert!(!replayed_lines.is_empty());
+    for line in &replayed_lines {
+        assert!(
+            line.width() <= 48,
+            "replayed table line exceeded width 48 ({}): {:?}",
+            line.width(),
+            line.to_string()
+        );
+    }
+}

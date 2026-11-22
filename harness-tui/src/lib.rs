@@ -245,6 +245,7 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
     };
     let mut term = InlineTerminal::enter(VIEWPORT_HEIGHT)?;
     let mut app = App::new(agent.model().to_owned(), status, Theme::from_env());
+    app.set_width(term.width());
     app.set_thinking(agent.thinking());
     if let Some(theme) = code_theme {
         app.set_code_theme(theme);
