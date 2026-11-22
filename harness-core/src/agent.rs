@@ -480,15 +480,16 @@ impl Agent {
     ) -> bool {
         let before = self.req.messages.len();
         on_event(Event::Compacting { context_tokens });
-        if self
-            .compact_inner(None, continue_task, on_event)
-            .await
-            .is_ok()
-        {
-            on_event(Event::Compacted { before });
-            true
-        } else {
-            false
+        match self.compact_inner(None, continue_task, on_event).await {
+            Ok(_) => {
+                on_event(Event::Compacted { before });
+                true
+            }
+            Err(err) => {
+                let msg = err.to_string();
+                on_event(Event::CompactFailed(&msg));
+                false
+            }
         }
     }
 

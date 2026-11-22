@@ -48,4 +48,6 @@ pub enum Event<'a> {
     Compacting { context_tokens: u64 },
     /// Auto-compaction replaced `before` messages with a compact summary.
     Compacted { before: usize },
+    /// Auto-compaction failed and left the existing history untouched.
+    CompactFailed(&'a str),
 }

@@ -121,6 +121,7 @@ pub enum AgentUpdate {
     },
     Compacting(u64),
     Compacted(usize),
+    CompactFailed(String),
 }
 
 impl AgentUpdate {
@@ -152,6 +153,7 @@ impl AgentUpdate {
             },
             AgentEvent::Compacting { context_tokens } => Self::Compacting(context_tokens),
             AgentEvent::Compacted { before } => Self::Compacted(before),
+            AgentEvent::CompactFailed(err) => Self::CompactFailed(err.to_owned()),
         })
     }
 }
@@ -677,25 +679,26 @@ impl App {
                 self.scrollback.push(Line::raw(String::new()));
             }
             AgentUpdate::Compacting(tokens) => {
-                self.flush_reasoning();
-                self.flush_text();
-                self.scrollback.push(Line::styled(
+                self.push_notice(
                     format!("[auto-compacting ({} tokens)…]", ScaledTokens(tokens)),
                     self.theme.muted,
-                ));
-                self.scrollback.push(Line::raw(String::new()));
+                );
             }
             AgentUpdate::Compacted(before) => {
-                self.flush_reasoning();
-                self.flush_text();
                 self.context = 0;
-                self.scrollback.push(Line::styled(
-                    format!("[compacted {before} messages]"),
-                    self.theme.muted,
-                ));
-                self.scrollback.push(Line::raw(String::new()));
+                self.push_notice(format!("[compacted {before} messages]"), self.theme.muted);
+            }
+            AgentUpdate::CompactFailed(err) => {
+                self.push_notice(format!("[auto-compact failed: {err}]"), self.theme.error);
             }
         }
+    }
+
+    fn push_notice(&mut self, text: String, style: Style) {
+        self.flush_reasoning();
+        self.flush_text();
+        self.scrollback.push(Line::styled(text, style));
+        self.scrollback.push(Line::raw(String::new()));
     }
 
     /// Leave the busy state when the prompt finishes or fails.

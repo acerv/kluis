@@ -178,6 +178,7 @@ async fn tool_call_round_trip() {
                 Event::Retry { reason, .. } => format!("retry {reason}"),
                 Event::Compacting { context_tokens } => format!("compacting {context_tokens}"),
                 Event::Compacted { before } => format!("compacted {before}"),
+                Event::CompactFailed(err) => format!("compact_failed {err}"),
             })
         })
         .await
@@ -1255,4 +1256,29 @@ async fn auto_compact_triggers_at_end_of_prompt_and_guards_repeat_loop() {
     assert_eq!(agent2.auto_compact(), None);
     assert_eq!(prompt(&mut agent2, "second").await.unwrap(), "answer two");
     assert_eq!(model2.requests().len(), 3);
+
+    // Failed auto-compaction emits CompactFailed and leaves history intact.
+    let model3 = MockModel::start(vec![
+        with_usage(1_500, 10, text("kept answer")),
+        with_usage(1_500, 10, text("   ")),
+    ])
+    .await;
+    let mut agent3 = agent(&model3, dir.path()).with_auto_compact(Some(1_000));
+    let mut failed = Vec::new();
+    let answer = agent3
+        .prompt("third", |ev| {
+            if let Event::CompactFailed(err) = ev {
+                failed.push(err.to_owned());
+            }
+        })
+        .await
+        .unwrap();
+    assert_eq!(answer, "kept answer");
+    assert_eq!(failed.len(), 1);
+    assert!(failed[0].contains("empty summary"), "{failed:?}");
+    assert_eq!(roles(&agent3), [ChatRole::User, ChatRole::Assistant]);
+    assert_eq!(
+        agent3.history()[1].content.first_text(),
+        Some("kept answer")
+    );
 }

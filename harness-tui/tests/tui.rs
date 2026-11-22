@@ -1625,4 +1625,25 @@ fn auto_compact_updates_scrollback_and_resets_context() {
         lines.iter().any(|l| l == "[compacted 12 messages]"),
         "{lines:?}"
     );
+
+    // Failure keeps the reported context size and shows the error notice.
+    app.apply_update(AgentUpdate::TurnEnd(TokenUsage {
+        input: 110_000,
+        output: 200,
+        cached: 0,
+    }));
+    app.apply_update(AgentUpdate::Compacting(110_000));
+    app.apply_update(AgentUpdate::CompactFailed("empty summary".into()));
+    assert_eq!(app.context(), 110_000);
+    let lines: Vec<String> = app
+        .take_scrollback()
+        .into_iter()
+        .map(|l| l.to_string())
+        .collect();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l == "[auto-compact failed: empty summary]"),
+        "{lines:?}"
+    );
 }

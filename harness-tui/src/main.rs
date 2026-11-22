@@ -521,7 +521,7 @@ async fn prompt_and_persist(
                     context = turn.prompt();
                     in_compact = false;
                 }
-                Event::TurnEnd(None) => {
+                Event::TurnEnd(None) | Event::CompactFailed(_) => {
                     in_compact = false;
                 }
                 Event::Compacting { .. } => {
@@ -686,6 +686,9 @@ fn print_event(event: Event<'_>) {
         }
         Event::Compacted { before } => {
             eprintln!("[compacted {before} messages]");
+        }
+        Event::CompactFailed(err) => {
+            eprintln!("[auto-compact failed: {}]", printable(err));
         }
     }
 }
