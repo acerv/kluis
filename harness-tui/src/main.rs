@@ -51,6 +51,11 @@ pub struct Args {
     #[arg(long, env = "HARNESS_THINKING", value_name = "LEVEL")]
     thinking: Option<Thinking>,
 
+    /// Colors of code blocks: a built-in theme, e.g. solarized-dark, or a
+    /// TextMate theme file [default: base16-ocean-dark].
+    #[arg(long, value_name = "NAME|PATH")]
+    code_theme: Option<String>,
+
     /// Continue the most recent session for the current folder.
     #[arg(short = 'c', long = "continue", conflicts_with = "no_session")]
     continue_session: bool,
@@ -271,6 +276,7 @@ fn apply_config(args: &mut Args) -> Result<Option<String>, Error> {
     };
     let config = config::load(&path, required)?;
     args.thinking = args.thinking.or(config.generic.thinking);
+    args.code_theme = args.code_theme.take().or(config.generic.code_theme);
     args.allow_read.extend(config.sandbox.read);
     args.allow_write.extend(config.sandbox.write);
     args.deny_read.extend(config.sandbox.deny);
@@ -286,6 +292,12 @@ fn apply_config(args: &mut Args) -> Result<Option<String>, Error> {
 
 async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
     let cwd = std::env::current_dir()?;
+    // A wrong theme fails now, not only once the terminal UI starts.
+    let code_theme = args
+        .code_theme
+        .as_deref()
+        .map(harness_tui::code_theme)
+        .transpose()?;
     let mut auth = match config::auth_path() {
         Some(path) => AuthConfig::load(&path)?,
         None => AuthConfig::default(),
@@ -423,6 +435,7 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
                 adapters,
                 banner,
                 git_guard,
+                code_theme,
             },
         )
         .await;

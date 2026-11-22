@@ -40,8 +40,10 @@ pub use app::{
 };
 pub use clipboard::{last_assistant_text, osc52_sequence};
 pub use history::{History, MAX_HISTORY};
+pub use markdown::code_theme;
 pub use style::Theme;
 pub use terminal::flush_scrollback;
+pub use tui_markdown::CodeTheme;
 
 use terminal::{EventReader, InlineTerminal};
 
@@ -144,6 +146,8 @@ pub struct RunOptions {
     pub banner: Vec<BannerLine>,
     /// Checked after every prompt, when sandboxed.
     pub git_guard: Option<GitGuard>,
+    /// Colors of code blocks, instead of the default theme.
+    pub code_theme: Option<CodeTheme>,
 }
 
 /// Disable the git repositories commands created during a prompt that
@@ -196,6 +200,7 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
         adapters,
         banner,
         mut git_guard,
+        code_theme,
     } = opts;
     let mut models = ModelCatalog {
         adapters,
@@ -204,6 +209,9 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
     let mut term = InlineTerminal::enter(VIEWPORT_HEIGHT)?;
     let mut app = App::new(agent.model().to_owned(), status, Theme::from_env());
     app.set_thinking(agent.thinking());
+    if let Some(theme) = code_theme {
+        app.set_code_theme(theme);
+    }
     if let Some(ref h) = history {
         app.set_history(h.entries());
     }

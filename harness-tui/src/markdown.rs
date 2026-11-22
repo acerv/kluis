@@ -1,19 +1,72 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
+use harness_core::Error;
 use ratatui::text::{Line, Span};
+use tui_markdown::{BuiltinCodeTheme, CodeTheme, Options};
 
-/// Render a Markdown snippet into owned Ratatui lines with syntax-highlighted
-/// code blocks, or plain unstyled text when `color` is false (`NO_COLOR`).
-pub fn render_markdown(input: &str, color: bool) -> Vec<Line<'static>> {
+/// The built-in code block themes, by the names settings use.
+const CODE_THEMES: [(&str, BuiltinCodeTheme); 7] = [
+    ("base16-ocean-dark", BuiltinCodeTheme::Base16OceanDark),
+    ("base16-ocean-light", BuiltinCodeTheme::Base16OceanLight),
+    ("base16-eighties-dark", BuiltinCodeTheme::Base16EightiesDark),
+    ("base16-mocha-dark", BuiltinCodeTheme::Base16MochaDark),
+    ("inspired-github", BuiltinCodeTheme::InspiredGitHub),
+    ("solarized-dark", BuiltinCodeTheme::SolarizedDark),
+    ("solarized-light", BuiltinCodeTheme::SolarizedLight),
+];
+
+/// The code block theme `value` names: a built-in one, or the TextMate
+/// theme file at `value` when it holds a `/`.
+pub fn code_theme(value: &str) -> Result<CodeTheme, Error> {
+    if value.contains('/') {
+        return Ok(CodeTheme::from_file(value)?);
+    }
+    match CODE_THEMES.iter().find(|(name, _)| *name == value) {
+        Some(&(_, theme)) => Ok(theme.into()),
+        None => {
+            let names: Vec<_> = CODE_THEMES.iter().map(|(name, _)| *name).collect();
+            Err(format!(
+                "code theme {value}: not one of {}, nor a file path",
+                names.join(", ")
+            )
+            .into())
+        }
+    }
+}
+
+/// How Markdown is shown: styled, with syntax-highlighted code blocks, or
+/// plain (`NO_COLOR`).
+#[derive(Debug, Clone)]
+pub struct MarkdownStyle {
+    color: bool,
+    options: Options,
+}
+
+impl MarkdownStyle {
+    pub fn new(color: bool) -> Self {
+        Self {
+            color,
+            options: Options::default(),
+        }
+    }
+
+    /// Highlight code blocks with `theme`.
+    pub fn set_code_theme(&mut self, theme: CodeTheme) {
+        self.options = Options::default().code_theme(theme);
+    }
+}
+
+/// Render a Markdown snippet into owned Ratatui lines shown with `style`.
+pub fn render_markdown(input: &str, style: &MarkdownStyle) -> Vec<Line<'static>> {
     let trimmed = input.trim_matches('\n');
     if trimmed.is_empty() {
         return Vec::new();
     }
-    let text = tui_markdown::from_str(trimmed);
+    let text = tui_markdown::from_str_with_options(trimmed, &style.options);
     text.lines
         .into_iter()
-        .map(|line| into_owned_line(line, color))
+        .map(|line| into_owned_line(line, style.color))
         .collect()
 }
 
@@ -74,7 +127,7 @@ impl MarkdownStream {
 
     /// Append a streaming chunk, push any newly finalized Markdown lines into
     /// `out`, and refresh the cached live preview lines.
-    pub fn push_delta(&mut self, delta: &str, color: bool, out: &mut Vec<Line<'static>>) {
+    pub fn push_delta(&mut self, delta: &str, style: &MarkdownStyle, out: &mut Vec<Line<'static>>) {
         if delta.is_empty() {
             return;
         }
@@ -85,7 +138,7 @@ impl MarkdownStream {
         if scan.safe_end > self.parsed_prefix_end {
             self.parsed_prefix_end = scan.safe_end;
             let prefix = &self.buf[..scan.safe_end];
-            let mut lines = render_markdown(prefix, color);
+            let mut lines = render_markdown(prefix, style);
             let safe_len = match scan.safe_state {
                 PrefixState::InFence | PrefixState::OpenBlock => lines.len().saturating_sub(1),
                 PrefixState::ClosedBlock => lines.len(),
@@ -105,7 +158,7 @@ impl MarkdownStream {
             }
         }
 
-        let mut lines = render_markdown(&self.buf, color);
+        let mut lines = render_markdown(&self.buf, style);
         if self.in_unclosed_fence {
             // Drop the synthetic closing fence line added by tui-markdown.
             lines.pop();
@@ -127,7 +180,7 @@ impl MarkdownStream {
     pub fn finish(
         &mut self,
         fallback: Option<&str>,
-        color: bool,
+        style: &MarkdownStyle,
         out: &mut Vec<Line<'static>>,
     ) -> bool {
         if self.buf.is_empty() {
@@ -136,7 +189,7 @@ impl MarkdownStream {
                 self.clear();
                 return had_output;
             };
-            let lines = render_markdown(text, color);
+            let lines = render_markdown(text, style);
             let emitted = !lines.is_empty();
             out.extend(lines);
             self.clear();
@@ -144,7 +197,7 @@ impl MarkdownStream {
         }
 
         let emitted = if self.in_unclosed_fence {
-            let mut lines = render_markdown(&self.buf, color);
+            let mut lines = render_markdown(&self.buf, style);
             if lines.len() > self.committed {
                 out.extend(lines.drain(self.committed..));
             }

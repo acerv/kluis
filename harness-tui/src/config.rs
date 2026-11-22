@@ -9,6 +9,10 @@
 //! model = "deepseek-chat"
 //! # Default thinking effort: "default", "low", "medium", or "high".
 //! thinking = "medium"
+//! # Colors of code blocks: base16-ocean-dark (default), base16-ocean-light,
+//! # base16-eighties-dark, base16-mocha-dark, inspired-github,
+//! # solarized-dark, solarized-light, or a TextMate theme file.
+//! code_theme = "solarized-dark"
 //!
 //! [sandbox]
 //! # Also allow reading, or changing, these paths; `~` is $HOME.
@@ -65,6 +69,7 @@ impl Default for Config {
             generic: GenericConfig {
                 model: Some(DEFAULT_MODEL.to_owned()),
                 thinking: None,
+                code_theme: None,
             },
             sandbox: SandboxConfig::default(),
         }
@@ -81,6 +86,10 @@ pub struct GenericConfig {
     /// Default thinking effort (`default`, `low`, `medium`, `high`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<Thinking>,
+    /// Colors of code blocks, like `--code-theme`: a built-in theme, or a
+    /// TextMate theme file when it holds a `/`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code_theme: Option<String>,
 }
 
 /// The `[sandbox]` section.
@@ -184,6 +193,17 @@ pub fn load(path: &Path, required: bool) -> Result<Config, Error> {
         if trimmed.len() != model.len() {
             *model = trimmed.to_owned();
         }
+    }
+    if let Some(theme) = config
+        .generic
+        .code_theme
+        .as_mut()
+        .filter(|t| t.contains('/'))
+    {
+        *theme = absolute(Path::new(theme))
+            .map_err(|e| error(&e))?
+            .to_string_lossy()
+            .into_owned();
     }
     let sandbox = &mut config.sandbox;
     for paths in [&mut sandbox.read, &mut sandbox.write] {

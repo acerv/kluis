@@ -18,11 +18,12 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use serde_json::Value;
+use tui_markdown::CodeTheme;
 use unicode_width::UnicodeWidthStr;
 
 use crate::complete::CommandCompletion;
 use crate::input::Input;
-use crate::markdown::{render_markdown, MarkdownStream};
+use crate::markdown::{render_markdown, MarkdownStream, MarkdownStyle};
 use crate::picker::{Picker, PickerKind, PickerOutcome};
 use crate::style::Theme;
 use crate::terminal::{char_width, wrap_lines, wrapped_line_count};
@@ -199,6 +200,7 @@ pub struct App {
     tool_preview: ToolPreview,
     /// Incremental Markdown stream for the current assistant turn.
     markdown: MarkdownStream,
+    markdown_style: MarkdownStyle,
     /// Current incomplete streaming reasoning row (fits within `width`).
     live_reasoning: String,
     /// Reasoning buffered while `show_thinking` is off so `Ctrl-O` can reveal
@@ -235,6 +237,7 @@ impl App {
             active_tool: None,
             tool_preview: ToolPreview::default(),
             markdown: MarkdownStream::default(),
+            markdown_style: MarkdownStyle::new(theme.color),
             live_reasoning: String::new(),
             hidden_reasoning: String::new(),
             emitted_reasoning: false,
@@ -316,6 +319,11 @@ impl App {
         self.theme
     }
 
+    /// Highlight code blocks with `theme`.
+    pub fn set_code_theme(&mut self, theme: CodeTheme) {
+        self.markdown_style.set_code_theme(theme);
+    }
+
     /// Push the logo into scrollback, with `info` next to it.
     pub fn push_banner(&mut self, info: &[BannerLine]) {
         let logo_w = LOGO.iter().map(|row| row.width()).max().unwrap_or(0);
@@ -392,7 +400,7 @@ impl App {
                         match part {
                             ContentPart::Text(text) if !text.is_empty() => {
                                 self.scrollback
-                                    .extend(render_markdown(text, self.theme.color));
+                                    .extend(render_markdown(text, &self.markdown_style));
                                 self.scrollback.push(Line::raw(String::new()));
                             }
                             ContentPart::ToolCall(call) => {
@@ -526,13 +534,13 @@ impl App {
             AgentUpdate::TextDelta(delta) => {
                 self.flush_reasoning();
                 self.markdown
-                    .push_delta(&delta, self.theme.color, &mut self.scrollback);
+                    .push_delta(&delta, &self.markdown_style, &mut self.scrollback);
             }
             AgentUpdate::Text(text) => {
                 self.flush_reasoning();
                 if self
                     .markdown
-                    .finish(Some(&text), self.theme.color, &mut self.scrollback)
+                    .finish(Some(&text), &self.markdown_style, &mut self.scrollback)
                 {
                     self.scrollback.push(Line::raw(String::new()));
                 }
@@ -849,7 +857,7 @@ impl App {
     fn flush_text(&mut self) {
         if self
             .markdown
-            .finish(None, self.theme.color, &mut self.scrollback)
+            .finish(None, &self.markdown_style, &mut self.scrollback)
         {
             self.scrollback.push(Line::raw(String::new()));
         }

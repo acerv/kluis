@@ -45,6 +45,15 @@ fn apparmor_profile_refuses_a_binary_users_can_change() {
 }
 
 #[test]
+fn unknown_code_theme_is_refused_at_start() {
+    let out = run_cli(&["--code-theme", "no-such-theme", "hi"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("code theme no-such-theme"), "{stderr}");
+    assert!(stderr.contains("solarized-dark"), "{stderr}");
+}
+
+#[test]
 fn no_sandbox_runs_directly() {
     let out = run_cli(&["--no-sandbox"]);
     assert!(out.status.success());

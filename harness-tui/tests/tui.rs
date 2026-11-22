@@ -6,8 +6,8 @@ use genai::chat::{ChatMessage, ContentPart, MessageContent, ToolCall, ToolRespon
 use harness_core::tools::{Diff, DiffHunk, DiffLine};
 use harness_core::{TokenUsage, ToolDetails};
 use harness_tui::{
-    flush_scrollback, last_assistant_text, osc52_sequence, Action, AgentUpdate, App, BannerLine,
-    SlashCommand, Status, Theme, VIEWPORT_HEIGHT,
+    code_theme, flush_scrollback, last_assistant_text, osc52_sequence, Action, AgentUpdate, App,
+    BannerLine, SlashCommand, Status, Theme, VIEWPORT_HEIGHT,
 };
 use ratatui::backend::TestBackend;
 use ratatui::style::{Color, Modifier, Style};
@@ -1422,4 +1422,70 @@ fn printable_text_sends_no_escape_sequences() {
     let text = "a\x1b]52;c;cHduZWQ=\x07b \u{9b}31mc\rd\n\te";
     assert_eq!(printable(text), "a]52;c;cHduZWQ=b 31mcd\n\te");
     assert!(matches!(printable("plain\ntext"), Cow::Borrowed(_)));
+}
+
+/// The colors of the code in a ```sh block, as `app` shows it.
+fn code_colors(app: &mut App) -> Vec<Color> {
+    app.replay_history(&[ChatMessage::assistant("```sh\nls -la /tmp\n```")]);
+    let lines = app.take_scrollback();
+    let code = lines
+        .iter()
+        .find(|line| line.to_string().contains("ls -la"))
+        .expect("code line");
+    code.spans.iter().filter_map(|span| span.style.fg).collect()
+}
+
+#[test]
+fn code_theme_colors_code_blocks() {
+    let mut default = App::new("model", status(), Theme::new(true));
+    let mut solarized = App::new("model", status(), Theme::new(true));
+    solarized.set_code_theme(code_theme("solarized-dark").unwrap());
+    let colors = code_colors(&mut solarized);
+    assert!(!colors.is_empty());
+    assert_ne!(code_colors(&mut default), colors);
+}
+
+#[test]
+fn code_theme_from_a_textmate_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("red.tmTheme");
+    std::fs::write(
+        &path,
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>name</key><string>Red</string>
+<key>settings</key><array><dict><key>settings</key><dict>
+<key>foreground</key><string>#FF0000</string>
+</dict></dict></array>
+</dict></plist>"#,
+    )
+    .unwrap();
+
+    let mut app = App::new("model", status(), Theme::new(true));
+    app.set_code_theme(code_theme(path.to_str().unwrap()).unwrap());
+    let colors = code_colors(&mut app);
+    assert!(colors.contains(&Color::Rgb(255, 0, 0)), "{colors:?}");
+}
+
+#[test]
+fn code_theme_names() {
+    // Every name the error offers is a theme.
+    let err = code_theme("nope").err().unwrap().to_string();
+    let names = err
+        .split_once("not one of ")
+        .and_then(|(_, rest)| rest.split_once(", nor"))
+        .map(|(names, _)| names)
+        .expect(&err);
+    assert_eq!(names.split(", ").count(), 7, "{err}");
+    for name in names.split(", ") {
+        code_theme(name).unwrap();
+    }
+    assert!(code_theme("/no/such/theme.tmTheme").is_err());
+}
+
+#[test]
+fn no_color_keeps_code_plain_with_any_theme() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    app.set_code_theme(code_theme("solarized-dark").unwrap());
+    assert!(code_colors(&mut app).is_empty());
 }
