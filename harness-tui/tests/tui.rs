@@ -1558,3 +1558,37 @@ fn status_reports_model_session_context_and_cache_hit_rate() {
         "model:   claude-sonnet-4-5 (default)\nsession: new · 1 message\ntokens:  0"
     );
 }
+
+#[test]
+fn grep_tool_result_shows_match_count_and_truncation() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    let mut run_grep = |pattern: &str, content: &str| -> Vec<String> {
+        app.apply_update(AgentUpdate::ToolCall {
+            name: "grep".into(),
+            args: format!(r#"{{"pattern":"{pattern}"}}"#),
+        });
+        app.apply_update(AgentUpdate::ToolResult {
+            content: content.into(),
+            details: None,
+        });
+        app.take_scrollback()
+            .into_iter()
+            .map(|l| l.to_string())
+            .collect()
+    };
+
+    let lines = run_grep(
+        "foo",
+        r#"{"output":"a.rs:1: foo\nb.rs:2: foo\n","matches":2}"#,
+    );
+    assert!(lines.iter().any(|l| l == "  2 matches"), "{lines:?}");
+
+    let lines = run_grep(
+        "bar",
+        r#"{"output":"a.rs:1: bar\n","matches":50,"truncated":true}"#,
+    );
+    assert!(
+        lines.iter().any(|l| l == "  50 matches (truncated)"),
+        "{lines:?}"
+    );
+}

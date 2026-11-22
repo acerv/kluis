@@ -1450,12 +1450,12 @@ fn format_tool_result(
     match tool {
         Some("bash") => {
             if let Some(output) = v["output"].as_str() {
-                let lines: Vec<&str> = output.lines().collect();
-                for line in lines.iter().take(MAX_BASH_PREVIEW_LINES) {
+                let mut lines = output.lines();
+                for line in lines.by_ref().take(MAX_BASH_PREVIEW_LINES) {
                     out.push(Line::styled(format!("  {line}"), theme.muted));
                 }
-                if lines.len() > MAX_BASH_PREVIEW_LINES {
-                    let extra = lines.len() - MAX_BASH_PREVIEW_LINES;
+                let extra = lines.count();
+                if extra > 0 {
                     out.push(Line::styled(
                         format!("  … +{extra} more lines"),
                         theme.muted,
@@ -1474,11 +1474,7 @@ fn format_tool_result(
         }
         Some("read") => {
             let total = v["total_lines"].as_u64().unwrap_or(0);
-            let suffix = if v["truncated"].as_bool() == Some(true) {
-                " (truncated)"
-            } else {
-                ""
-            };
+            let suffix = truncated_suffix(&v);
             out.push(Line::styled(
                 format!("  {total} lines{suffix}"),
                 theme.muted,
@@ -1497,16 +1493,16 @@ fn format_tool_result(
             out.push(Line::styled(format!("  {total} files"), theme.muted));
         }
         Some("grep") => {
-            let total = v["total"].as_u64().unwrap_or(0);
-            out.push(Line::styled(format!("  {total} matches"), theme.muted));
+            let matches = v["matches"].as_u64().unwrap_or(0);
+            let suffix = truncated_suffix(&v);
+            out.push(Line::styled(
+                format!("  {matches} matches{suffix}"),
+                theme.muted,
+            ));
         }
         Some("web_fetch") => {
             let total = v["total_bytes"].as_u64().unwrap_or(0);
-            let suffix = if v["truncated"].as_bool() == Some(true) {
-                " (truncated)"
-            } else {
-                ""
-            };
+            let suffix = truncated_suffix(&v);
             out.push(Line::styled(
                 format!("  {total} bytes{suffix}"),
                 theme.muted,
@@ -1522,6 +1518,14 @@ fn format_tool_result(
         _ => {
             out.push(Line::styled(format!("  {}", summary(content)), theme.muted));
         }
+    }
+}
+
+fn truncated_suffix(v: &Value) -> &'static str {
+    if v["truncated"].as_bool() == Some(true) {
+        " (truncated)"
+    } else {
+        ""
     }
 }
 
