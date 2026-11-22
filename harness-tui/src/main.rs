@@ -47,7 +47,7 @@ pub struct Args {
     #[arg(long, env = "HARNESS_MODEL")]
     model: Option<String>,
 
-    /// Thinking effort: default, low, medium, or high.
+    /// Thinking effort: default, off, low, medium, or high.
     #[arg(long, env = "HARNESS_THINKING", value_name = "LEVEL")]
     thinking: Option<Thinking>,
 

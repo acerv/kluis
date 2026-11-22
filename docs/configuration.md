@@ -31,7 +31,7 @@ either the file or the CLI enables them.
 | Key                     | What it does                                         | Default             |
 | ----------------------- | ---------------------------------------------------- | ------------------- |
 | `generic.model`         | Model to use                                         | `deepseek-chat`     |
-| `generic.thinking`      | Thinking effort: `default`, `low`, `medium`, `high`  | `default`           |
+| `generic.thinking`      | Thinking effort: `default`, `off`, `low`, `medium`, `high` | `default`           |
 | `generic.code_theme`    | Colors of code blocks, see [Code theme](#code-theme) | `base16-ocean-dark` |
 | `sandbox.read`          | Extra folders the model can read                     | none                |
 | `sandbox.write`         | Extra folders the model can change                   | none                |

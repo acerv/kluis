@@ -89,6 +89,7 @@ impl CommandSpec {
 
 const THINKING_LEVELS: &[(&str, &str)] = &[
     ("default", "leave provider reasoning default untouched"),
+    ("off", "disable reasoning"),
     ("low", "light reasoning effort"),
     ("medium", "balanced reasoning effort"),
     ("high", "deep reasoning effort"),

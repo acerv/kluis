@@ -736,13 +736,14 @@ fn thinking_effort_slash_keybinding_and_footer() {
         Action::Slash(SlashCommand::Thinking(Some("high".into())))
     );
 
-    // Shift+Tab cycles default -> low -> medium -> high -> default -> low and updates footer.
+    // Shift+Tab cycles default -> off -> low -> medium -> high -> default -> off and updates footer.
     for expected in [
+        Thinking::Off,
         Thinking::Low,
         Thinking::Medium,
         Thinking::High,
         Thinking::Default,
-        Thinking::Low,
+        Thinking::Off,
     ] {
         assert_eq!(
             app.handle_event(shift(KeyCode::BackTab)),
@@ -753,13 +754,14 @@ fn thinking_effort_slash_keybinding_and_footer() {
 
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
-    assert!(screen.contains("claude-sonnet-4-5 (low)  "), "{screen}");
-    assert!(screen.contains("Thinking: low"), "{screen}");
+    assert!(screen.contains("claude-sonnet-4-5 (off)  "), "{screen}");
+    assert!(screen.contains("Thinking: off"), "{screen}");
 
     // Footer model color changes by thinking effort when color is enabled.
     let mut colored = App::new("deepseek-flash", status(), Theme::new(true));
     for (level, expected_fg) in [
         (Thinking::Default, Color::Green),
+        (Thinking::Off, Color::Gray),
         (Thinking::Low, Color::Cyan),
         (Thinking::Medium, Color::Yellow),
         (Thinking::High, Color::Indexed(208)),
@@ -805,13 +807,14 @@ fn slash_command_autocomplete_popup_and_tab_completion() {
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
     assert!(screen.contains("❯ /thinking default"), "{screen}");
+    assert!(screen.contains("/thinking off"), "{screen}");
     assert!(screen.contains("/thinking high"), "{screen}");
 
-    // Down selects `low`, Enter submits `/thinking low` and closes popup.
+    // Down selects `off`, Enter submits `/thinking off` and closes popup.
     assert_eq!(app.handle_event(key(KeyCode::Down)), Action::Redraw);
     assert_eq!(
         app.handle_event(key(KeyCode::Enter)),
-        Action::Slash(SlashCommand::Thinking(Some("low".into())))
+        Action::Slash(SlashCommand::Thinking(Some("off".into())))
     );
     assert!(!app.is_completion_open());
 

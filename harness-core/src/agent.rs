@@ -43,26 +43,38 @@ pub enum Thinking {
     /// Leave the provider's default reasoning behavior untouched.
     #[default]
     Default,
+    /// Disable reasoning where the provider supports turning it off.
+    Off,
     Low,
     Medium,
     High,
 }
 
 impl Thinking {
-    /// Lowercase effort name (`"default"`, `"low"`, `"medium"`, `"high"`).
+    const ALL: [Self; 5] = [
+        Self::Default,
+        Self::Off,
+        Self::Low,
+        Self::Medium,
+        Self::High,
+    ];
+
+    /// Lowercase effort name (`"default"`, `"off"`, `"low"`, `"medium"`, `"high"`).
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Default => "default",
+            Self::Off => "off",
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
         }
     }
 
-    /// Next effort level in the cycle `default -> low -> medium -> high -> default`.
+    /// Next effort level in the cycle `default -> off -> low -> medium -> high -> default`.
     pub fn next(self) -> Self {
         match self {
-            Self::Default => Self::Low,
+            Self::Default => Self::Off,
+            Self::Off => Self::Low,
             Self::Low => Self::Medium,
             Self::Medium => Self::High,
             Self::High => Self::Default,
@@ -72,6 +84,7 @@ impl Thinking {
     fn reasoning_effort(self) -> Option<ReasoningEffort> {
         match self {
             Self::Default => None,
+            Self::Off => Some(ReasoningEffort::Zero),
             Self::Low => Some(ReasoningEffort::Low),
             Self::Medium => Some(ReasoningEffort::Medium),
             Self::High => Some(ReasoningEffort::High),
@@ -90,19 +103,14 @@ impl FromStr for Thinking {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let trimmed = s.trim();
-        if trimmed.eq_ignore_ascii_case("default") {
-            Ok(Self::Default)
-        } else if trimmed.eq_ignore_ascii_case("low") {
-            Ok(Self::Low)
-        } else if trimmed.eq_ignore_ascii_case("medium") {
-            Ok(Self::Medium)
-        } else if trimmed.eq_ignore_ascii_case("high") {
-            Ok(Self::High)
-        } else {
-            Err(format!(
-                "invalid thinking effort '{s}' (expected default, low, medium, or high)"
-            ))
-        }
+        Self::ALL
+            .into_iter()
+            .find(|level| level.as_str().eq_ignore_ascii_case(trimmed))
+            .ok_or_else(|| {
+                format!(
+                    "invalid thinking effort '{s}' (expected default, off, low, medium, or high)"
+                )
+            })
     }
 }
 

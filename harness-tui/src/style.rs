@@ -104,6 +104,7 @@ impl Theme {
         }
         let fg = match thinking {
             Thinking::Default => Color::Green,
+            Thinking::Off => Color::Gray,
             Thinking::Low => Color::Cyan,
             Thinking::Medium => Color::Yellow,
             Thinking::High => Color::Indexed(208),

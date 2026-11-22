@@ -110,7 +110,7 @@ async fn set_model_and_clear_history() {
 
 #[tokio::test]
 async fn thinking_effort_is_sent_in_requests() {
-    let model = MockModel::start(vec![text("a"), text("b"), text("c")]).await;
+    let model = MockModel::start(vec![text("a"), text("b"), text("c"), text("d")]).await;
     let dir = tempfile::tempdir().unwrap();
     let mut agent = agent(&model, dir.path());
 
@@ -119,21 +119,29 @@ async fn thinking_effort_is_sent_in_requests() {
     prompt(&mut agent, "first").await.unwrap();
     assert!(model.requests()[0].get("reasoning_effort").is_none());
 
+    // `Off` disables reasoning (`none` on OpenAI).
+    agent.set_thinking(Thinking::Off);
+    assert_eq!(agent.thinking(), Thinking::Off);
+    prompt(&mut agent, "second").await.unwrap();
+    assert_eq!(model.requests()[1]["reasoning_effort"], "none");
+
     // Setting `High` forwards the reasoning effort keyword; `Default` omits it again.
     agent.set_thinking(Thinking::High);
     assert_eq!(agent.thinking(), Thinking::High);
-    prompt(&mut agent, "second").await.unwrap();
-    assert_eq!(model.requests()[1]["reasoning_effort"], "high");
+    prompt(&mut agent, "third").await.unwrap();
+    assert_eq!(model.requests()[2]["reasoning_effort"], "high");
 
     agent.set_thinking(Thinking::Default);
-    prompt(&mut agent, "third").await.unwrap();
-    assert!(model.requests()[2].get("reasoning_effort").is_none());
+    prompt(&mut agent, "fourth").await.unwrap();
+    assert!(model.requests()[3].get("reasoning_effort").is_none());
 
     // Parsing and cycling helpers.
+    assert_eq!("OFF".parse::<Thinking>(), Ok(Thinking::Off));
     assert_eq!("MEDIUM".parse::<Thinking>(), Ok(Thinking::Medium));
     assert_eq!("default".parse::<Thinking>(), Ok(Thinking::Default));
     assert!("turbo".parse::<Thinking>().is_err());
-    assert_eq!(Thinking::Default.next(), Thinking::Low);
+    assert_eq!(Thinking::Default.next(), Thinking::Off);
+    assert_eq!(Thinking::Off.next(), Thinking::Low);
     assert_eq!(Thinking::High.next(), Thinking::Default);
 }
 
