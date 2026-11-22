@@ -1115,3 +1115,31 @@ async fn compact_preserves_history_when_empty_or_failed() {
     assert!(err.to_string().contains("empty summary"), "{err}");
     assert_eq!(agent.history().len(), before);
 }
+
+#[tokio::test]
+async fn anthropic_compact_reads_prior_cache_without_marking_transient_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = MockModel::start_anthropic(vec![text("first reply"), text("summary")]).await;
+    let mut agent =
+        Agent::with_client(model.client_as(AdapterKind::Anthropic), "claude-sonnet-4-5")
+            .with_system("be concise")
+            .with_tool_context(ToolContext {
+                cwd: dir.path().to_owned(),
+                ..ToolContext::default()
+            });
+
+    assert_eq!(prompt(&mut agent, "hello").await.unwrap(), "first reply");
+    assert_eq!(agent.compact(None, |_| {}).await.unwrap(), "summary");
+
+    let reqs = model.requests();
+    assert_eq!(reqs.len(), 2);
+    // Compact request: [U1*, A1, U_compact] — U1 stays marked for cache read,
+    // while transient U_compact is left unmarked so Anthropic does not pay a
+    // cache write for a tail discarded right after compaction.
+    let compact_msgs = reqs[1]["messages"].as_array().unwrap();
+    assert_eq!(compact_msgs.len(), 3);
+    assert!(has_cache_control(&compact_msgs[0]));
+    assert!(!has_cache_control(&compact_msgs[1]));
+    assert!(!has_cache_control(&compact_msgs[2]));
+    assert_eq!(count_cache_breakpoints(&reqs[1]), 2);
+}

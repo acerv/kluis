@@ -518,9 +518,6 @@ impl Agent {
             messages.push(msg);
         }
         messages.extend(self.req.messages.iter().cloned());
-        if let Some(text) = extra_user {
-            messages.push(ChatMessage::user(text));
-        }
 
         let mut tools = self.req.tools.clone();
         if anthropic_cache {
@@ -529,7 +526,12 @@ impl Agent {
                     last_tool.cache_control = Some(CacheControl::Ephemeral);
                 }
             }
+            // Mark only persisted history so transient prompts (e.g. `/compact`)
+            // hit the existing prefix cache without writing a discarded tail.
             mark_conversation_cache(&mut messages);
+        }
+        if let Some(text) = extra_user {
+            messages.push(ChatMessage::user(text));
         }
 
         ChatRequest {
