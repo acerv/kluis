@@ -26,7 +26,7 @@ pub const FETCH_TOOL: &str = "web_fetch";
 
 /// Maximum bytes of page text returned by one call; `offset` pages
 /// through the rest.
-pub const MAX_FETCH_BYTES: usize = 50 * 1024;
+pub const MAX_FETCH_BYTES: usize = 24 * 1024;
 
 /// Maximum bytes downloaded from a page; the rest is left out.
 pub const MAX_FETCH_BODY_BYTES: usize = 5 * 1024 * 1024;
@@ -65,6 +65,7 @@ pub struct FetchOutput {
     /// Bytes of the whole page text.
     pub total_bytes: usize,
     /// True when more text follows the returned part.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
     /// Offset of the text after the returned part, when there is some.
     #[serde(default, skip_serializing_if = "Option::is_none")]

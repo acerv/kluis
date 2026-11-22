@@ -57,10 +57,7 @@ async fn runs_read() {
     std::fs::write(&f, "hi\n").unwrap();
 
     let resp = run(&call("read", json!({ "path": f }))).await;
-    assert_eq!(
-        content(&resp),
-        json!({"content": "hi\n", "total_lines": 1, "truncated": false})
-    );
+    assert_eq!(content(&resp), json!({"content": "hi\n", "total_lines": 1}));
 }
 
 #[tokio::test]
@@ -92,9 +89,7 @@ async fn runs_bash() {
         content(&resp),
         json!({
             "exit_code": 0,
-            "output": "hi\n",
-            "truncated": false,
-            "timed_out": false
+            "output": "hi\n"
         })
     );
 }

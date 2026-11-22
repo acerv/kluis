@@ -17,6 +17,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
+use serde::Deserialize;
 use serde_json::Value;
 use tui_markdown::CodeTheme;
 use unicode_width::UnicodeWidthStr;
@@ -387,7 +388,7 @@ impl App {
     /// unknown until [`App::set_context`] or its next request.
     pub fn replay_history(&mut self, messages: &[ChatMessage]) {
         self.context = 0;
-        let mut tool_names: HashMap<&str, &str> = HashMap::new();
+        let mut tool_calls: HashMap<&str, (&str, &Value)> = HashMap::new();
         for msg in messages {
             match msg.role {
                 ChatRole::User => {
@@ -404,7 +405,10 @@ impl App {
                                 self.scrollback.push(Line::raw(String::new()));
                             }
                             ContentPart::ToolCall(call) => {
-                                tool_names.insert(call.call_id.as_str(), call.fn_name.as_str());
+                                tool_calls.insert(
+                                    call.call_id.as_str(),
+                                    (call.fn_name.as_str(), &call.fn_arguments),
+                                );
                                 if call.fn_name == TODO_TOOL {
                                     continue;
                                 }
@@ -420,9 +424,10 @@ impl App {
                 }
                 ChatRole::Tool => {
                     for resp in msg.content.tool_responses() {
-                        let tool = tool_names.get(resp.call_id.as_str()).copied();
+                        let entry = tool_calls.remove(resp.call_id.as_str());
+                        let tool = entry.map(|(name, _)| name);
                         if tool == Some(TODO_TOOL) {
-                            self.set_todos(&resp.content);
+                            self.set_todos(&resp.content, None, entry.map(|(_, args)| args));
                             continue;
                         }
                         format_tool_result(
@@ -443,16 +448,31 @@ impl App {
 
     /// Show the plan of a `todo` result above the editor, or its error in
     /// scrollback.
-    fn set_todos(&mut self, content: &str) {
-        match serde_json::from_str::<TodoTool>(content) {
-            Ok(plan) => self.todos = plan.todos,
-            Err(_) => {
-                self.scrollback
-                    .push(Line::styled(TODO_TOOL, self.theme.tool_name));
-                format_tool_result(None, content, None, self.theme, &mut self.scrollback);
-                self.scrollback.push(Line::raw(String::new()));
+    fn set_todos(
+        &mut self,
+        content: &str,
+        details: Option<ToolDetails>,
+        call_args: Option<&Value>,
+    ) {
+        if let Some(ToolDetails::Todo(todos)) = details {
+            self.todos = todos;
+            return;
+        }
+        if let Ok(parsed) = serde_json::from_str::<Value>(content) {
+            if parsed.get("error").is_none() {
+                if let Some(plan) = call_args
+                    .and_then(|args| TodoTool::deserialize(args).ok())
+                    .or_else(|| TodoTool::deserialize(&parsed).ok())
+                {
+                    self.todos = plan.todos;
+                    return;
+                }
             }
         }
+        self.scrollback
+            .push(Line::styled(TODO_TOOL, self.theme.tool_name));
+        format_tool_result(None, content, None, self.theme, &mut self.scrollback);
+        self.scrollback.push(Line::raw(String::new()));
     }
 
     /// Hide the plan once all of it is done.
@@ -580,7 +600,7 @@ impl App {
                 self.tool_preview.clear();
                 self.activity_started = Some(Instant::now());
                 if tool_name.as_deref() == Some(TODO_TOOL) {
-                    self.set_todos(&content);
+                    self.set_todos(&content, details, None);
                     return;
                 }
                 format_tool_result(

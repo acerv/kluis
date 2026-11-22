@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
 use harness_exec::{
-    dispatch_raw, Todo, TodoStatus, TodoTool, ToolContext, MAX_TODO_ITEMS, MAX_TODO_ITEM_BYTES,
+    dispatch_raw, Todo, TodoStatus, TodoTool, ToolContext, ToolDetails, MAX_TODO_ITEMS,
+    MAX_TODO_ITEM_BYTES,
 };
 use serde_json::{json, Value};
 
@@ -36,12 +37,14 @@ fn returns_the_list() {
     }
     .run()
     .unwrap();
+    assert_eq!(out.count, 3);
     assert_eq!(out.todos, todos);
 }
 
 #[test]
 fn empty_list_clears() {
     let out = TodoTool { todos: vec![] }.run().unwrap();
+    assert_eq!(out.count, 0);
     assert!(out.todos.is_empty());
 }
 
@@ -75,12 +78,18 @@ fn one_in_progress() {
 }
 
 #[tokio::test]
-async fn dispatched_as_json() {
+async fn dispatched_as_compact_json_with_details() {
     let args = json!({ "todos": [{ "content": "build", "status": "in_progress" }] });
     let (content, details) = dispatch_raw("todo", &args, &ToolContext::default(), |_| {}).await;
     let out: Value = serde_json::from_str(&content).unwrap();
-    assert_eq!(out, args);
-    assert!(details.is_none());
+    assert_eq!(out, json!({ "count": 1 }));
+    assert_eq!(
+        details,
+        Some(ToolDetails::Todo(vec![todo(
+            "build",
+            TodoStatus::InProgress
+        )]))
+    );
 }
 
 #[tokio::test]

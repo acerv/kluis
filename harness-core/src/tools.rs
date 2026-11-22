@@ -6,7 +6,7 @@
 pub use harness_exec::{
     definitions, execute, execute_streaming, is_read_only, run, run_with, run_worker, BashContext,
     Diff, DiffHunk, DiffLine, ExecError, Executor, PreExec, SandboxConfig, SandboxExecutor, Todo,
-    TodoStatus, TodoTool, ToolContext, ToolDetails, ToolError, TODO_TOOL,
+    TodoOutput, TodoStatus, TodoTool, ToolContext, ToolDetails, ToolError, TODO_TOOL,
 };
 
 use genai::chat::{ToolCall, ToolResponse};
@@ -56,5 +56,6 @@ fn parse<'a, T: Deserialize<'a>>(args: &'a serde_json::Value) -> Result<T, ToolE
 }
 
 fn output(result: Result<impl Serialize, ToolError>) -> Result<String, ToolError> {
-    result.map(|out| json!(out).to_string())
+    let out = result?;
+    serde_json::to_string(&out).map_err(|e| ToolError::new(e.to_string()))
 }

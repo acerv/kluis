@@ -29,6 +29,15 @@ pub struct Todo {
     pub status: TodoStatus,
 }
 
+/// Result of a validated `todo` call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TodoOutput {
+    pub count: usize,
+    /// Validated plan for UI display; skipped when serializing for the model.
+    #[serde(skip)]
+    pub todos: Vec<Todo>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TodoStatus {
@@ -72,12 +81,13 @@ impl TodoTool {
             .with_schema(Self::schema())
     }
 
-    /// Check the list and return it, so the plan stays in view.
+    /// Check the list and return its count (plus the validated items for the
+    /// UI), avoiding echoing the whole plan back to the model.
     ///
     /// Items must have non-blank text of at most [`MAX_TODO_ITEM_BYTES`],
     /// the list at most [`MAX_TODO_ITEMS`] items and at most one of them in
     /// progress. An empty list clears the plan.
-    pub fn run(self) -> Result<Self, ToolError> {
+    pub fn run(self) -> Result<TodoOutput, ToolError> {
         if self.todos.len() > MAX_TODO_ITEMS {
             return Err(ToolError::new(format!(
                 "at most {MAX_TODO_ITEMS} todos are allowed"
@@ -100,6 +110,10 @@ impl TodoTool {
                 in_progress = true;
             }
         }
-        Ok(self)
+        let count = self.todos.len();
+        Ok(TodoOutput {
+            count,
+            todos: self.todos,
+        })
     }
 }

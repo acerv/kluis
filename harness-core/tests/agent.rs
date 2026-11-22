@@ -549,6 +549,42 @@ async fn edit_tool_emits_diff_details_without_sending_to_model() {
 }
 
 #[tokio::test]
+async fn todo_tool_emits_details_without_echoing_plan_to_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let call = (
+        "call_1",
+        "todo",
+        json!({ "todos": [{ "content": "build", "status": "in_progress" }] }),
+    );
+    let model = MockModel::start(vec![tool_calls(&[call]), text("done")]).await;
+    let mut agent = agent(&model, dir.path());
+
+    let mut seen_details = Vec::new();
+    let answer = agent
+        .prompt("plan it", |event| {
+            if let Event::ToolResult(_, details) = event {
+                seen_details.push(details.cloned());
+            }
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(answer, "done");
+    assert_eq!(seen_details.len(), 1);
+    let Some(ToolDetails::Todo(todos)) = &seen_details[0] else {
+        panic!("expected todo details, got {:?}", seen_details[0]);
+    };
+    assert_eq!(todos.len(), 1);
+    assert_eq!(todos[0].content, "build");
+
+    // The model only receives `{"count": 1}`, not the echoed todo list.
+    let tool_msgs = sent(&model.requests()[1], "tool");
+    assert_eq!(tool_msgs.len(), 1);
+    let payload: Value = serde_json::from_str(tool_msgs[0]["content"].as_str().unwrap()).unwrap();
+    assert_eq!(payload, json!({ "count": 1 }));
+}
+
+#[tokio::test]
 async fn system_prompt_sent_and_preserved_across_clear() {
     let model = MockModel::start(vec![text("one"), text("two")]).await;
     let dir = tempfile::tempdir().unwrap();

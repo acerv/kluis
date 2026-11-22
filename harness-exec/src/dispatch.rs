@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
-    BashContext, BashTool, Diff, EditTool, FindTool, GrepTool, LsTool, ReadTool, TodoTool,
+    BashContext, BashTool, Diff, EditTool, FindTool, GrepTool, LsTool, ReadTool, Todo, TodoTool,
     WriteTool,
 };
 
@@ -20,6 +20,7 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolDetails {
     Edit(Diff),
+    Todo(Vec<Todo>),
 }
 
 /// How tools run locally.
@@ -128,7 +129,13 @@ async fn dispatch(
                 .run_in_streaming(cwd, &ctx.bash, on_output)
                 .await?,
         ),
-        "todo" => plain(&TodoTool::deserialize(args)?.run()?),
+        "todo" => {
+            let out = TodoTool::deserialize(args)?.run()?;
+            Ok((
+                serde_json::to_string(&out)?,
+                Some(ToolDetails::Todo(out.todos)),
+            ))
+        }
         other => Err(format!("unknown tool {other}").into()),
     }
 }

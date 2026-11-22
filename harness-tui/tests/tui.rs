@@ -1166,13 +1166,15 @@ fn ask_shows_a_long_question_in_full() {
 /// Run a `todo` call with `todos` (a JSON list) through `app`.
 fn apply_todo(app: &mut App, todos: &str) {
     let args = format!(r#"{{"todos":{todos}}}"#);
+    let parsed: harness_core::tools::TodoTool = serde_json::from_str(&args).unwrap();
+    let count = parsed.todos.len();
     app.apply_update(AgentUpdate::ToolCall {
         name: "todo".into(),
-        args: args.clone(),
+        args,
     });
     app.apply_update(AgentUpdate::ToolResult {
-        content: args,
-        details: None,
+        content: format!(r#"{{"count":{count}}}"#),
+        details: Some(ToolDetails::Todo(parsed.todos)),
     });
 }
 
@@ -1292,7 +1294,7 @@ fn failed_todo_call_shows_its_error() {
 
 #[test]
 fn replay_restores_an_unfinished_plan() {
-    let call = |id: &str, todos: &str| {
+    let call = |id: &str, todos: &str, response: &str| {
         let args: serde_json::Value =
             serde_json::from_str(&format!(r#"{{"todos":{todos}}}"#)).unwrap();
         vec![
@@ -1300,16 +1302,16 @@ fn replay_restores_an_unfinished_plan() {
                 ToolCall {
                     call_id: id.into(),
                     fn_name: "todo".into(),
-                    fn_arguments: args.clone(),
+                    fn_arguments: args,
                     thought_signatures: None,
                 },
             )])),
-            ChatMessage::from(ToolResponse::new(id, args.to_string())),
+            ChatMessage::from(ToolResponse::new(id, response)),
         ]
     };
 
     let mut app = App::new("model", status(), Theme::new(false));
-    app.replay_history(&call("c1", PLAN));
+    app.replay_history(&call("c1", PLAN, r#"{"count":3}"#));
     let scrollback: Vec<String> = app
         .take_scrollback()
         .iter()
@@ -1322,8 +1324,26 @@ fn replay_restores_an_unfinished_plan() {
     assert!(render_text(&draw_app(&app)).contains("▸ build"));
 
     let mut app = App::new("model", status(), Theme::new(false));
-    app.replay_history(&call("c1", DONE));
+    app.replay_history(&call("c1", DONE, r#"{"count":1}"#));
     assert!(!render_text(&draw_app(&app)).contains("Plan"));
+
+    // Failed todo call during replay shows its error instead of applying invalid args.
+    let mut app = App::new("model", status(), Theme::new(false));
+    app.replay_history(&call(
+        "c1",
+        PLAN,
+        r#"{"error":"only one todo can be in_progress"}"#,
+    ));
+    assert!(!render_text(&draw_app(&app)).contains("Plan"));
+    let scrollback: Vec<String> = app
+        .take_scrollback()
+        .iter()
+        .map(|l| l.to_string())
+        .collect();
+    assert_eq!(
+        scrollback[..2],
+        ["todo", "  error: only one todo can be in_progress"]
+    );
 }
 
 #[test]

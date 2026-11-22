@@ -67,19 +67,21 @@ async fn window() {
 async fn byte_limit_ends_at_a_line() {
     let dir = tempfile::tempdir().unwrap();
     let f = dir.path().join("a.txt");
-    // 1000 lines of 100 bytes: 512 of them fill the limit exactly.
-    let line = format!("{}\n", "x".repeat(99));
-    std::fs::write(&f, line.repeat(1000)).unwrap();
+    let line_len = 64usize;
+    let per_page = MAX_READ_BYTES / line_len;
+    let extra = 100usize;
+    let line = format!("{}\n", "x".repeat(line_len - 1));
+    std::fs::write(&f, line.repeat(per_page + extra)).unwrap();
 
     let out = call(&f, None, None).run().await.unwrap();
     assert_eq!(out.content.len(), MAX_READ_BYTES);
-    assert_eq!(out.content.lines().count(), 512);
+    assert_eq!(out.content.lines().count(), per_page);
     assert!(out.truncated);
-    assert_eq!(out.next_offset, Some(513));
+    assert_eq!(out.next_offset, Some(per_page + 1));
 
     // Continuing from next_offset picks up the following lines.
-    let out = call(&f, Some(513), None).run().await.unwrap();
-    assert_eq!(out.content.lines().count(), 488);
+    let out = call(&f, Some(per_page + 1), None).run().await.unwrap();
+    assert_eq!(out.content.lines().count(), extra);
     assert_eq!(out.next_offset, None);
 }
 

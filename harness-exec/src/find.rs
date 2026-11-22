@@ -16,11 +16,11 @@ use crate::path::resolve;
 use crate::walk::{self, stop_on_drop};
 
 /// Default maximum number of paths returned by [`FindTool::run`].
-pub const DEFAULT_FIND_LIMIT: usize = 1000;
+pub const DEFAULT_FIND_LIMIT: usize = 200;
 
 /// Maximum bytes of paths returned by [`FindTool::run`]; the list ends at
 /// the last whole path that fits.
-pub const MAX_FIND_BYTES: usize = 50 * 1024;
+pub const MAX_FIND_BYTES: usize = 16 * 1024;
 
 /// A call of the `find` tool.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,6 +43,7 @@ pub struct FindOutput {
     /// Matching paths, including the ones left out.
     pub total: usize,
     /// True when the limit or [`MAX_FIND_BYTES`] left paths out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
 }
 

@@ -13,11 +13,11 @@ use crate::error::ToolError;
 use crate::path::resolve;
 
 /// Default maximum number of entries returned by [`LsTool::run`].
-pub const DEFAULT_LS_LIMIT: usize = 500;
+pub const DEFAULT_LS_LIMIT: usize = 200;
 
 /// Maximum bytes of entry names returned by [`LsTool::run`]; the list ends
 /// at the last whole name that fits.
-pub const MAX_LS_BYTES: usize = 50 * 1024;
+pub const MAX_LS_BYTES: usize = 16 * 1024;
 
 /// A call of the `ls` tool.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,6 +38,7 @@ pub struct LsOutput {
     /// Entries in the directory, including the ones left out.
     pub total: usize,
     /// True when the entry limit or [`MAX_LS_BYTES`] left entries out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
 }
 

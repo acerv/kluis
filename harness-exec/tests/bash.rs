@@ -127,7 +127,9 @@ async fn keeps_last_lines() {
     let out = call("seq 5000", None).run().await.unwrap();
     assert!(out.truncated);
     assert_eq!(out.output.lines().count(), MAX_BASH_LINES);
-    assert!(out.output.starts_with("3001\n"));
+    assert!(out
+        .output
+        .starts_with(&format!("{}\n", 5000 - MAX_BASH_LINES + 1)));
     assert!(out.output.ends_with("\n5000\n"));
 
     let path = out.output_file.expect("spill file path");
@@ -167,7 +169,9 @@ async fn spill_file_keeps_full_output_when_both_bytes_and_lines_truncate() {
     let out = call("seq 30000", None).run().await.unwrap();
     assert!(out.truncated);
     assert_eq!(out.output.lines().count(), MAX_BASH_LINES);
-    assert!(out.output.starts_with("28001\n"));
+    assert!(out
+        .output
+        .starts_with(&format!("{}\n", 30_000 - MAX_BASH_LINES + 1)));
     assert!(out.output.ends_with("\n30000\n"));
 
     let path = out.output_file.expect("spill file path");

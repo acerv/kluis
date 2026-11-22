@@ -26,10 +26,10 @@ use tokio::time::{sleep_until, Instant};
 use crate::error::ToolError;
 
 /// Bytes kept from the end of the output.
-pub const MAX_BASH_OUTPUT: usize = 50 * 1024;
+pub const MAX_BASH_OUTPUT: usize = 16 * 1024;
 
 /// Lines kept from the end of the output.
-pub const MAX_BASH_LINES: usize = 2000;
+pub const MAX_BASH_LINES: usize = 500;
 
 /// Maximum bytes saved to the spill file when output is truncated.
 pub const MAX_BASH_LOG_BYTES: u64 = 10 * 1024 * 1024;
@@ -92,11 +92,13 @@ pub struct BashOutput {
     /// and control characters.
     pub output: String,
     /// True when only the end of the output is kept.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
     /// Path to a file with the full cleaned output (up to [`MAX_BASH_LOG_BYTES`])
     /// when truncated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_file: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub timed_out: bool,
 }
 

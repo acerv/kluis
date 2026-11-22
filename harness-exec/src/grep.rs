@@ -19,14 +19,14 @@ use crate::path::resolve;
 use crate::walk::{self, stop_on_drop};
 
 /// Default maximum number of matching lines returned by [`GrepTool::run`].
-pub const DEFAULT_GREP_LIMIT: usize = 100;
+pub const DEFAULT_GREP_LIMIT: usize = 50;
 
 /// Maximum bytes of output returned by [`GrepTool::run`]; the output ends
 /// at the last whole line that fits.
-pub const MAX_GREP_BYTES: usize = 50 * 1024;
+pub const MAX_GREP_BYTES: usize = 16 * 1024;
 
 /// Characters kept from a long line.
-pub const MAX_GREP_LINE_CHARS: usize = 500;
+pub const MAX_GREP_LINE_CHARS: usize = 250;
 
 /// A call of the `grep` tool.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,6 +63,7 @@ pub struct GrepOutput {
     /// Matching lines in the output.
     pub matches: usize,
     /// True when the limit or [`MAX_GREP_BYTES`] left matches out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
 }
 

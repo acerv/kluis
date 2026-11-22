@@ -15,11 +15,11 @@ use crate::path::resolve;
 use crate::walk::stop_on_drop;
 
 /// Default maximum number of lines returned by [`ReadTool::run`].
-pub const DEFAULT_READ_LIMIT: usize = 2000;
+pub const DEFAULT_READ_LIMIT: usize = 500;
 
 /// Maximum bytes returned by [`ReadTool::run`]; the window ends at the
 /// last whole line that fits.
-pub const MAX_READ_BYTES: usize = 50 * 1024;
+pub const MAX_READ_BYTES: usize = 24 * 1024;
 
 const READ_CHUNK_BYTES: usize = 64 * 1024;
 
@@ -40,6 +40,7 @@ pub struct ReadOutput {
     pub content: String,
     pub total_lines: usize,
     /// True when more lines exist after the returned window.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
     /// Offset of the first line after the window, when there is one.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -180,7 +180,7 @@ async fn limit_truncates_but_counts_all() {
 #[tokio::test]
 async fn byte_limit_truncates() {
     let dir = tempfile::tempdir().unwrap();
-    // 100 bytes per path, so 50 KB holds far fewer than the 600 created.
+    // 100 bytes per path, so MAX_FIND_BYTES holds far fewer than the 600 created.
     let name = "x".repeat(96);
     let files: Vec<String> = (0..600).map(|i| format!("{name}{i:04}")).collect();
     touch(

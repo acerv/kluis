@@ -50,7 +50,9 @@ pub use ls::{LsOutput, LsTool, DEFAULT_LS_LIMIT, MAX_LS_BYTES};
 pub use protocol::{Request, Response, MAX_FRAME_BYTES};
 pub use read::{ReadOutput, ReadTool, DEFAULT_READ_LIMIT, MAX_READ_BYTES};
 pub use sandbox::{ExecError, SandboxConfig, SandboxExecutor};
-pub use todo::{Todo, TodoStatus, TodoTool, MAX_TODO_ITEMS, MAX_TODO_ITEM_BYTES, TODO_TOOL};
+pub use todo::{
+    Todo, TodoOutput, TodoStatus, TodoTool, MAX_TODO_ITEMS, MAX_TODO_ITEM_BYTES, TODO_TOOL,
+};
 pub use worker::{run_worker, run_worker_io};
 pub use write::{WriteOutput, WriteTool};
 
