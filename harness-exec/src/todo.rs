@@ -7,6 +7,9 @@ use serde_json::{json, Value};
 
 use crate::error::ToolError;
 
+/// Name of the `todo` tool.
+pub const TODO_TOOL: &str = "todo";
+
 /// Maximum number of items in a todo list.
 pub const MAX_TODO_ITEMS: usize = 100;
 
@@ -61,7 +64,7 @@ impl TodoTool {
 
     /// The `todo` tool, as sent to the model.
     pub fn definition() -> Tool {
-        Tool::new("todo")
+        Tool::new(TODO_TOOL)
             .with_description(
                 "Track the plan of a multi-step task. Send the whole list each \
                  time; keep one item in_progress at a time.",

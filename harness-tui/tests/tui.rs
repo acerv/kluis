@@ -1146,36 +1146,167 @@ fn ask_shows_a_long_question_in_full() {
     );
 }
 
+/// Run a `todo` call with `todos` (a JSON list) through `app`.
+fn apply_todo(app: &mut App, todos: &str) {
+    let args = format!(r#"{{"todos":{todos}}}"#);
+    app.apply_update(AgentUpdate::ToolCall {
+        name: "todo".into(),
+        args: args.clone(),
+    });
+    app.apply_update(AgentUpdate::ToolResult {
+        content: args,
+        details: None,
+    });
+}
+
+const PLAN: &str = r#"[
+    {"content":"plan","status":"completed"},
+    {"content":"build","status":"in_progress"},
+    {"content":"test","status":"pending"}]"#;
+
+const DONE: &str = r#"[{"content":"plan","status":"completed"}]"#;
+
+/// Draw `app` on a fresh terminal tall enough for its viewport.
+fn draw_app(app: &App) -> Terminal<TestBackend> {
+    let height = app.viewport_height(40);
+    let mut term = inline_terminal_with(40, height, height);
+    term.draw(|f| app.render(f)).unwrap();
+    term
+}
+
 #[test]
-fn todo_marks_current_and_strikes_done() {
+fn plan_shows_above_the_editor_instead_of_scrollback() {
     let mut app = App::new("model", status(), Theme::new(true));
     app.start_prompt("go");
     app.take_scrollback();
-    let todos = r#"{"todos":[
-        {"content":"plan","status":"completed"},
-        {"content":"build","status":"in_progress"},
-        {"content":"test","status":"pending"}]}"#;
+    apply_todo(&mut app, PLAN);
+    assert!(app.take_scrollback().is_empty());
+
+    let term = draw_app(&app);
+    let screen = render_text(&term);
+    let rows: Vec<&str> = screen.lines().collect();
+    let plan = rows.iter().position(|r| *r == "Plan 1/3").expect(&screen);
+    assert_eq!(
+        rows[plan + 1..plan + 4],
+        ["  ✓ plan", "  ▸ build", "  ○ test"]
+    );
+    // Right over the editor's top rule.
+    assert!(rows[plan + 4].starts_with('─'), "{screen}");
+
+    let buf = term.backend().buffer();
+    let current = &buf[(4, (plan + 2) as u16)];
+    assert_eq!(current.fg, Color::Yellow);
+    assert!(current.modifier.contains(Modifier::BOLD));
+    let done = &buf[(4, (plan + 1) as u16)];
+    assert!(done.modifier.contains(Modifier::CROSSED_OUT));
+}
+
+#[test]
+fn plan_stays_between_prompts_until_done() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    app.start_prompt("go");
+    apply_todo(&mut app, PLAN);
+    app.finish_prompt(Ok(()));
+    assert!(render_text(&draw_app(&app)).contains("Plan 1/3"));
+
+    app.start_prompt("go on");
+    apply_todo(&mut app, DONE);
+    // Done, but still in view until the prompt ends.
+    assert!(render_text(&draw_app(&app)).contains("Plan 1/1"));
+    app.finish_prompt(Ok(()));
+    assert!(!render_text(&draw_app(&app)).contains("Plan"));
+}
+
+#[test]
+fn cancelling_clears_an_unfinished_plan() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    app.start_prompt("go");
+    apply_todo(&mut app, PLAN);
+    app.cancel_prompt();
+    assert!(!render_text(&draw_app(&app)).contains("Plan"));
+}
+
+#[test]
+fn long_plan_shows_the_items_around_the_current_one() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    app.start_prompt("go");
+    let items: Vec<String> = (1..=12)
+        .map(|i| {
+            let status = match i {
+                ..5 => "completed",
+                5 => "in_progress",
+                _ => "pending",
+            };
+            format!(r#"{{"content":"step {i}","status":"{status}"}}"#)
+        })
+        .collect();
+    apply_todo(&mut app, &format!("[{}]", items.join(",")));
+
+    let screen = render_text(&draw_app(&app));
+    assert!(screen.contains("Plan 4/12"), "{screen}");
+    assert!(!screen.contains("step 3\n"), "{screen}");
+    assert!(screen.contains("✓ step 4"), "{screen}");
+    assert!(screen.contains("▸ step 5"), "{screen}");
+    assert!(screen.contains("○ step 11"), "{screen}");
+    assert!(!screen.contains("step 12"), "{screen}");
+    assert!(screen.contains("… +4 more"), "{screen}");
+}
+
+#[test]
+fn failed_todo_call_shows_its_error() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    app.start_prompt("go");
+    app.take_scrollback();
     app.apply_update(AgentUpdate::ToolCall {
         name: "todo".into(),
-        args: todos.into(),
+        args: "{}".into(),
     });
     app.apply_update(AgentUpdate::ToolResult {
-        content: todos.into(),
+        content: r#"{"error":"missing field `todos`"}"#.into(),
         details: None,
     });
+    let text: Vec<String> = app
+        .take_scrollback()
+        .iter()
+        .map(|l| l.to_string())
+        .collect();
+    assert_eq!(text[..2], ["todo", "  error: missing field `todos`"]);
+}
 
-    let lines = app.take_scrollback();
-    let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
-    assert_eq!(
-        text[..4],
-        ["todo 1/3 done", "    plan", "  ❯ build", "    test"]
+#[test]
+fn replay_restores_an_unfinished_plan() {
+    let call = |id: &str, todos: &str| {
+        let args: serde_json::Value =
+            serde_json::from_str(&format!(r#"{{"todos":{todos}}}"#)).unwrap();
+        vec![
+            ChatMessage::assistant(MessageContent::from_parts(vec![ContentPart::ToolCall(
+                ToolCall {
+                    call_id: id.into(),
+                    fn_name: "todo".into(),
+                    fn_arguments: args.clone(),
+                    thought_signatures: None,
+                },
+            )])),
+            ChatMessage::from(ToolResponse::new(id, args.to_string())),
+        ]
+    };
+
+    let mut app = App::new("model", status(), Theme::new(false));
+    app.replay_history(&call("c1", PLAN));
+    let scrollback: Vec<String> = app
+        .take_scrollback()
+        .iter()
+        .map(|l| l.to_string())
+        .collect();
+    assert!(
+        !scrollback.iter().any(|l| l.contains("build")),
+        "{scrollback:?}"
     );
-    let done = &lines[1].spans[1];
-    assert!(done.style.add_modifier.contains(Modifier::CROSSED_OUT));
-    assert_eq!(done.style.fg, Some(Color::DarkGray));
-    for line in &lines[2..4] {
-        assert!(line.spans[1].style.add_modifier.is_empty());
-    }
+    assert!(render_text(&draw_app(&app)).contains("▸ build"));
+
+    let mut app = App::new("model", status(), Theme::new(false));
+    app.replay_history(&call("c1", DONE));
+    assert!(!render_text(&draw_app(&app)).contains("Plan"));
 }
 
 #[test]

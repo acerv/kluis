@@ -8,12 +8,12 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use genai::chat::{ChatMessage, ChatRole, ContentPart};
-use harness_core::tools::{Diff, DiffLine};
+use harness_core::tools::{Diff, DiffLine, Todo, TodoStatus, TodoTool, TODO_TOOL};
 use harness_core::{
     Event as AgentEvent, ModelInfo, SessionSummary, Thinking, TokenUsage, ToolDetails,
 };
 use ratatui::layout::{Constraint, Layout, Position, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -47,6 +47,9 @@ const MAX_TOOL_PREVIEW_LINE_BYTES: usize = 1024;
 
 /// Maximum visible rows in the live streaming preview above the spinner.
 const MAX_LIVE_ROWS: u16 = 6;
+
+/// Maximum `todo` items shown above the editor.
+const MAX_TODO_ROWS: usize = 8;
 
 /// Maximum visible rows inside the framed multiline editor before scrolling.
 const MAX_EDITOR_ROWS: u16 = 8;
@@ -207,6 +210,8 @@ pub struct App {
     notice: Option<String>,
     picker: Option<Picker>,
     completion: CommandCompletion,
+    /// The plan of the `todo` tool, shown above the editor.
+    todos: Vec<Todo>,
     scrollback: Vec<Line<'static>>,
 }
 
@@ -235,6 +240,7 @@ impl App {
             notice: None,
             picker: None,
             completion: CommandCompletion::default(),
+            todos: Vec::new(),
             scrollback: Vec::new(),
         }
     }
@@ -352,6 +358,7 @@ impl App {
         self.set_tokens(TokenUsage::default());
         self.clear_live();
         self.scrollback.clear();
+        self.todos.clear();
         self.notice = None;
     }
 
@@ -380,6 +387,9 @@ impl App {
                             }
                             ContentPart::ToolCall(call) => {
                                 tool_names.insert(call.call_id.as_str(), call.fn_name.as_str());
+                                if call.fn_name == TODO_TOOL {
+                                    continue;
+                                }
                                 self.scrollback.push(format_tool_call(
                                     &call.fn_name,
                                     &call.fn_arguments.to_string(),
@@ -393,6 +403,10 @@ impl App {
                 ChatRole::Tool => {
                     for resp in msg.content.tool_responses() {
                         let tool = tool_names.get(resp.call_id.as_str()).copied();
+                        if tool == Some(TODO_TOOL) {
+                            self.set_todos(&resp.content);
+                            continue;
+                        }
                         format_tool_result(
                             tool,
                             &resp.content,
@@ -405,6 +419,28 @@ impl App {
                 }
                 ChatRole::System => {}
             }
+        }
+        self.drop_finished_plan();
+    }
+
+    /// Show the plan of a `todo` result above the editor, or its error in
+    /// scrollback.
+    fn set_todos(&mut self, content: &str) {
+        match serde_json::from_str::<TodoTool>(content) {
+            Ok(plan) => self.todos = plan.todos,
+            Err(_) => {
+                self.scrollback
+                    .push(Line::styled(TODO_TOOL, self.theme.tool_name));
+                format_tool_result(None, content, None, self.theme, &mut self.scrollback);
+                self.scrollback.push(Line::raw(String::new()));
+            }
+        }
+    }
+
+    /// Hide the plan once all of it is done.
+    fn drop_finished_plan(&mut self) {
+        if self.todos.iter().all(|t| t.status == TodoStatus::Completed) {
+            self.todos.clear();
         }
     }
 
@@ -513,8 +549,10 @@ impl App {
                 self.tool_preview.clear();
                 self.active_tool = Some(name.clone());
                 self.activity_started = Some(Instant::now());
-                self.scrollback
-                    .push(format_tool_call(&name, &args, self.theme));
+                if name != TODO_TOOL {
+                    self.scrollback
+                        .push(format_tool_call(&name, &args, self.theme));
+                }
             }
             AgentUpdate::ToolOutput(chunk) => {
                 self.tool_preview.push(&chunk);
@@ -523,6 +561,10 @@ impl App {
                 let tool_name = self.active_tool.take();
                 self.tool_preview.clear();
                 self.activity_started = Some(Instant::now());
+                if tool_name.as_deref() == Some(TODO_TOOL) {
+                    self.set_todos(&content);
+                    return;
+                }
                 format_tool_result(
                     tool_name.as_deref(),
                     &content,
@@ -543,6 +585,7 @@ impl App {
         self.activity_started = None;
         self.active_tool = None;
         self.clear_live();
+        self.drop_finished_plan();
         if let Err(err) = outcome {
             self.scrollback
                 .push(Line::styled(format!("error: {err}"), self.theme.error));
@@ -558,6 +601,8 @@ impl App {
         self.activity_started = None;
         self.active_tool = None;
         self.clear_live();
+        // The work was dropped; the model sends the plan again to go on.
+        self.todos.clear();
         self.scrollback
             .push(Line::styled("[cancelled]", self.theme.muted));
         self.scrollback.push(Line::raw(String::new()));
@@ -812,8 +857,59 @@ impl App {
         }
         FIXED_CHROME_ROWS
             + self.live_rows(width)
+            + self.todo_lines().len() as u16
             + self.editor_rows(width)
             + self.completion.visible_rows()
+    }
+
+    /// The plan: a title with the progress, then the items around the one
+    /// in progress, and how many more there are.
+    fn todo_lines(&self) -> Vec<Line<'static>> {
+        if self.todos.is_empty() {
+            return Vec::new();
+        }
+        let total = self.todos.len();
+        let done = self
+            .todos
+            .iter()
+            .filter(|t| t.status == TodoStatus::Completed)
+            .count();
+        let mut lines = vec![Line::from(vec![
+            Span::styled("Plan", self.theme.prompt),
+            Span::styled(format!(" {done}/{total}"), self.theme.muted),
+        ])];
+
+        // From just before the first unfinished item, so what was just done
+        // and what comes next stay in view.
+        let focus = self
+            .todos
+            .iter()
+            .position(|t| t.status != TodoStatus::Completed)
+            .unwrap_or(0);
+        let start = focus
+            .saturating_sub(1)
+            .min(total.saturating_sub(MAX_TODO_ROWS));
+        for todo in self.todos.iter().skip(start).take(MAX_TODO_ROWS) {
+            let (mark, mark_style, style) = match todo.status {
+                TodoStatus::Completed => ("✓", self.theme.todo_done, self.theme.todo_done),
+                TodoStatus::InProgress => ("▸", self.theme.todo_current, self.theme.todo_current),
+                TodoStatus::Pending => ("○", self.theme.muted, Style::default()),
+            };
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(mark, mark_style.remove_modifier(Modifier::CROSSED_OUT)),
+                Span::raw(" "),
+                Span::styled(summary(&todo.content), style),
+            ]));
+        }
+        let hidden = total - total.min(MAX_TODO_ROWS);
+        if hidden > 0 {
+            lines.push(Line::styled(
+                format!("  … +{hidden} more"),
+                self.theme.muted,
+            ));
+        }
+        lines
     }
 
     fn live_rows(&self, width: u16) -> u16 {
@@ -889,23 +985,29 @@ impl App {
             return;
         }
         let live_lines = self.wrapped_live_lines(area.width as usize);
+        let todo_lines = self.todo_lines();
         let completion_h = self
             .completion
             .visible_rows()
             .min(area.height.saturating_sub(FIXED_CHROME_ROWS + 2));
+        let todo_h = (todo_lines.len() as u16).min(
+            area.height
+                .saturating_sub(FIXED_CHROME_ROWS + 2 + completion_h),
+        );
         let max_live = area
             .height
-            .saturating_sub(FIXED_CHROME_ROWS + completion_h + 1)
+            .saturating_sub(FIXED_CHROME_ROWS + completion_h + todo_h + 1)
             .clamp(1, MAX_LIVE_ROWS);
         let live_h = (live_lines.len() as u16).clamp(1, max_live);
         let editor_h = area
             .height
-            .saturating_sub(FIXED_CHROME_ROWS + live_h + completion_h)
+            .saturating_sub(FIXED_CHROME_ROWS + live_h + todo_h + completion_h)
             .max(1);
-        let [live_area, spinner_area, top_rule, editor_area, bottom_rule, completion_area, footer_area] =
+        let [live_area, spinner_area, todo_area, top_rule, editor_area, bottom_rule, completion_area, footer_area] =
             Layout::vertical([
                 Constraint::Length(live_h),
                 Constraint::Length(1),
+                Constraint::Length(todo_h),
                 Constraint::Length(1),
                 Constraint::Length(editor_h),
                 Constraint::Length(1),
@@ -916,6 +1018,7 @@ impl App {
 
         self.render_live(frame, live_area, live_lines);
         self.render_spinner(frame, spinner_area);
+        frame.render_widget(Paragraph::new(todo_lines), todo_area);
         self.render_rule(frame, top_rule);
         self.render_editor(frame, editor_area);
         self.render_rule(frame, bottom_rule);
@@ -1210,11 +1313,6 @@ fn format_tool_call(name: &str, args: &str, theme: Theme) -> Line<'static> {
                 None => Some(url.to_owned()),
             }
         }
-        "todo" => {
-            let todos = v["todos"].as_array()?;
-            let done = todos.iter().filter(|t| t["status"] == "completed").count();
-            Some(format!("{done}/{} done", todos.len()))
-        }
         _ => None,
     });
     let detail = detail.unwrap_or_else(|| summary(args));
@@ -1319,20 +1417,6 @@ fn format_tool_result(
                 format!("  answer: {}", summary(answer)),
                 theme.muted,
             ));
-        }
-        Some("todo") => {
-            for todo in v["todos"].as_array().into_iter().flatten() {
-                let (mark, style) = match todo["status"].as_str() {
-                    Some("completed") => ("  ", theme.todo_done),
-                    Some("in_progress") => ("❯ ", Style::default()),
-                    _ => ("  ", Style::default()),
-                };
-                let content = todo["content"].as_str().unwrap_or_default();
-                out.push(Line::from(vec![
-                    Span::styled(format!("  {mark}"), theme.prompt),
-                    Span::styled(summary(content), style),
-                ]));
-            }
         }
         _ => {
             out.push(Line::styled(format!("  {}", summary(content)), theme.muted));
