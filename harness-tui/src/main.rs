@@ -383,11 +383,17 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
 
     // Commands can write a repository only in a writable folder.
     let writable = !args.no_sandbox && (!args.strict || !args.allow_write.is_empty());
-    let git_warning = writable.then(sandbox::bare_repository_warning).flatten();
+    let git_warnings = if writable {
+        sandbox::git_warnings(&cwd)
+    } else {
+        Vec::new()
+    };
     let full_screen =
         args.prompt.is_empty() && io::stdin().is_terminal() && io::stdout().is_terminal();
-    if let Some(warning) = git_warning.as_ref().filter(|_| !full_screen) {
-        eprintln!("warning: {warning}");
+    if !full_screen {
+        for warning in &git_warnings {
+            eprintln!("warning: {warning}");
+        }
     }
 
     if !args.prompt.is_empty() {
@@ -409,7 +415,7 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
             BannerLine::new(context_line(&agents)),
             BannerLine::new(session_line(session.as_ref(), agent.history().len())),
         ];
-        banner.extend(git_warning.map(BannerLine::warning));
+        banner.extend(git_warnings.into_iter().map(BannerLine::warning));
         let history = config::history_path().map(History::load);
         return harness_tui::run(
             agent,

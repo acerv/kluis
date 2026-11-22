@@ -7,7 +7,11 @@ fn run_cli(args: &[&str]) -> Output {
     let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     // Git set up as kl advises, so that it does not warn.
     let gitconfig = home.path().join("gitconfig");
-    std::fs::write(&gitconfig, "[safe]\n\tbareRepository = explicit\n").unwrap();
+    std::fs::write(
+        &gitconfig,
+        "[safe]\n\tbareRepository = explicit\n[core]\n\thooksPath = /dev/null\n",
+    )
+    .unwrap();
     Command::new(env!("CARGO_BIN_EXE_kl"))
         .args(args)
         .env("HOME", home.path())

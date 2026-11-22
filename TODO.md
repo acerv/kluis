@@ -15,8 +15,8 @@
   the project is opened; only review mode would cover them
 - [ ] Repositories not named `.git`: detect them by content (`HEAD`,
   `objects/`, `refs/`), keep them read-only, disable new ones
-- [ ] Hooks kept in the project (`core.hooksPath`, e.g. husky): keep that
-  folder read-only
+- [ ] Keep a hooks folder in the project (`core.hooksPath`, e.g. `.husky/_`)
+  read-only: `kl` only warns that git runs hooks
 - [ ] `kl --setup-git`: set `safe.bareRepository=explicit` after asking
 - [ ] Hide `$HOME` by default and show only toolchains, for credentials the
   built-in list misses

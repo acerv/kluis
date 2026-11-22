@@ -794,16 +794,19 @@ fn programs_left_behind_are_reaped() {
 
 /// What `kl` warns about git with `config` as the only git configuration.
 fn git_warning(config: &str) -> String {
+    git_warning_in(tempdir().path(), config)
+}
+
+/// Like [`git_warning`], run in `cwd`.
+fn git_warning_in(cwd: &Path, config: &str) -> String {
     let home = tempdir();
-    let cwd = tempdir();
     let gitconfig = home.path().join("gitconfig");
     std::fs::write(&gitconfig, config).unwrap();
     let env = [
         ("GIT_CONFIG_NOSYSTEM", "1"),
         ("GIT_CONFIG_GLOBAL", gitconfig.to_str().unwrap()),
     ];
-    let result = run_bash_in(cwd.path(), home.path(), &[], &env, |_| "true".into());
-    result.stderr
+    run_bash_in(cwd, home.path(), &[], &env, |_| "true".into()).stderr
 }
 
 #[test]
@@ -817,6 +820,53 @@ fn warns_when_git_uses_repositories_under_any_name() {
 fn no_git_warning_when_only_dot_git_is_used() {
     let stderr = git_warning("[safe]\n\tbareRepository = explicit\n");
     assert!(!stderr.contains("safe.bareRepository"), "{stderr}");
+}
+
+/// A folder holding a new git repository.
+fn repository() -> TempDir {
+    let dir = tempdir();
+    let status = Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(dir.path())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    dir
+}
+
+#[test]
+fn warns_when_git_runs_hooks_of_the_project() {
+    let repo = repository();
+    let stderr = git_warning_in(repo.path(), "");
+    assert!(stderr.contains("core.hooksPath /dev/null"), "{stderr}");
+}
+
+#[test]
+fn hooks_warning_points_to_the_docs_when_the_repository_sets_hooks() {
+    // As husky does: the global setting cannot turn these off.
+    let repo = repository();
+    let status = Command::new("git")
+        .args(["config", "core.hooksPath", ".husky/_"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let stderr = git_warning_in(repo.path(), "[core]\n\thooksPath = /dev/null\n");
+    assert!(stderr.contains("sets its own hooks"), "{stderr}");
+    assert!(stderr.contains("#git-safety"), "{stderr}");
+}
+
+#[test]
+fn no_hooks_warning_when_hooks_are_off() {
+    let repo = repository();
+    let stderr = git_warning_in(repo.path(), "[core]\n\thooksPath = /dev/null\n");
+    assert!(!stderr.contains("core.hooksPath"), "{stderr}");
+}
+
+#[test]
+fn no_hooks_warning_outside_a_repository() {
+    let stderr = git_warning("");
+    assert!(!stderr.contains("core.hooksPath"), "{stderr}");
 }
 
 #[test]

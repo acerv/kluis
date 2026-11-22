@@ -21,11 +21,22 @@ const PROFILE: &str = "kl";
 /// Where the AppArmor help suggests to copy `kl`, as only root may change it.
 const SYSTEM_DIR: &str = "/usr/local/bin";
 
+/// The section `$anchor` of the sandbox documentation.
+macro_rules! sandbox_docs {
+    ($anchor:literal) => {
+        concat!(
+            env!("CARGO_PKG_REPOSITORY"),
+            "/blob/main/docs/sandbox.md#",
+            $anchor
+        )
+    };
+}
+
 /// The documentation of the AppArmor setup.
-const APPARMOR_DOCS: &str = concat!(
-    env!("CARGO_PKG_REPOSITORY"),
-    "/blob/main/docs/sandbox.md#ubuntu"
-);
+const APPARMOR_DOCS: &str = sandbox_docs!("ubuntu");
+
+/// The documentation of the git setup.
+const GIT_DOCS: &str = sandbox_docs!("git-safety");
 
 /// The AppArmor profile that lets the running `kl` create its sandbox on
 /// Ubuntu, if only root may change it.
@@ -152,22 +163,49 @@ pub fn executor(args: &Args, cwd: &Path) -> Result<(Executor, GitGuard), Error> 
     Ok((executor, git_guard))
 }
 
-/// A warning when git on the host would use a repository that commands
-/// create under any name, not only `.git`: git takes any folder holding
-/// `HEAD`, `objects` and `refs` for one, and runs what its config names.
-/// Nothing without git.
-pub fn bare_repository_warning() -> Option<String> {
-    // From `/`, so that a repository's own config does not answer: git
-    // ignores this setting there.
+/// Warnings about what git on the host would run of what commands write in
+/// `cwd`. Nothing without git.
+pub fn git_warnings(cwd: &Path) -> Vec<String> {
+    let mut warnings = Vec::new();
+    // Git takes any folder holding `HEAD`, `objects` and `refs` for a
+    // repository, and runs what its config names. Asked from `/`, so that
+    // a repository's own config does not answer: git ignores this setting
+    // there.
+    let bare = git(&["config", "--get", "safe.bareRepository"], Path::new("/"));
+    if bare.is_some_and(|value| !value.eq_ignore_ascii_case("explicit")) {
+        warnings.push(
+            "git would run repositories that commands create under any name: run \
+             `git config --global safe.bareRepository explicit`"
+                .to_owned(),
+        );
+    }
+    // The folder git takes hooks from here, after all settings: none
+    // outside a repository, `/dev/null` when they are turned off.
+    let hooks = git(&["rev-parse", "--git-path", "hooks"], cwd);
+    if hooks.is_some_and(|path| !path.is_empty() && path != "/dev/null") {
+        // A repository's own setting, as husky makes, beats the global one.
+        let local = git(&["config", "--local", "--get", "core.hooksPath"], cwd);
+        let fix = if local.is_some_and(|value| !value.is_empty()) {
+            format!("this repository sets its own hooks, so turn them off as in {GIT_DOCS}")
+        } else {
+            "run `git config --global core.hooksPath /dev/null` to turn hooks off".to_owned()
+        };
+        warnings.push(format!(
+            "git would run hooks of this project, which may run what commands write: {fix}"
+        ));
+    }
+    warnings
+}
+
+/// The first line `git` prints for `args` in `cwd`: empty when it fails,
+/// as for a setting that is not set, and `None` without git.
+fn git(args: &[&str], cwd: &Path) -> Option<String> {
     let out = std::process::Command::new("git")
-        .args(["config", "--get", "safe.bareRepository"])
-        .current_dir("/")
+        .args(args)
+        .current_dir(cwd)
         .output()
         .ok()?;
-    let value = String::from_utf8_lossy(&out.stdout);
-    (!value.trim().eq_ignore_ascii_case("explicit")).then(|| {
-        "git would run repositories that commands create under any name: run \
-         `git config --global safe.bareRepository explicit`"
-            .to_owned()
-    })
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let first = stdout.lines().next().unwrap_or_default().trim();
+    Some(if out.status.success() { first } else { "" }.to_owned())
 }
