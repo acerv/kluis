@@ -21,7 +21,7 @@ mod retry;
 mod session;
 pub mod tools;
 
-pub use agent::{Agent, Error, Thinking};
+pub use agent::{Agent, Error, Thinking, DEFAULT_MAX_TURNS};
 pub use auth::{AuthConfig, CredentialSource, ProviderAuth};
 pub use event::Event;
 pub use models::{

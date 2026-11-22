@@ -28,6 +28,13 @@ use crate::Event;
 /// Error returned by the agent.
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
+/// Default maximum model turns executed in a single [`Agent::prompt`] call.
+pub const DEFAULT_MAX_TURNS: usize = 50;
+
+/// Consecutive identical turns (or identical calls within one turn) before the
+/// agent refuses to re-run them and asks the model to change approach.
+const MAX_REPEATED_CALLS: usize = 3;
+
 /// Thinking / reasoning effort sent to models that support it.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -111,6 +118,7 @@ pub struct Agent {
     executor: Executor,
     host: HostTools,
     retry: RetryPolicy,
+    max_turns: Option<usize>,
 }
 
 impl Agent {
@@ -132,6 +140,7 @@ impl Agent {
             executor: Executor::default(),
             host: HostTools::default(),
             retry: RetryPolicy::default(),
+            max_turns: Some(DEFAULT_MAX_TURNS),
         }
     }
 
@@ -185,6 +194,18 @@ impl Agent {
     pub fn with_retry(mut self, retry: RetryPolicy) -> Self {
         self.retry = retry;
         self
+    }
+
+    /// Limit how many model turns a single [`Agent::prompt`] call may run, or
+    /// pass `None` for no limit. Defaults to `Some(DEFAULT_MAX_TURNS)`.
+    pub fn with_max_turns(mut self, max_turns: Option<usize>) -> Self {
+        self.max_turns = max_turns;
+        self
+    }
+
+    /// Maximum model turns per [`Agent::prompt`] call, or `None` when unlimited.
+    pub fn max_turns(&self) -> Option<usize> {
+        self.max_turns
     }
 
     /// Set how local tools run (shorthand for `with_executor(Executor::Local(tools))`).
@@ -270,14 +291,26 @@ impl Agent {
     ) -> Result<String, Error> {
         self.req.messages.push(ChatMessage::user(text));
 
+        let mut turns = 0usize;
+        let mut prev_assistant_idx: Option<usize> = None;
+        let mut repeat_streak = 0usize;
+
         loop {
+            if let Some(limit) = self.max_turns {
+                if turns >= limit {
+                    return Err(format!("turn limit reached ({limit} turns)").into());
+                }
+            }
+            turns += 1;
+
             on_event(Event::TurnStart);
             let turn = self.next_turn_retrying(&mut on_event).await?;
 
             // Keep the whole assistant turn (text, tool calls, thought
             // signatures) in the history, before any tool result.
+            let assistant_idx = self.req.messages.len();
             self.req.messages.push(ChatMessage::assistant(turn.content));
-            let content = &self.req.messages[self.req.messages.len() - 1].content;
+            let content = &self.req.messages[assistant_idx].content;
 
             let answer = content.first_text().unwrap_or_default();
             if !answer.is_empty() {
@@ -291,6 +324,20 @@ impl Agent {
                 return Ok(answer.to_owned());
             }
 
+            let same_as_prev = !turn.truncated
+                && prev_assistant_idx.is_some_and(|prev| {
+                    same_calls(&self.req.messages[prev].content.tool_calls(), &calls)
+                });
+            repeat_streak = if turn.truncated {
+                0
+            } else if same_as_prev {
+                repeat_streak + 1
+            } else {
+                1
+            };
+            prev_assistant_idx = (!turn.truncated).then_some(assistant_idx);
+            let repeated_turn = repeat_streak >= MAX_REPEATED_CALLS;
+
             let mut pending = Pending {
                 messages: &mut self.req.messages,
                 calls: &calls,
@@ -301,7 +348,7 @@ impl Agent {
                 // Batch consecutive read-only calls (`read`, `ls`, `find`, `grep`)
                 // and run them concurrently while emitting paired events and
                 // tool responses in original call order.
-                let batch_end = if turn.truncated {
+                let batch_end = if turn.truncated || repeated_turn {
                     idx + 1
                 } else {
                     let mut end = idx;
@@ -316,6 +363,8 @@ impl Agent {
                     on_event(Event::ToolCall(call));
                     let (resp, details) = if turn.truncated {
                         (error_response(call, TRUNCATED), None)
+                    } else if repeated_turn || is_within_turn_repeat(&calls[..idx], call) {
+                        (error_response(call, REPEATED_CALL), None)
                     } else if let Some(resp) = self.host.run(call).await {
                         (resp, None)
                     } else {
@@ -326,9 +375,19 @@ impl Agent {
                     on_event(Event::ToolResult(&resp, details.as_ref()));
                     pending.answer(resp);
                 } else {
-                    let results = futures_util::future::join_all(
-                        batch.iter().map(|call| self.executor.execute(call, |_| {})),
-                    )
+                    let executor = &self.executor;
+                    let results = futures_util::future::join_all(batch.iter().enumerate().map(
+                        |(off, call)| {
+                            let repeated = is_within_turn_repeat(&calls[..idx + off], call);
+                            async move {
+                                if repeated {
+                                    (error_response(call, REPEATED_CALL), None)
+                                } else {
+                                    executor.execute(call, |_| {}).await
+                                }
+                            }
+                        },
+                    ))
                     .await;
                     for (call, (resp, details)) in batch.iter().zip(results) {
                         on_event(Event::ToolCall(call));
@@ -565,6 +624,24 @@ const CANCELLED: &str = "cancelled; the call may have partly run";
 
 /// Result of a tool call from a response truncated by the token limit.
 const TRUNCATED: &str = "response was truncated at max_tokens; tool call was not executed — please re-issue it (split into smaller calls if needed)";
+
+/// Result of a tool call repeated identically too many times in a row.
+const REPEATED_CALL: &str =
+    "repeated identical tool call; try a different approach or explain the blocker";
+
+fn same_call(a: &ToolCall, b: &ToolCall) -> bool {
+    a.fn_name == b.fn_name && a.fn_arguments == b.fn_arguments
+}
+
+fn same_calls(a: &[&ToolCall], b: &[ToolCall]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| same_call(x, y))
+}
+
+/// Whether `call` plus its earlier occurrences in `prior` reaches
+/// [`MAX_REPEATED_CALLS`] within the same turn.
+fn is_within_turn_repeat(prior: &[ToolCall], call: &ToolCall) -> bool {
+    prior.iter().filter(|c| same_call(c, call)).count() + 1 >= MAX_REPEATED_CALLS
+}
 
 /// The tool calls of a turn, answered in order. Dropping it answers the
 /// ones left as cancelled, so the history never holds a call without its

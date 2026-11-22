@@ -41,7 +41,6 @@
 
 - [ ] Auto-compaction when `input_tokens` approaches the context limit
 - [ ] Recover when the provider rejects an oversized request
-- [ ] Limit the turns of a prompt and detect repeated tool calls
 - [ ] Steering: add a user message between tool calls of a running turn
 - [ ] Cost tracking: token usage as money per session
 - [ ] Sessions over `MAX_SESSION_BYTES` can't be resumed; prune old ones

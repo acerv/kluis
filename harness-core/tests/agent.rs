@@ -12,7 +12,7 @@ use genai::chat::{ChatMessage, ChatRole};
 use harness_core::tools::ToolContext;
 use harness_core::{
     find_agents_files, system_prompt, Agent, Event, RetryPolicy, Thinking, ToolDetails,
-    AGENTS_FILE, MAX_AGENTS_BYTES,
+    AGENTS_FILE, DEFAULT_MAX_TURNS, MAX_AGENTS_BYTES,
 };
 use serde_json::{json, Value};
 use tokio::sync::Notify;
@@ -275,21 +275,114 @@ async fn truncated_tool_calls_fail_without_running_and_ask_model_to_reissue() {
 
 #[tokio::test]
 async fn runs_tool_turns_until_the_model_answers() {
-    // There is no turn budget: the agent runs every round the model asks for.
     let rounds = 12;
-    let call = ("call_1", "bash", json!({ "command": "true" }));
     let mut replies: Vec<Reply> = (0..rounds)
-        .map(|_| tool_calls(std::slice::from_ref(&call)))
+        .map(|i| tool_calls(&[("call_1", "bash", json!({ "command": format!("echo {i}") }))]))
         .collect();
     replies.push(text("done"));
     let model = MockModel::start(replies).await;
     let dir = tempfile::tempdir().unwrap();
     let mut agent = agent(&model, dir.path());
 
+    assert_eq!(agent.max_turns(), Some(DEFAULT_MAX_TURNS));
     assert_eq!(prompt(&mut agent, "loop").await.unwrap(), "done");
     assert_eq!(model.requests().len(), rounds + 1);
     assert_eq!(agent.history().len(), 1 + rounds * 2 + 1);
     assert_eq!(agent.history().last().unwrap().role, ChatRole::Assistant);
+}
+
+#[tokio::test]
+async fn max_turns_stops_runaway_loop_with_valid_history() {
+    let replies = vec![
+        tool_calls(&[("c1", "bash", json!({ "command": "echo 1" }))]),
+        tool_calls(&[("c2", "bash", json!({ "command": "echo 2" }))]),
+        text("resumed"),
+    ];
+    let model = MockModel::start(replies).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = agent(&model, dir.path()).with_max_turns(Some(2));
+
+    let err = prompt(&mut agent, "keep going").await.unwrap_err();
+    assert!(err.to_string().contains("turn limit"), "{err}");
+    assert_eq!(model.requests().len(), 2);
+    // Every tool call from the final allowed turn was answered, keeping history valid.
+    assert_eq!(
+        roles(&agent),
+        [
+            ChatRole::User,
+            ChatRole::Assistant,
+            ChatRole::Tool,
+            ChatRole::Assistant,
+            ChatRole::Tool,
+        ]
+    );
+    assert_eq!(prompt(&mut agent, "continue").await.unwrap(), "resumed");
+    assert_eq!(model.requests().len(), 3);
+}
+
+#[tokio::test]
+async fn repeated_identical_tool_calls_are_blocked_without_running() {
+    let dir = tempfile::tempdir().unwrap();
+    let bump = json!({ "command": "echo x >> count.txt" });
+    let other = json!({ "command": "true" });
+    let model = MockModel::start(vec![
+        tool_calls(&[("c1", "bash", bump.clone())]),
+        tool_calls(&[("c2", "bash", bump.clone())]),
+        // 3rd consecutive identical call: must be blocked without executing.
+        tool_calls(&[("c3", "bash", bump.clone())]),
+        // Different call resets the streak so a later bump runs again.
+        tool_calls(&[("c4", "bash", other)]),
+        tool_calls(&[("c5", "bash", bump)]),
+        text("done"),
+    ])
+    .await;
+    let mut agent = agent(&model, dir.path());
+
+    let mut results = Vec::new();
+    let answer = agent
+        .prompt("repeat", |ev| {
+            if let Event::ToolResult(resp, _) = ev {
+                results.push((resp.call_id.clone(), resp.content.clone()));
+            }
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(answer, "done");
+    // Only c1, c2, and c5 actually executed the bump command (3 lines total).
+    let lines = std::fs::read_to_string(dir.path().join("count.txt")).unwrap();
+    assert_eq!(lines.lines().count(), 3, "{lines:?}");
+
+    let c3: Value = serde_json::from_str(&results[2].1).unwrap();
+    assert!(c3["error"].as_str().unwrap().contains("repeated"), "{c3}");
+    let c5: Value = serde_json::from_str(&results[4].1).unwrap();
+    assert!(c5.get("error").is_none(), "{c5}");
+}
+
+#[tokio::test]
+async fn within_turn_repeated_read_calls_block_third_duplicate() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+
+    let read_a = json!({ "path": "a.txt" });
+    let calls = [
+        ("c1", "read", read_a.clone()),
+        ("c2", "read", read_a.clone()),
+        ("c3", "read", read_a),
+    ];
+    let model = MockModel::start(vec![tool_calls(&calls), text("done")]).await;
+    let mut agent = agent(&model, dir.path());
+
+    assert_eq!(prompt(&mut agent, "read thrice").await.unwrap(), "done");
+    let sent_tools = sent(&model.requests()[1], "tool");
+    assert_eq!(sent_tools.len(), 3);
+    assert!(sent_tools[0]["content"].as_str().unwrap().contains("hello"));
+    assert!(sent_tools[1]["content"].as_str().unwrap().contains("hello"));
+    let third: Value = serde_json::from_str(sent_tools[2]["content"].as_str().unwrap()).unwrap();
+    assert!(
+        third["error"].as_str().unwrap().contains("repeated"),
+        "{third}"
+    );
 }
 
 #[tokio::test]
