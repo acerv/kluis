@@ -802,9 +802,13 @@ fn git_warning_in(cwd: &Path, config: &str) -> String {
     let home = tempdir();
     let gitconfig = home.path().join("gitconfig");
     std::fs::write(&gitconfig, config).unwrap();
+    // `CARGO_TARGET_TMPDIR` lives inside this repository's `target/`, so stop
+    // git from climbing past it and discovering the outer `.git`.
+    let ceiling = std::fs::canonicalize(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let env = [
         ("GIT_CONFIG_NOSYSTEM", "1"),
         ("GIT_CONFIG_GLOBAL", gitconfig.to_str().unwrap()),
+        ("GIT_CEILING_DIRECTORIES", ceiling.to_str().unwrap()),
     ];
     run_bash_in(cwd, home.path(), &[], &env, |_| "true".into()).stderr
 }
