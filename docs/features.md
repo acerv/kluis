@@ -24,6 +24,8 @@
 `read`, `write`, `edit`, `ls`, `find`, `grep`, `bash`, `todo`, `ask_user` and
 `web_fetch`.
 
+- `read` hands PNG, JPEG, GIF and WebP images (up to 3.5 MB) to the model.
+  They are not saved in the session.
 - `edit` applies changes atomically and shows a diff with line numbers.
 - `bash` streams cleaned output with a timeout and line limits.
 - `todo` keeps the plan of a multi-step task.

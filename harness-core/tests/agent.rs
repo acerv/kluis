@@ -1494,3 +1494,43 @@ async fn steering_message_queued_during_the_answer_continues_the_prompt() {
         ]
     );
 }
+
+#[tokio::test]
+async fn images_read_by_tools_follow_the_results() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.png"), b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR").unwrap();
+    std::fs::write(dir.path().join("b.txt"), "text").unwrap();
+    let model = MockModel::start(vec![
+        tool_calls(&[
+            ("c1", "read", json!({ "path": "a.png" })),
+            ("c2", "read", json!({ "path": "b.txt" })),
+        ]),
+        text("a picture"),
+    ])
+    .await;
+    let mut agent = agent(&model, dir.path());
+
+    // The image goes to the model, not to the UI.
+    let mut details = Vec::new();
+    agent
+        .prompt("look", |event| {
+            if let Event::ToolResult(_, d) = event {
+                details.push(d.cloned());
+            }
+        })
+        .await
+        .unwrap();
+
+    let request = &model.requests()[1];
+    let messages = request["messages"].as_array().unwrap();
+    // Both results, then the image.
+    let roles: Vec<_> = messages
+        .iter()
+        .map(|m| m["role"].as_str().unwrap())
+        .collect();
+    assert_eq!(roles[roles.len() - 3..], ["tool", "tool", "user"]);
+    let parts = messages.last().unwrap()["content"].as_array().unwrap();
+    let url = parts[1]["image_url"]["url"].as_str().unwrap();
+    assert_eq!(url, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==");
+    assert_eq!(details, [None, None]);
+}

@@ -436,3 +436,23 @@ fn compact_entry_replaces_loaded_history_and_keeps_first_prompt() {
     assert_eq!(summary.first_prompt.as_deref(), Some("original task"));
     assert_eq!(summary.message_count, 4);
 }
+
+#[test]
+fn images_are_left_out_of_the_file() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(root.path(), cwd.path());
+    let mut writer = store.create("deepseek-chat");
+
+    let image = ContentPart::Binary(genai::chat::Binary::from_base64("image/png", "AAAA", None));
+    let message = ChatMessage::user(MessageContent::from_parts(vec![
+        ContentPart::Text("see".to_owned()),
+        image,
+    ]));
+    writer.append_messages(&[message]).unwrap();
+
+    let loaded = store.latest().unwrap().expect("saved session");
+    let content = &loaded.messages[0].content;
+    assert!(!content.contains_binary());
+    assert_eq!(content.texts(), ["see", "[image not saved]"]);
+}
