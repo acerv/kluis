@@ -36,6 +36,8 @@ pub enum Event<'a> {
     /// The model finished its turn, with the tokens it used when the
     /// provider reports them. Not sent for a turn cut short.
     TurnEnd(Option<&'a Usage>),
+    /// The final text of the model was cut at its token limit.
+    Truncated,
     /// A tool call the model made, before it runs.
     ToolCall(&'a ToolCall),
     /// A cleaned chunk of live output from a running tool (e.g. `bash`).

@@ -377,6 +377,9 @@ impl Agent {
             // A copy, so results can join the history while calls run.
             let calls: Vec<ToolCall> = content.tool_calls().into_iter().cloned().collect();
             if calls.is_empty() {
+                if turn.truncated {
+                    on_event(Event::Truncated);
+                }
                 let answer = answer.to_owned();
                 if need_compact {
                     self.run_auto_compact(context, false, &mut on_event).await;

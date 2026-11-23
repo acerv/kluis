@@ -7,7 +7,7 @@ use harness_core::tools::{Diff, DiffHunk, DiffLine};
 use harness_core::{TokenUsage, ToolDetails};
 use harness_tui::{
     code_theme, flush_scrollback, last_assistant_text, osc52_sequence, Action, AgentUpdate, App,
-    BannerLine, SlashCommand, Status, Theme, VIEWPORT_HEIGHT,
+    BannerLine, SlashCommand, Status, Theme, TRUNCATED_NOTICE, VIEWPORT_HEIGHT,
 };
 use ratatui::backend::TestBackend;
 use ratatui::style::{Color, Modifier, Style};
@@ -1366,6 +1366,16 @@ fn replay_restores_an_unfinished_plan() {
         scrollback[..2],
         ["todo", "  error: only one todo can be in_progress"]
     );
+}
+
+#[test]
+fn reply_cut_at_the_token_limit_shows_notice() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    app.start_prompt("go");
+    app.apply_update(AgentUpdate::Text("half a sen".into()));
+    app.apply_update(AgentUpdate::Truncated);
+    let lines = scrollback_lines(&mut app);
+    assert!(lines.iter().any(|l| l == TRUNCATED_NOTICE), "{lines:?}");
 }
 
 #[test]

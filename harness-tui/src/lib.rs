@@ -36,7 +36,7 @@ use tokio::time::{interval_at, Instant, MissedTickBehavior};
 
 pub use app::{
     printable, retry_notice, summary, Action, AgentUpdate, App, BannerLine, SlashCommand,
-    VIEWPORT_HEIGHT,
+    TRUNCATED_NOTICE, VIEWPORT_HEIGHT,
 };
 pub use clipboard::{last_assistant_text, osc52_sequence};
 pub use history::{History, MAX_HISTORY};
