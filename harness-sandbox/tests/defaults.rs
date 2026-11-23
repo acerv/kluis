@@ -115,22 +115,71 @@ fn network_option_allows_any_port() {
     assert!(out.status.success(), "{}", stderr(&out));
 }
 
+/// A folder in the real `$HOME` holding `file.txt`.
+fn home_folder() -> tempfile::TempDir {
+    let dir = tempfile::tempdir_in(std::env::var("HOME").unwrap()).unwrap();
+    std::fs::write(dir.path().join("file.txt"), "data").unwrap();
+    dir
+}
+
 #[test]
-fn home_is_read_only() {
+fn home_shows_allowed_paths_only() {
+    let shown = home_folder();
+    let hidden = home_folder();
+    let options = Options {
+        read: vec![shown.path().into()],
+        ..Options::default()
+    };
+
+    let script = format!(
+        "cat {}/file.txt; ls {}",
+        shown.path().display(),
+        hidden.path().display()
+    );
+    let out = run(&options, &script);
+    assert_eq!(out.stdout, b"data");
+    assert!(stderr(&out).contains("No such file"), "{}", stderr(&out));
+}
+
+#[test]
+fn home_is_private_and_writable() {
+    let hidden = home_folder();
+    let name = hidden.path().file_name().unwrap().to_str().unwrap();
     let home = std::env::var("HOME").unwrap();
-    let script = format!("ls -A {home} | wc -l; touch {home}/.harness-test");
+    let script =
+        format!("ls -A {home} | grep -c {name}; stat -c %a {home}; touch {home}/.harness-test");
     let out = run(&Options::default(), &script);
 
-    let entries = std::fs::read_dir(&home).unwrap().count();
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout).trim(),
-        entries.to_string()
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(out.stdout, b"0\n700\n");
+    assert!(!Path::new(&home).join(".harness-test").exists());
+}
+
+#[test]
+fn whole_home_can_be_shown_without_secrets() {
+    let dir = home_folder();
+    let secret = Path::new(&std::env::var("HOME").unwrap()).join(".ssh");
+    let options = Options {
+        read: vec![std::env::var("HOME").unwrap().into()],
+        ..Options::default()
+    };
+
+    let script = format!(
+        "cat {}/file.txt; touch {}/x",
+        dir.path().display(),
+        dir.path().display()
     );
+    let out = run(&options, &script);
+    assert_eq!(out.stdout, b"data");
     assert!(
         stderr(&out).contains("Read-only file system"),
         "{}",
         stderr(&out)
     );
+    if secret.exists() {
+        let out = run(&options, &format!("ls -A {} | wc -l", secret.display()));
+        assert_eq!(out.stdout, b"0\n");
+    }
 }
 
 #[test]
