@@ -52,5 +52,6 @@
   when the tools run there, without adding it to the conversation.
 - `/output` shows the whole output of the last tool call.
 - Slash commands: `/model`, `/thinking`, `/resume`, `/copy`, `/output`,
-  `/compact`, `/status`, `/new`, `/help`, `/quit`.
+  `/retry`, `/compact`, `/status`, `/new`, `/help`, `/quit`.
+- `/retry` sends the last prompt again, dropping what it led to.
 - Falls back to line mode when stdin or stdout is not a terminal.

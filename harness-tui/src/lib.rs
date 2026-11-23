@@ -115,6 +115,12 @@ impl Session {
         self.writer.append_usage(usage, context)
     }
 
+    /// Persist that the conversation went back to `messages`, to send a
+    /// prompt again.
+    pub fn record_rewind(&mut self, messages: &[ChatMessage]) -> io::Result<()> {
+        self.writer.append_compact(messages)
+    }
+
     /// Cumulative token usage recorded in this session.
     pub fn usage(&self) -> TokenUsage {
         self.usage
@@ -330,11 +336,18 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
 
     draw(&mut term, &mut app)?;
 
+    // A prompt to send next, without waiting for the user.
+    let mut next_prompt = None;
     loop {
-        let Some(next) = events.next().await else {
-            break;
+        let action = match next_prompt.take() {
+            Some(prompt) => Action::Submit(prompt),
+            None => {
+                let Some(next) = events.next().await else {
+                    break;
+                };
+                handle_event_batch(next?, &mut events, &mut app)?
+            }
         };
-        let action = handle_event_batch(next?, &mut events, &mut app)?;
         // Only for the picker shown at startup, until anything else is done.
         let model = match action {
             Action::None | Action::Redraw => None,
@@ -354,6 +367,7 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
                     &mut questions,
                     session.as_mut(),
                     &mut models,
+                    &mut next_prompt,
                 )
                 .await?
                 {
@@ -393,7 +407,7 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
                 }
                 show_notices(&mut term, &mut app, &notices)?;
             }
-            Action::Submit(mut prompt) => loop {
+            Action::Submit(prompt) => {
                 if let Some(ref mut h) = history {
                     let _ = h.record(&prompt);
                 }
@@ -415,22 +429,34 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
                     return Ok(());
                 }
                 show_notices(&mut term, &mut app, &notices)?;
-                // Messages queued as the prompt ended make the next one,
-                // unless it was cancelled.
-                let queued = agent.steering().take().join("\n\n");
-                if queued.is_empty() {
-                    break;
-                }
+                // Messages queued as the prompt ended make the next one; a
+                // cancelled prompt leaves them in the editor.
                 if turn.cancelled {
-                    app.restore_queued(&queued);
+                    restore_queued(&agent, &mut app);
                     draw(&mut term, &mut app)?;
-                    break;
+                } else {
+                    let queued = agent.steering().take().join("\n\n");
+                    next_prompt = (!queued.is_empty()).then_some(queued);
                 }
-                prompt = queued;
-            },
+            }
         }
     }
     Ok(())
+}
+
+/// Take the last prompt out of the conversation, to send it again.
+fn retry(agent: &mut Agent, app: &mut App, session: Option<&mut Session>) -> Option<String> {
+    let Some(prompt) = agent.take_last_prompt() else {
+        app.push_info("[nothing to retry]");
+        return None;
+    };
+    if let Some(session) = session {
+        if let Err(err) = session.record_rewind(agent.history()) {
+            app.push_info(format!("[session save error: {err}]"));
+        }
+    }
+    app.push_info("[retrying the last prompt]");
+    Some(prompt)
 }
 
 /// Stop what commands left running in the background, then disable the git
@@ -514,7 +540,8 @@ struct ModelCatalog {
     cached: Option<Vec<ModelInfo>>,
 }
 
-/// Execute a slash command. Returns `true` when the user requested to quit.
+/// Execute a slash command, setting `next_prompt` to a prompt to send.
+/// Returns `true` when the user requested to quit.
 #[allow(clippy::too_many_arguments)]
 async fn handle_slash(
     cmd: SlashCommand,
@@ -525,9 +552,11 @@ async fn handle_slash(
     questions: &mut mpsc::UnboundedReceiver<Question>,
     session: Option<&mut Session>,
     models: &mut ModelCatalog,
+    next_prompt: &mut Option<String>,
 ) -> Result<bool, Error> {
     match cmd {
         SlashCommand::Quit => return Ok(true),
+        SlashCommand::Retry => *next_prompt = retry(agent, app, session),
         SlashCommand::Compact(focus) => {
             if agent.history().is_empty() {
                 app.push_info("[nothing to compact]");
@@ -891,14 +920,13 @@ async fn run_turn(
 ) -> Result<TurnOutcome, Error> {
     let mut saver = PromptSaver::new(session, agent.history());
     let (tx, rx) = mpsc::unbounded_channel::<AgentUpdate>();
-    let steering = agent.steering();
     let res = drive_agent(
         term,
         app,
         events,
         questions,
         rx,
-        steering,
+        agent.steering(),
         agent.prompt(prompt, |event| {
             saver.on_event(&event);
             forward_event(&tx, event);
@@ -940,14 +968,13 @@ async fn run_compact(
     draw(term, app)?;
 
     let (tx, rx) = mpsc::unbounded_channel::<AgentUpdate>();
-    let steering = agent.steering();
     let res = drive_agent(
         term,
         app,
         events,
         questions,
         rx,
-        steering,
+        agent.steering(),
         agent.compact(focus, |event| forward_event(&tx, event)),
     )
     .await?;
