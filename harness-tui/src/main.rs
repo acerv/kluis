@@ -462,6 +462,7 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
     };
     if !args.no_sandbox {
         warnings.extend(sandbox::secrets_warning(&args, &cwd));
+        warnings.extend(sandbox::remote_warnings(&args, &cwd));
     }
     let full_screen =
         args.prompt.is_empty() && io::stdin().is_terminal() && io::stdout().is_terminal();

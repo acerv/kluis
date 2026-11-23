@@ -16,7 +16,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use common::{inside, list, read, system, write};
-use harness_sandbox::GitGuard;
+use harness_sandbox::{remote_filesystem, GitGuard};
 
 /// Set in the test that re-runs itself in a user and mount namespace.
 const CHILD: &str = "HARNESS_TEST_SUBMOUNTS_CHILD";
@@ -297,5 +297,28 @@ fn local_mount_is_shown() {
 
         let out = inside(&sandbox, read(&drive.join("file.txt")));
         assert_eq!(out.unwrap(), "local");
+    });
+}
+
+#[test]
+fn folder_on_fuse_is_remote() {
+    // A shown folder that is itself a cloud drive is not hidden: kl warns.
+    in_namespace("folder_on_fuse_is_remote", |dir| {
+        let (_, drive) = home(dir);
+        let _fuse = Fuse::mount(&drive, true);
+
+        assert_eq!(remote_filesystem(&drive).as_deref(), Some("fuse"));
+    });
+}
+
+#[test]
+fn folder_on_a_local_mount_is_not_remote() {
+    in_namespace("folder_on_a_local_mount_is_not_remote", |dir| {
+        let (_, drive) = home(dir);
+        let _fuse = Fuse::mount(&drive, true);
+        mount_tmpfs(&drive);
+        std::fs::create_dir(drive.join("project")).unwrap();
+
+        assert_eq!(remote_filesystem(&drive.join("project")), None);
     });
 }

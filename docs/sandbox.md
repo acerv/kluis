@@ -16,7 +16,8 @@ container that shows only the folders you configure.
 - Cloud drives, network shares and credentials in `$HOME` are hidden, even
   inside a folder you show: `~/.ssh`, `~/.aws`, `gh`, registry and AI tool
   tokens, browser profiles, shell history and more. `sandbox.deny` hides
-  additional paths.
+  additional paths. A folder you show that is itself on such a filesystem,
+  or the current folder, stays: `kl` warns at startup instead.
 - API keys and `~/.kluis` are never passed into the sandbox.
 - The kernel attack surface is reduced: no user namespaces, only common socket
   types, no mount changes, no core dumps.
