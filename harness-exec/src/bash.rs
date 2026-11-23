@@ -7,7 +7,7 @@ use std::io::{self, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{ExitStatus, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anstyle_parse::{Parser, Perform};
@@ -48,6 +48,11 @@ const EXIT_GRACE: Duration = Duration::from_secs(2);
 /// Code run in the command's process just before `exec`.
 pub type PreExec = Arc<dyn Fn() -> io::Result<()> + Send + Sync>;
 
+/// Files holding the whole output of commands whose output was cut, removed
+/// once the last clone is dropped.
+#[derive(Clone, Debug, Default)]
+pub struct OutputFiles(Arc<Mutex<Vec<TempPath>>>);
+
 /// How the host wants commands to run.
 #[derive(Clone, Default)]
 pub struct BashContext {
@@ -58,6 +63,24 @@ pub struct BashContext {
     /// The only environment variables of the command when set; it inherits
     /// the host environment otherwise.
     pub env: Option<Vec<(OsString, OsString)>>,
+    /// Removes the files of cut outputs once dropped, when set; they stay
+    /// for good otherwise.
+    pub output_files: Option<OutputFiles>,
+}
+
+impl BashContext {
+    /// Keep the output file at `path` as long as the host wants, and
+    /// return its name.
+    fn keep(&self, path: TempPath) -> Option<String> {
+        let name = path.to_str()?.to_owned();
+        match &self.output_files {
+            Some(files) => files.0.lock().ok()?.push(path),
+            None => {
+                path.keep().ok()?;
+            }
+        }
+        Some(name)
+    }
 }
 
 impl fmt::Debug for BashContext {
@@ -70,6 +93,7 @@ impl fmt::Debug for BashContext {
         f.debug_struct("BashContext")
             .field("pre_exec", &self.pre_exec.is_some())
             .field("env", &env)
+            .field("output_files", &self.output_files.is_some())
             .finish()
     }
 }
@@ -225,7 +249,7 @@ impl BashTool {
             exit_code: status.map(exit_code),
             output,
             truncated,
-            output_file,
+            output_file: output_file.and_then(|path| ctx.keep(path)),
             timed_out,
         })
     }
@@ -369,9 +393,9 @@ impl Tail {
         }
     }
 
-    /// The kept text, whether anything was cut, and the spill file path if one
-    /// was saved.
-    fn finish(mut self) -> (String, bool, Option<String>) {
+    /// The kept text, whether anything was cut, and the spill file if one
+    /// was saved, removed when dropped.
+    fn finish(mut self) -> (String, bool, Option<TempPath>) {
         self.trim_bytes();
         self.trim_lines();
         // Flush the kept tail before skipping leading UTF-8 continuation bytes,
@@ -392,8 +416,8 @@ impl Tail {
 
 /// Lazily created file holding the full cleaned output when truncated.
 ///
-/// Dropped without calling [`finish`](Self::finish) (e.g. on cancellation or
-/// error), its temporary file is removed automatically.
+/// Its temporary file is removed when dropped (e.g. on cancellation or
+/// error), as the one [`finish`](Self::finish) returns.
 #[derive(Default)]
 enum Spill {
     #[default]
@@ -448,17 +472,15 @@ impl Spill {
         }
     }
 
-    fn finish(mut self, tail: &[u8]) -> Option<String> {
+    fn finish(mut self, tail: &[u8]) -> Option<TempPath> {
         if matches!(self, Self::Writing { .. }) {
             self.write(tail);
         }
-        let path = match self {
+        match self {
             // Close the descriptor before exposing the path.
-            Self::Writing { file, .. } => file.into_temp_path(),
-            Self::Full(path) => path,
-            Self::Idle | Self::Failed => return None,
-        };
-        path.to_str()?;
-        path.keep().ok()?.into_os_string().into_string().ok()
+            Self::Writing { file, .. } => Some(file.into_temp_path()),
+            Self::Full(path) => Some(path),
+            Self::Idle | Self::Failed => None,
+        }
     }
 }

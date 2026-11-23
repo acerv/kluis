@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use harness_exec::{
-    BashContext, BashTool, DEFAULT_BASH_TIMEOUT, MAX_BASH_LINES, MAX_BASH_LOG_BYTES,
+    BashContext, BashTool, OutputFiles, DEFAULT_BASH_TIMEOUT, MAX_BASH_LINES, MAX_BASH_LOG_BYTES,
     MAX_BASH_OUTPUT,
 };
 
@@ -98,6 +99,23 @@ async fn stdin_is_closed() {
     let out = call("cat", Some(5)).run().await.unwrap();
     assert!(!out.timed_out);
     assert_eq!(out.output, "");
+}
+
+#[tokio::test]
+async fn output_files_of_the_context_are_removed_with_it() {
+    let ctx = BashContext {
+        output_files: Some(OutputFiles::default()),
+        ..BashContext::default()
+    };
+    let out = call("head -c 200000 /dev/zero | tr '\\0' a", None)
+        .run_with(&ctx.clone())
+        .await
+        .unwrap();
+    let path = out.output_file.expect("spill file path");
+    assert!(Path::new(&path).exists());
+
+    drop(ctx);
+    assert!(!Path::new(&path).exists());
 }
 
 #[tokio::test]

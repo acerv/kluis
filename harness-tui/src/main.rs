@@ -28,7 +28,7 @@ use genai::adapter::AdapterKind;
 use genai::chat::ChatMessage;
 use harness_core::oauth::flow::Login;
 use harness_core::oauth::{OAuthProvider, OAuthStore};
-use harness_core::tools::{is_read_only, run_worker, Executor, ToolContext};
+use harness_core::tools::{is_read_only, run_worker, Executor, OutputFiles, ToolContext};
 use harness_core::{
     provider_name, Agent, AuthConfig, CredentialSource, Error, Event, SessionData, SessionStore,
     Thinking, TokenUsage,
@@ -388,6 +388,8 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
             std::env::vars_os(),
             &args.pass_env,
         ));
+        // In the real `/tmp` here: gone with the agent.
+        tools.bash.output_files = Some(OutputFiles::default());
         (Executor::Local(tools), None)
     } else {
         let (executor, guard) = sandbox::executor(&args, &cwd)?;
