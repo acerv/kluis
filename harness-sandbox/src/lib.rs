@@ -33,7 +33,7 @@ pub use env::command_env;
 pub use git::{GitCheck, GitGuard, NewRepository};
 pub use init::{start_init, stop_others};
 pub use network::NoNetwork;
-pub use profile::Options;
+pub use profile::{hidden_secrets, Options};
 pub use protect::{kill_first_on_oom, protect_self};
 pub use seccomp::{restrict_syscalls, NetworkAccess};
 
