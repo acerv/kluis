@@ -10,9 +10,13 @@ container that shows only the folders you configure.
 - `.git` stays read-only, and a new `.git` is disabled after each prompt.
 - There is no network by default. You can allow all of it, or some TCP ports
   (Linux 6.7+). Allowed ports are open on every host, not only locally.
-- Cloud drives, network shares and credentials in `$HOME` are hidden:
-  `~/.ssh`, `~/.aws`, `gh`, registry and AI tool tokens, browser profiles,
-  shell history and more. `sandbox.deny` hides additional paths.
+- `$HOME` is an empty private folder that lives in memory and is gone when
+  `kl` exits. Only the current folder and the `sandbox.read` and
+  `sandbox.write` paths below it show there. See [Home folder](#home-folder).
+- Cloud drives, network shares and credentials in `$HOME` are hidden, even
+  inside a folder you show: `~/.ssh`, `~/.aws`, `gh`, registry and AI tool
+  tokens, browser profiles, shell history and more. `sandbox.deny` hides
+  additional paths.
 - API keys and `~/.kluis` are never passed into the sandbox.
 - The kernel attack surface is reduced: no user namespaces, only common socket
   types, no core dumps.
@@ -20,6 +24,26 @@ container that shows only the folders you configure.
   prompt, and on low memory commands are killed first.
 
 See [Configuration](configuration.md) for the settings that control this.
+
+## Home folder
+
+Commands see `$HOME` at the usual path, but it starts empty and nothing
+written there reaches your real home folder. Tools installed in your home,
+such as Rust from rustup, are missing until you show them:
+
+```toml
+[sandbox]
+read = ["~/.cargo", "~/.rustup", "~/.local/bin", "~/.gitconfig"]
+write = ["~/.cache/sccache"]
+```
+
+`--allow-read` and `--allow-write` do the same for one run. When a folder
+you show holds credentials `kl` knows about, such as `~/.config/gh` below
+`~/.config`, they stay hidden and `kl` names them in a warning at start:
+show narrower folders instead.
+
+Showing `~` itself, as `read = ["~"]`, brings back the whole home folder
+read-only, with the credentials still hidden.
 
 ## What is not isolated
 
