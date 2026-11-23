@@ -20,6 +20,8 @@ container that shows only the folders you configure.
 - API keys and `~/.kluis` are never passed into the sandbox.
 - The kernel attack surface is reduced: no user namespaces, only common socket
   types, no core dumps.
+- `kl` refuses to run as root or with sudo, even with `--no-sandbox`: root
+  keeps its privileges in the container and could undo it.
 - Processes and `/tmp` are limited. Leftover programs are stopped after each
   prompt, and on low memory commands are killed first.
 

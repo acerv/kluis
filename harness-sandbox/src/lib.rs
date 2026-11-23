@@ -34,7 +34,7 @@ pub use git::{GitCheck, GitGuard, NewRepository};
 pub use init::{start_init, stop_others};
 pub use network::NoNetwork;
 pub use profile::{hidden_secrets, Options};
-pub use protect::{kill_first_on_oom, protect_self};
+pub use protect::{kill_first_on_oom, protect_self, refuse_root};
 pub use seccomp::{restrict_syscalls, NetworkAccess};
 
 use std::collections::{HashMap, VecDeque};

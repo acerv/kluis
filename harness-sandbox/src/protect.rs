@@ -5,6 +5,23 @@
 
 use std::io;
 
+use nix::unistd::Uid;
+
+/// Refuse to run as root, or with sudo.
+///
+/// The container maps the user to itself, so root keeps every capability
+/// in it: commands could unmount the masks over denied paths, or read and
+/// write any file of root that a shown folder holds.
+pub fn refuse_root() -> io::Result<()> {
+    if Uid::current().is_root() || Uid::effective().is_root() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "refusing to run as root or with sudo: run kl as your own user",
+        ));
+    }
+    Ok(())
+}
+
 /// Keep other processes of the same user, such as the commands the harness
 /// runs, from reading the memory and environment of the calling process,
 /// where API keys live, or from tracing it.

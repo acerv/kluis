@@ -170,6 +170,9 @@ fn main() -> ExitCode {
 }
 
 fn launch(mut args: Args) -> Result<ExitCode, Error> {
+    // Root could undo the sandbox; also kept out of `--no-sandbox`, where
+    // commands would act as root on the whole host.
+    harness_sandbox::refuse_root()?;
     if args.apparmor_profile {
         print!("{}", sandbox::apparmor_profile()?);
         return Ok(ExitCode::SUCCESS);
