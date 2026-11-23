@@ -1,0 +1,16 @@
+version: 2
+updates:
+  # Crates: one PR per day with all the compatible updates, so CI tests them together.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: daily
+    groups:
+      crates:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
