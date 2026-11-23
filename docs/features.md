@@ -21,7 +21,7 @@
 `read`, `write`, `edit`, `ls`, `find`, `grep`, `bash`, `todo`, `ask_user` and
 `web_fetch`.
 
-- `edit` applies changes atomically and shows a unified diff.
+- `edit` applies changes atomically and shows a diff with line numbers.
 - `bash` streams cleaned output with a timeout and line limits.
 - `todo` keeps the plan of a multi-step task.
 - `ask_user` asks you a question mid-task, with suggested answers to pick from
@@ -39,6 +39,7 @@
 - Spinner with elapsed time and live `bash` output preview.
 - Persistent input history, model and session pickers, and `/copy` of the last
   reply.
-- Slash commands: `/model`, `/thinking`, `/resume`, `/copy`, `/compact`, `/status`, `/new`,
-  `/help`, `/quit`.
+- `/output` shows the whole output of the last tool call.
+- Slash commands: `/model`, `/thinking`, `/resume`, `/copy`, `/output`,
+  `/compact`, `/status`, `/new`, `/help`, `/quit`.
 - Falls back to line mode when stdin or stdout is not a terminal.

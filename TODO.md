@@ -53,7 +53,6 @@
 - [ ] Type and queue the next prompt while the agent is busy
 - [ ] Editor: word movement, `Alt-D`, undo (`Ctrl-Z`), `$EDITOR` (`Ctrl-G`)
 - [ ] `!<cmd>`: run a shell command inside the sandbox
-- [ ] Hunk line numbers in `edit` diffs, and the full tool output
 - [ ] Session commands: `/undo`, `/retry`, `/export`
 - [ ] Context window usage (`<tokens>/<limit>`) in the status bar
 - [ ] Terminal title with the activity, and a bell on long turns
