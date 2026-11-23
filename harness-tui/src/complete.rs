@@ -40,6 +40,11 @@ const COMMANDS: &[CommandSpec] = &[
         description: "pick or resume a saved session",
     },
     CommandSpec {
+        name: "/output",
+        arg: None,
+        description: "show the full output of the last tool",
+    },
+    CommandSpec {
         name: "/copy",
         arg: None,
         description: "copy last assistant reply to clipboard",

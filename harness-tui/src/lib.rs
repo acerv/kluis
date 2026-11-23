@@ -384,6 +384,7 @@ async fn handle_slash(
                 .map(|s| if messages == 0 { "new" } else { s.short_id() });
             app.push_info(app.status_text(label, messages));
         }
+        SlashCommand::Output => app.show_tool_output(),
         SlashCommand::Copy => match clipboard::last_assistant_text(agent.history()) {
             None => app.push_info("[nothing to copy]"),
             Some(text) => match clipboard::copy(&text) {

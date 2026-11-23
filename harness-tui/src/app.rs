@@ -166,6 +166,7 @@ pub enum SlashCommand {
     Resume(Option<String>),
     Compact(Option<String>),
     Status,
+    Output,
     Copy,
     New,
     Quit,
@@ -204,7 +205,9 @@ pub struct App {
     is_thinking: bool,
     spinner: usize,
     activity_started: Option<Instant>,
-    active_tool: Option<String>,
+    active_tool: Option<ToolCall>,
+    /// The last finished tool call, shown whole by `/output`.
+    last_tool: Option<ToolRun>,
     /// Bounded live stdout/stderr preview while a streaming tool runs.
     tool_preview: ToolPreview,
     /// Incremental Markdown stream for the current assistant turn.
@@ -246,6 +249,7 @@ impl App {
             spinner: 0,
             activity_started: None,
             active_tool: None,
+            last_tool: None,
             tool_preview: ToolPreview::default(),
             markdown: MarkdownStream::default(),
             markdown_style: MarkdownStyle::new(theme.color, DEFAULT_WIDTH),
@@ -396,6 +400,7 @@ impl App {
         self.clear_live();
         self.scrollback.clear();
         self.todos.clear();
+        self.last_tool = None;
         self.notice = None;
     }
 
@@ -460,6 +465,7 @@ impl App {
         self.context = 0;
         self.sync_markdown_width();
         let mut tool_calls: HashMap<&str, (&str, &Value)> = HashMap::new();
+        let mut last_tool = None;
         for msg in messages {
             match msg.role {
                 ChatRole::User => {
@@ -496,25 +502,47 @@ impl App {
                 ChatRole::Tool => {
                     for resp in msg.content.tool_responses() {
                         let entry = tool_calls.remove(resp.call_id.as_str());
-                        let tool = entry.map(|(name, _)| name);
-                        if tool == Some(TODO_TOOL) {
-                            self.set_todos(&resp.content, None, entry.map(|(_, args)| args));
+                        if let Some((TODO_TOOL, args)) = entry {
+                            self.set_todos(&resp.content, None, Some(args));
                             continue;
                         }
-                        format_tool_result(
-                            tool,
-                            &resp.content,
-                            None,
-                            self.theme,
-                            &mut self.scrollback,
-                        );
-                        self.scrollback.push(Line::raw(String::new()));
+                        self.push_tool_result(entry.map(|(name, _)| name), &resp.content, None);
+                        last_tool = Some((entry, resp.content.as_str()));
                     }
                 }
                 ChatRole::System => {}
             }
         }
+        self.last_tool = last_tool.map(|(entry, content)| ToolRun {
+            call: entry.map(|(name, args)| ToolCall {
+                name: name.to_owned(),
+                args: args.to_string(),
+            }),
+            content: content.to_owned(),
+            details: None,
+        });
         self.drop_finished_plan();
+    }
+
+    /// Show the preview of a finished tool call.
+    fn push_tool_result(
+        &mut self,
+        tool: Option<&str>,
+        content: &str,
+        details: Option<&ToolDetails>,
+    ) {
+        format_tool_result(tool, content, details, self.theme, &mut self.scrollback);
+        self.scrollback.push(Line::raw(String::new()));
+    }
+
+    /// Show the whole output of the last tool call, as `/output` asks.
+    pub fn show_tool_output(&mut self) {
+        let Some(run) = &self.last_tool else {
+            self.push_info("[no tool output]");
+            return;
+        };
+        format_full_output(run, self.theme, &mut self.scrollback);
+        self.scrollback.push(Line::raw(String::new()));
     }
 
     /// Show the plan of a `todo` result above the editor, or its error in
@@ -662,32 +690,31 @@ impl App {
                 self.flush_reasoning();
                 self.flush_text();
                 self.tool_preview.clear();
-                self.active_tool = Some(name.clone());
                 self.activity_started = Some(Instant::now());
                 if name != TODO_TOOL {
                     self.scrollback
                         .push(format_tool_call(&name, &args, self.theme));
                 }
+                self.active_tool = Some(ToolCall { name, args });
             }
             AgentUpdate::ToolOutput(chunk) => {
                 self.tool_preview.push(&chunk);
             }
             AgentUpdate::ToolResult { content, details } => {
-                let tool_name = self.active_tool.take();
+                let call = self.active_tool.take();
                 self.tool_preview.clear();
                 self.activity_started = Some(Instant::now());
-                if tool_name.as_deref() == Some(TODO_TOOL) {
+                if call.as_ref().is_some_and(|c| c.name == TODO_TOOL) {
                     self.set_todos(&content, details, None);
                     return;
                 }
-                format_tool_result(
-                    tool_name.as_deref(),
-                    &content,
-                    details.as_ref(),
-                    self.theme,
-                    &mut self.scrollback,
-                );
-                self.scrollback.push(Line::raw(String::new()));
+                let tool = call.as_ref().map(|c| c.name.as_str());
+                self.push_tool_result(tool, &content, details.as_ref());
+                self.last_tool = Some(ToolRun {
+                    call,
+                    content,
+                    details,
+                });
             }
             AgentUpdate::Compacting(tokens) => {
                 self.push_notice(
@@ -1192,7 +1219,7 @@ impl App {
                 .map(|s| format!(" {s}"))
                 .unwrap_or_default();
             let label = match &self.active_tool {
-                Some(tool) => format!("{spin} Running {tool}…{elapsed}  (esc to cancel)"),
+                Some(tool) => format!("{spin} Running {}…{elapsed}  (esc to cancel)", tool.name),
                 None if !self.show_thinking => {
                     format!("{spin} Thinking…{elapsed}  (Ctrl-O to show · esc to cancel)")
                 }
@@ -1415,6 +1442,7 @@ fn parse_slash(input: &str) -> Option<Result<SlashCommand, String>> {
         "/resume" => Ok(SlashCommand::Resume(arg)),
         "/compact" => Ok(SlashCommand::Compact(arg)),
         "/status" => Ok(SlashCommand::Status),
+        "/output" => Ok(SlashCommand::Output),
         "/copy" => Ok(SlashCommand::Copy),
         "/new" => Ok(SlashCommand::New),
         "/quit" | "/exit" => Ok(SlashCommand::Quit),
@@ -1482,7 +1510,7 @@ fn format_tool_result(
     }
 
     if let Some(ToolDetails::Edit(diff)) = details {
-        render_diff(diff, theme, out);
+        render_diff(diff, MAX_DIFF_PREVIEW_LINES, theme, out);
         return;
     }
 
@@ -1496,7 +1524,7 @@ fn format_tool_result(
             if let Some(output) = v["output"].as_str() {
                 let mut lines = output.lines();
                 for line in lines.by_ref().take(MAX_BASH_PREVIEW_LINES) {
-                    out.push(Line::styled(format!("  {line}"), theme.muted));
+                    out.push(tool_line(line, theme.muted));
                 }
                 let extra = lines.count();
                 if extra > 0 {
@@ -1573,42 +1601,141 @@ fn truncated_suffix(v: &Value) -> &'static str {
     }
 }
 
-fn render_diff(diff: &Diff, theme: Theme, out: &mut Vec<Line<'static>>) {
+/// The whole output of `run`: its call, then the full diff or the text the
+/// tool returned.
+fn format_full_output(run: &ToolRun, theme: Theme, out: &mut Vec<Line<'static>>) {
+    if let Some(call) = &run.call {
+        out.push(format_tool_call(&call.name, &call.args, theme));
+    }
+    if let Some(ToolDetails::Edit(diff)) = &run.details {
+        render_diff(diff, usize::MAX, theme, out);
+        return;
+    }
+    let parsed: Option<Value> = serde_json::from_str(&run.content).ok();
+    let style = match &parsed {
+        Some(v) if v.get("error").is_some() => theme.error,
+        _ => theme.muted,
+    };
+    let text = parsed
+        .as_ref()
+        .and_then(output_text)
+        .unwrap_or(Cow::Borrowed(&run.content));
+    out.extend(text.lines().map(|line| tool_line(line, style)));
+}
+
+/// The text a tool result carries: its error, output or content, its
+/// entries or paths one per line, or else the whole result as indented JSON.
+fn output_text(v: &Value) -> Option<Cow<'_, str>> {
+    if let Some(text) = ["error", "output", "content"]
+        .iter()
+        .find_map(|k| v[k].as_str())
+    {
+        return Some(Cow::Borrowed(text));
+    }
+    if let Some(items) = ["entries", "paths"].iter().find_map(|k| v[k].as_array()) {
+        let items: Vec<&str> = items.iter().filter_map(Value::as_str).collect();
+        return Some(Cow::Owned(items.join("\n")));
+    }
+    serde_json::to_string_pretty(v).ok().map(Cow::Owned)
+}
+
+/// Show up to `max_lines` lines of `diff`, each with its line number: the
+/// old one for removed lines, the new one otherwise.
+fn render_diff(diff: &Diff, max_lines: usize, theme: Theme, out: &mut Vec<Line<'static>>) {
+    let last_line = diff
+        .hunks
+        .iter()
+        .map(|h| (h.old_start + h.old_lines).max(h.new_start + h.new_lines) - 1)
+        .max()
+        .unwrap_or(0);
+    let width = last_line.to_string().len();
     let mut emitted = 0usize;
     let mut omitted = 0usize;
-    for hunk in &diff.hunks {
-        if emitted < MAX_DIFF_PREVIEW_LINES {
-            let header = format!(
-                "  @@ -{},{} +{},{} @@",
-                hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines
-            );
-            out.push(Line::styled(header, theme.diff_hunk));
+    let mut push = |line: Line<'static>| {
+        if emitted < max_lines {
+            out.push(line);
             emitted += 1;
         } else {
             omitted += 1;
         }
+    };
+    for (i, hunk) in diff.hunks.iter().enumerate() {
+        if i > 0 {
+            push(Line::styled(format!("  {:>width$}", "⋮"), theme.diff_hunk));
+        }
+        let mut old_line = hunk.old_start;
+        let mut new_line = hunk.new_start;
         for line in &hunk.lines {
-            if emitted >= MAX_DIFF_PREVIEW_LINES {
-                omitted += 1;
-                continue;
-            }
-            let (prefix, text, style) = match line {
-                DiffLine::Context(s) => ("   ", s.as_str(), theme.muted),
-                DiffLine::Removed(s) => ("  -", s.as_str(), theme.diff_remove),
-                DiffLine::Added(s) => ("  +", s.as_str(), theme.diff_add),
+            let (number, sign, text, style) = match line {
+                DiffLine::Context(s) => {
+                    old_line += 1;
+                    (post_increment(&mut new_line), ' ', s, theme.muted)
+                }
+                DiffLine::Removed(s) => (post_increment(&mut old_line), '-', s, theme.diff_remove),
+                DiffLine::Added(s) => (post_increment(&mut new_line), '+', s, theme.diff_add),
             };
-            out.push(Line::styled(format!("{prefix}{text}"), style));
-            emitted += 1;
+            push(Line::from(vec![
+                Span::styled(format!("  {number:>width$} "), theme.muted),
+                Span::styled(format!("{sign}{}", expand_tabs(text)), style),
+            ]));
         }
     }
-    if omitted > 0 || diff.truncated {
-        let note = if omitted > 0 {
-            format!("  … +{omitted} more diff lines")
-        } else {
-            "  … diff truncated".to_owned()
-        };
-        out.push(Line::styled(note, theme.muted));
+    if omitted > 0 {
+        out.push(Line::styled(
+            format!("  … +{omitted} more diff lines"),
+            theme.muted,
+        ));
+    } else if diff.truncated {
+        out.push(Line::styled("  … diff truncated", theme.muted));
     }
+}
+
+/// Return `n`, then add one to it.
+fn post_increment(n: &mut usize) -> usize {
+    *n += 1;
+    *n - 1
+}
+
+/// Columns between the tab stops of tool output.
+const TAB_WIDTH: usize = 4;
+
+/// A line of tool output, indented under its call.
+fn tool_line(text: &str, style: Style) -> Line<'static> {
+    Line::styled(format!("  {}", expand_tabs(text)), style)
+}
+
+/// `text` with its tabs turned into spaces, as the terminal drops them.
+fn expand_tabs(text: &str) -> Cow<'_, str> {
+    if !text.contains('\t') {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len() + TAB_WIDTH);
+    let mut col = 0;
+    for ch in text.chars() {
+        if ch == '\t' {
+            let spaces = TAB_WIDTH - col % TAB_WIDTH;
+            out.extend(std::iter::repeat_n(' ', spaces));
+            col += spaces;
+        } else {
+            out.push(ch);
+            col += char_width(ch);
+        }
+    }
+    Cow::Owned(out)
+}
+
+/// A tool call, with its arguments as JSON text.
+struct ToolCall {
+    name: String,
+    args: String,
+}
+
+/// A finished tool call and its result.
+struct ToolRun {
+    /// Unknown for a restored result whose call is missing.
+    call: Option<ToolCall>,
+    content: String,
+    details: Option<ToolDetails>,
 }
 
 /// Bounded ring buffer of live stdout/stderr lines from a running tool,
@@ -1659,10 +1786,10 @@ impl ToolPreview {
     fn render_lines(&self, style: Style) -> Vec<Line<'static>> {
         let mut out = Vec::with_capacity(self.lines.len() + usize::from(!self.current.is_empty()));
         for line in &self.lines {
-            out.push(Line::styled(format!("  {line}"), style));
+            out.push(tool_line(line, style));
         }
         if !self.current.is_empty() {
-            out.push(Line::styled(format!("  {}", self.current), style));
+            out.push(tool_line(&self.current, style));
         }
         out
     }
