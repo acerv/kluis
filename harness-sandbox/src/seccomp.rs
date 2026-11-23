@@ -9,13 +9,14 @@ use std::str::FromStr;
 
 use nix::libc::{self, sock_filter, sock_fprog};
 
-/// `seccomp_data` offsets: system call number, architecture, first argument
-/// (its low half on these little-endian architectures).
+/// `seccomp_data` offsets: system call number, architecture, arguments
+/// (their low half on these little-endian architectures).
 const NR: u32 = 0;
 const ARCH: u32 = 4;
 const ARG0: u32 = 16;
 const ARG1: u32 = 24;
 const ARG2: u32 = 32;
+const ARG3: u32 = 40;
 
 #[cfg(target_arch = "x86_64")]
 const NATIVE_ARCH: u32 = 0xC000_003E; // AUDIT_ARCH_X86_64
@@ -30,6 +31,7 @@ const ALLOW: u32 = libc::SECCOMP_RET_ALLOW;
 const EACCES: u32 = libc::SECCOMP_RET_ERRNO | libc::EACCES as u32;
 const EPERM: u32 = libc::SECCOMP_RET_ERRNO | libc::EPERM as u32;
 const ENOSYS: u32 = libc::SECCOMP_RET_ERRNO | libc::ENOSYS as u32;
+const EOPNOTSUPP: u32 = libc::SECCOMP_RET_ERRNO | libc::EOPNOTSUPP as u32;
 const KILL: u32 = libc::SECCOMP_RET_KILL_PROCESS;
 
 /// The network commands get, which decides the sockets they may create.
@@ -79,7 +81,10 @@ impl FromStr for NetworkAccess {
 /// sockets of the host below the folders it shows, such as the ones of an
 /// editor or a chat app, and the programs behind them can reach the
 /// network. With [`NetworkAccess::Ports`], UDP ones are refused too, as
-/// Landlock only limits TCP.
+/// Landlock only limits TCP. It also only checks `connect`, so sending
+/// with `MSG_FASTOPEN`, which connects without it, fails with
+/// `EOPNOTSUPP`, as when the host does not use TCP Fast Open: programs
+/// connect instead.
 ///
 /// A socket pair, also refused with `EACCES` unless Unix, is a datagram one
 /// only with [`NetworkAccess::Any`]: given an address, such a socket sends
@@ -119,6 +124,9 @@ pub fn restrict_syscalls(network: NetworkAccess) -> io::Result<()> {
         families.push((libc::AF_UNIX, &[]));
     }
     program.extend(socket_pair_rules(network == NetworkAccess::Any));
+    if network == NetworkAccess::Ports {
+        program.extend(fast_open_rules());
+    }
     program.extend(socket_rules(&families, network != NetworkAccess::Ports));
     let filter = sock_fprog {
         len: program.len() as u16,
@@ -193,6 +201,23 @@ fn socket_pair_rules(datagrams: bool) -> Vec<sock_filter> {
     }
     rules.push(ret(EACCES));
     rules
+}
+
+/// Instructions refusing sends with `MSG_FASTOPEN` with `EOPNOTSUPP`.
+fn fast_open_rules() -> Vec<sock_filter> {
+    let fast_open = libc::MSG_FASTOPEN as u32;
+    vec![
+        load(NR),
+        // `sendmsg` takes its flags third, `sendto` and `sendmmsg` fourth.
+        jump_eq(libc::SYS_sendmsg as u32, 0, 2),
+        load(ARG2),
+        jump_set(fast_open, 4, 5),
+        jump_eq(libc::SYS_sendto as u32, 1, 0),
+        jump_eq(libc::SYS_sendmmsg as u32, 0, 3),
+        load(ARG3),
+        jump_set(fast_open, 0, 1),
+        ret(EOPNOTSUPP),
+    ]
 }
 
 /// An instruction of [`socket_rules`], whose jump, when taken, may lead to

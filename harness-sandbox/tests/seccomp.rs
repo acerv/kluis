@@ -335,3 +335,36 @@ fn other_protocols_are_refused() {
         );
     });
 }
+
+/// The errors of sending with `flags` through `sendto`, `sendmsg` and
+/// `sendmmsg` on no socket: the filter answers first.
+fn send_errors(flags: libc::c_int) -> [Option<i32>; 3] {
+    // SAFETY: plain system calls with empty messages, failing on the file
+    // descriptor at the latest.
+    unsafe {
+        let mut msg: libc::mmsghdr = std::mem::zeroed();
+        [
+            libc::sendto(-1, std::ptr::null(), 0, flags, std::ptr::null(), 0) as libc::c_long,
+            libc::sendmsg(-1, &msg.msg_hdr, flags) as libc::c_long,
+            libc::sendmmsg(-1, &mut msg, 1, flags as _) as libc::c_long,
+        ]
+        .map(errno)
+    }
+}
+
+#[test]
+fn fast_open_is_refused_with_only_ports() {
+    // It connects without `connect`, the only call Landlock checks.
+    restricted("fast_open_is_refused_with_only_ports", "ports", || {
+        let fast_open = libc::MSG_FASTOPEN | libc::MSG_NOSIGNAL;
+        assert_eq!(send_errors(fast_open), [Some(libc::EOPNOTSUPP); 3]);
+        assert_eq!(send_errors(libc::MSG_NOSIGNAL), [Some(libc::EBADF); 3]);
+    });
+}
+
+#[test]
+fn fast_open_stays_with_any_network() {
+    restricted("fast_open_stays_with_any_network", "any", || {
+        assert_eq!(send_errors(libc::MSG_FASTOPEN), [Some(libc::EBADF); 3]);
+    });
+}
