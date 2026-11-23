@@ -1082,6 +1082,7 @@ name = "harness-exec"
 version = "0.1.0"
 dependencies = [
  "anstyle-parse",
+ "base64 0.23.1",
  "genai",
  "globset",
  "grep-regex",
