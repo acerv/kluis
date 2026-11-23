@@ -183,6 +183,25 @@ pub fn secrets_warning(args: &Args, cwd: &Path) -> Option<String> {
     })
 }
 
+/// Warnings about the folders shown to commands that sit on a filesystem
+/// that could reach the network, such as a cloud drive.
+pub fn remote_warnings(args: &Args, cwd: &Path) -> Vec<String> {
+    let mut shown = vec![cwd];
+    shown.extend(args.allow_read.iter().map(PathBuf::as_path));
+    shown.extend(args.allow_write.iter().map(PathBuf::as_path));
+    shown
+        .into_iter()
+        .filter_map(|path| {
+            let fstype = harness_sandbox::remote_filesystem(path)?;
+            Some(format!(
+                "{} is on a {fstype} filesystem, which can reach the network: what \
+                 commands read or write there may leave this machine",
+                path.display()
+            ))
+        })
+        .collect()
+}
+
 /// Warnings about what git on the host would run of what commands write in
 /// `cwd`. Nothing without git.
 pub fn git_warnings(cwd: &Path) -> Vec<String> {

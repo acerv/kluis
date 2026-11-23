@@ -570,6 +570,27 @@ fn remote_mounts(
     Ok(out)
 }
 
+/// The type of the filesystem holding `path` when it could reach the
+/// network, e.g. FUSE or NFS: what commands write there may leave the
+/// machine even with no network, as the sandbox shows `path` itself.
+pub fn remote_filesystem(path: &Path) -> Option<String> {
+    // A dead mount cannot be resolved: take the path as given then.
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let mountinfo = read_mountinfo().ok()?;
+    let mut holder = None;
+    let mut depth = 0;
+    // The deepest mount point above `path`, the last one mounted there.
+    for (point, fstype) in mountinfo.lines().filter_map(mount_point_and_type) {
+        let point = PathBuf::from(unescape(point));
+        let point_depth = point.components().count();
+        if path.starts_with(&point) && point_depth >= depth {
+            holder = Some(fstype);
+            depth = point_depth;
+        }
+    }
+    holder.filter(|fstype| !is_local(fstype)).map(str::to_owned)
+}
+
 /// The mount point and filesystem type of a `/proc/self/mountinfo` line.
 fn mount_point_and_type(line: &str) -> Option<(&str, &str)> {
     // Optional fields end with a lone "-"; spaces in paths are escaped.
