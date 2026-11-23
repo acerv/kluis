@@ -26,8 +26,8 @@ pub use agent::{Agent, Error, Steering, Thinking, DEFAULT_AUTO_COMPACT_TOKENS, D
 pub use auth::{AuthConfig, CredentialSource, ProviderAuth};
 pub use event::Event;
 pub use models::{
-    discover_models, discover_models_with_timeout, is_chat_model, provider_name, ModelInfo,
-    ModelList,
+    discover_models, discover_models_with_timeout, is_chat_model, provider_name, thinking_levels,
+    ModelInfo, ModelList,
 };
 pub use prompt::{find_agents_files, system_prompt, AGENTS_FILE, MAX_AGENTS_BYTES};
 pub use retry::RetryPolicy;
