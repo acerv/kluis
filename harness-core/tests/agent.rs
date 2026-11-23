@@ -1534,3 +1534,21 @@ async fn images_read_by_tools_follow_the_results() {
     assert_eq!(url, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==");
     assert_eq!(details, [None, None]);
 }
+
+#[tokio::test]
+async fn user_command_runs_with_the_tools_and_stays_out_of_the_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = MockModel::start(Vec::new()).await;
+    let agent = agent(&model, dir.path());
+
+    let mut streamed = String::new();
+    let result = agent
+        .run_command("pwd", |chunk| streamed.push_str(chunk))
+        .await;
+
+    let cwd = dir.path().to_str().unwrap();
+    assert!(result.contains(cwd), "{result}");
+    assert!(streamed.contains(cwd), "{streamed}");
+    assert!(agent.history().is_empty());
+    assert!(model.requests().is_empty());
+}

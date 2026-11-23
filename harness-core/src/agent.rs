@@ -336,6 +336,19 @@ impl Agent {
         self.steering.clone()
     }
 
+    /// Run the shell `command` for the user as the `bash` tool runs it for
+    /// the model, in the sandbox when the tools run there, and return its
+    /// result. Nothing joins the conversation.
+    pub async fn run_command(&self, command: &str, on_output: impl FnMut(&str)) -> String {
+        let call = ToolCall {
+            call_id: "user".to_owned(),
+            fn_name: "bash".to_owned(),
+            fn_arguments: json!({ "command": command }),
+            thought_signatures: None,
+        };
+        self.executor.execute(&call, on_output).await.0.content
+    }
+
     /// Stop what tool commands left running in the background, when they
     /// run in the sandbox: call it between prompts.
     pub async fn stop_background(&self) {
