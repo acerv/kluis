@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
-//! The seccomp filter of the sandbox: no user namespaces, and no Unix
-//! sockets, which lead to programs of the host that can reach the network.
+//! The seccomp filter of the sandbox: no user namespaces, no mount
+//! changes, and no Unix sockets, which lead to programs of the host that
+//! can reach the network.
 
 use std::io::ErrorKind;
 use std::net::TcpListener;
@@ -29,7 +30,17 @@ fn restricted(name: &str, network: &str, body: fn()) {
         body();
         return;
     }
-    let status = Command::new(std::env::current_exe().unwrap())
+    run_child(
+        Command::new(std::env::current_exe().unwrap()),
+        name,
+        network,
+    );
+}
+
+/// Run test `name` with `cmd`, a copy of this test process or a program
+/// starting one, restricted for `network` access.
+fn run_child(mut cmd: Command, name: &str, network: &str) {
+    let status = cmd
         .args(["--exact", name, "--nocapture"])
         .env(CHILD, network)
         .status()
@@ -67,6 +78,61 @@ fn socket_pairs_still_work() {
         let mut buf = [0];
         b.read_exact(&mut buf).unwrap();
         assert_eq!(&buf, b"x");
+    });
+}
+
+/// The error of creating a socket pair of `family` and `kind`, if any.
+fn pair_error(family: libc::c_int, kind: libc::c_int) -> Option<i32> {
+    let mut fds = [0; 2];
+    // SAFETY: plain system calls on an array that outlives them.
+    unsafe {
+        if libc::socketpair(family, kind, 0, fds.as_mut_ptr()) != 0 {
+            return std::io::Error::last_os_error().raw_os_error();
+        }
+        libc::close(fds[0]);
+        libc::close(fds[1]);
+    }
+    None
+}
+
+#[test]
+fn datagram_socket_pairs_are_refused() {
+    // Given an address, they send to any datagram socket of the host.
+    blocked("datagram_socket_pairs_are_refused", check_pairs);
+}
+
+#[test]
+fn datagram_socket_pairs_are_refused_with_only_ports() {
+    restricted(
+        "datagram_socket_pairs_are_refused_with_only_ports",
+        "ports",
+        check_pairs,
+    );
+}
+
+fn check_pairs() {
+    let flags = libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK;
+    for kind in [libc::SOCK_DGRAM, libc::SOCK_DGRAM | flags] {
+        assert_eq!(pair_error(libc::AF_UNIX, kind), Some(libc::EACCES));
+    }
+    assert_eq!(pair_error(libc::AF_UNIX, libc::SOCK_SEQPACKET), None);
+    assert_eq!(pair_error(libc::AF_UNIX, libc::SOCK_STREAM | flags), None);
+}
+
+#[test]
+fn datagram_socket_pairs_stay_with_any_network() {
+    restricted("datagram_socket_pairs_stay_with_any_network", "any", || {
+        assert_eq!(pair_error(libc::AF_UNIX, libc::SOCK_DGRAM), None);
+    });
+}
+
+#[test]
+fn socket_pairs_are_unix_only() {
+    // The kernel would look for a module for others, such as TIPC's.
+    restricted("socket_pairs_are_unix_only", "any", || {
+        for family in [libc::AF_INET, libc::AF_TIPC] {
+            assert_eq!(pair_error(family, libc::SOCK_STREAM), Some(libc::EACCES));
+        }
     });
 }
 
@@ -144,6 +210,56 @@ fn user_namespaces_are_refused() {
             assert_eq!(errno(res), Some(libc::ENOSYS));
         }
     });
+}
+
+#[test]
+fn mounts_stay_even_as_root() {
+    const NAME: &str = "mounts_stay_even_as_root";
+    if std::env::var_os(CHILD).is_none() {
+        // Root of a user namespace with a mount namespace of its own, which
+        // needs no privilege.
+        let mut cmd = Command::new("unshare");
+        cmd.args(["--map-root-user", "--mount"])
+            .arg(std::env::current_exe().unwrap());
+        run_child(cmd, NAME, "none");
+        return;
+    }
+    let tmp = c"/tmp";
+    let tmpfs = c"tmpfs";
+    // SAFETY: plain system calls on C strings that outlive them.
+    let mount_tmpfs = || unsafe {
+        libc::mount(
+            tmpfs.as_ptr(),
+            tmp.as_ptr(),
+            tmpfs.as_ptr(),
+            0,
+            std::ptr::null(),
+        )
+    };
+    // Over the /tmp of this mount namespace only.
+    let res = mount_tmpfs();
+    assert_eq!(res, 0, "{}", std::io::Error::last_os_error());
+    restrict_syscalls(NetworkAccess::None).unwrap();
+    assert_eq!(errno(mount_tmpfs().into()), Some(libc::EPERM));
+    // SAFETY: as above.
+    unsafe {
+        let res = libc::umount2(tmp.as_ptr(), libc::MNT_DETACH);
+        assert_eq!(errno(res.into()), Some(libc::EPERM));
+        let flags = libc::MS_REMOUNT | libc::MS_BIND;
+        let res = libc::mount(
+            std::ptr::null(),
+            tmp.as_ptr(),
+            std::ptr::null(),
+            flags,
+            std::ptr::null(),
+        );
+        assert_eq!(errno(res.into()), Some(libc::EPERM));
+        // A copy of the mount without the ones over it: OPEN_TREE_CLONE.
+        let res = libc::syscall(libc::SYS_open_tree, libc::AT_FDCWD, tmp.as_ptr(), 1);
+        assert_eq!(errno(res), Some(libc::EPERM));
+        let res = libc::syscall(libc::SYS_fsopen, tmpfs.as_ptr(), 0);
+        assert_eq!(errno(res), Some(libc::EPERM));
+    }
 }
 
 #[test]
@@ -279,4 +395,59 @@ fn other_protocols_are_refused() {
             Some(libc::EACCES)
         );
     });
+}
+
+/// The errors of sending with `flags` through `sendto`, `sendmsg` and
+/// `sendmmsg` on no socket: the filter answers first.
+fn send_errors(flags: libc::c_int) -> [Option<i32>; 3] {
+    // SAFETY: plain system calls with empty messages, failing on the file
+    // descriptor at the latest.
+    unsafe {
+        let mut msg: libc::mmsghdr = std::mem::zeroed();
+        [
+            libc::sendto(-1, std::ptr::null(), 0, flags, std::ptr::null(), 0) as libc::c_long,
+            libc::sendmsg(-1, &msg.msg_hdr, flags) as libc::c_long,
+            libc::sendmmsg(-1, &mut msg, 1, flags as _) as libc::c_long,
+        ]
+        .map(errno)
+    }
+}
+
+#[test]
+fn fast_open_is_refused_with_only_ports() {
+    // It connects without `connect`, the only call Landlock checks.
+    restricted("fast_open_is_refused_with_only_ports", "ports", || {
+        let fast_open = libc::MSG_FASTOPEN | libc::MSG_NOSIGNAL;
+        assert_eq!(send_errors(fast_open), [Some(libc::EOPNOTSUPP); 3]);
+        assert_eq!(send_errors(libc::MSG_NOSIGNAL), [Some(libc::EBADF); 3]);
+    });
+}
+
+#[test]
+fn fast_open_stays_with_any_network() {
+    restricted("fast_open_stays_with_any_network", "any", || {
+        assert_eq!(send_errors(libc::MSG_FASTOPEN), [Some(libc::EBADF); 3]);
+    });
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn x32_system_calls_kill() {
+    use std::os::unix::process::ExitStatusExt;
+
+    const NAME: &str = "x32_system_calls_kill";
+    // The x32 ABI shares the architecture value of x86_64: its system calls
+    // could get around the filter.
+    if std::env::var(CHILD).is_ok() {
+        restrict_syscalls(NetworkAccess::None).unwrap();
+        // SAFETY: getpid, through the x32 ABI, takes no argument.
+        unsafe { libc::syscall(libc::SYS_getpid | 0x4000_0000) };
+        return;
+    }
+    let status = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", NAME, "--nocapture"])
+        .env(CHILD, "none")
+        .status()
+        .unwrap();
+    assert_eq!(status.signal(), Some(libc::SIGSYS));
 }

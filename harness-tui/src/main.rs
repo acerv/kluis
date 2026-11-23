@@ -28,15 +28,15 @@ use genai::adapter::AdapterKind;
 use genai::chat::ChatMessage;
 use harness_core::oauth::flow::Login;
 use harness_core::oauth::{OAuthProvider, OAuthStore};
-use harness_core::tools::{is_read_only, run_worker, Executor, ToolContext};
+use harness_core::tools::{is_read_only, run_worker, Executor, OutputFiles, ToolContext};
 use harness_core::{
     provider_name, Agent, AuthConfig, CredentialSource, Error, Event, SessionData, SessionStore,
     Thinking, TokenUsage,
 };
 use harness_sandbox::{GitGuard, NetworkAccess};
 use harness_tui::{
-    check_git_guard, printable, retry_notice, summary, BannerLine, History, RunOptions, Session,
-    Status,
+    check_git_guard, printable, pruned_notice, retry_notice, summary, BannerLine, History,
+    PromptSaver, RunOptions, Session, Status, TRUNCATED_NOTICE,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -89,7 +89,8 @@ pub struct Args {
     #[arg(long, conflicts_with = "no_sandbox")]
     strict: bool,
 
-    /// Also allow reading this path (repeatable).
+    /// Also allow reading this path (repeatable). $HOME is empty but for
+    /// the allowed paths and the current folder.
     #[arg(long, value_name = "PATH")]
     allow_read: Vec<PathBuf>,
 
@@ -169,6 +170,9 @@ fn main() -> ExitCode {
 }
 
 fn launch(mut args: Args) -> Result<ExitCode, Error> {
+    // Root could undo the sandbox; also kept out of `--no-sandbox`, where
+    // commands would act as root on the whole host.
+    harness_sandbox::refuse_root()?;
     if args.apparmor_profile {
         print!("{}", sandbox::apparmor_profile()?);
         return Ok(ExitCode::SUCCESS);
@@ -384,6 +388,8 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
             std::env::vars_os(),
             &args.pass_env,
         ));
+        // In the real `/tmp` here: gone with the agent.
+        tools.bash.output_files = Some(OutputFiles::default());
         (Executor::Local(tools), None)
     } else {
         let (executor, guard) = sandbox::executor(&args, &cwd)?;
@@ -407,15 +413,18 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
 
     // Commands can write a repository only in a writable folder.
     let writable = !args.no_sandbox && (!args.strict || !args.allow_write.is_empty());
-    let git_warnings = if writable {
+    let mut warnings = if writable {
         sandbox::git_warnings(&cwd)
     } else {
         Vec::new()
     };
+    if !args.no_sandbox {
+        warnings.extend(sandbox::secrets_warning(&args, &cwd));
+    }
     let full_screen =
         args.prompt.is_empty() && io::stdin().is_terminal() && io::stdout().is_terminal();
     if !full_screen {
-        for warning in &git_warnings {
+        for warning in &warnings {
             eprintln!("warning: {warning}");
         }
     }
@@ -439,13 +448,14 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
             BannerLine::new(context_line(&agents)),
             BannerLine::new(session_line(session.as_ref(), agent.history().len())),
         ];
-        banner.extend(git_warnings.into_iter().map(BannerLine::warning));
+        banner.extend(warnings.into_iter().map(BannerLine::warning));
         let history = config::history_path().map(History::load);
         return harness_tui::run(
             agent,
             status,
             RunOptions {
                 session,
+                model: args.model,
                 history,
                 picker_entries,
                 adapters,
@@ -504,14 +514,14 @@ async fn prompt_and_persist(
     git_guard: Option<&mut GitGuard>,
     text: &str,
 ) -> Result<(), Error> {
-    let prev_len = agent.history().len();
+    let mut saver = PromptSaver::new(session, agent.history());
     let mut usage = TokenUsage::default();
     let mut context = 0;
-    let mut compacted = false;
     let mut in_compact = false;
     let mut changed_files = false;
     let res = agent
         .prompt(text, |event| {
+            saver.on_event(&event);
             let suppress_stdout =
                 in_compact && matches!(event, Event::TextDelta(_) | Event::Text(_));
             match event {
@@ -528,7 +538,6 @@ async fn prompt_and_persist(
                     in_compact = true;
                 }
                 Event::Compacted { .. } => {
-                    compacted = true;
                     in_compact = false;
                     context = 0;
                 }
@@ -545,15 +554,8 @@ async fn prompt_and_persist(
     // Before the git check: a program left running could recreate a
     // repository right after it.
     agent.stop_background().await;
-    if let Some(session) = session {
-        let save = if compacted {
-            session.record_compact(agent.history(), usage, context)
-        } else {
-            session.record_prompt(&agent.history()[prev_len..], usage, context)
-        };
-        if let Err(err) = save {
-            eprintln!("warning: could not save session: {err}");
-        }
+    if let Err(err) = saver.finish(agent.history(), usage, context) {
+        eprintln!("warning: could not save session: {err}");
     }
     for notice in check_git_guard(git_guard, changed_files) {
         eprintln!("{}", printable(&notice));
@@ -665,7 +667,13 @@ fn print_event(event: Event<'_>) {
         }
         // Already printed piece by piece: end its line.
         Event::Text(_) => println!(),
-        Event::TurnStart | Event::ReasoningDelta(_) | Event::ToolOutput(_) | Event::TurnEnd(_) => {}
+        Event::Messages(_)
+        | Event::Steered(_)
+        | Event::TurnStart
+        | Event::ReasoningDelta(_)
+        | Event::ToolOutput(_)
+        | Event::TurnEnd(_) => {}
+        Event::Truncated => eprintln!("{TRUNCATED_NOTICE}"),
         Event::ToolCall(call) => println!(
             "→ {} {}",
             printable(&call.fn_name),
@@ -684,11 +692,12 @@ fn print_event(event: Event<'_>) {
         Event::Compacting { context_tokens } => {
             eprintln!("[auto-compacting ({context_tokens} tokens)…]");
         }
-        Event::Compacted { before } => {
+        Event::Compacted { before, .. } => {
             eprintln!("[compacted {before} messages]");
         }
         Event::CompactFailed(err) => {
             eprintln!("[auto-compact failed: {}]", printable(err));
         }
+        Event::Pruned(count) => eprintln!("{}", pruned_notice(count)),
     }
 }

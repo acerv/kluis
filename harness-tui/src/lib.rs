@@ -27,16 +27,16 @@ use genai::adapter::AdapterKind;
 use genai::chat::ChatMessage;
 use harness_core::tools::{is_read_only, Question};
 use harness_core::{
-    Agent, Error, ModelInfo, ModelList, SessionData, SessionStore, SessionSummary, SessionWriter,
-    Thinking, TokenUsage,
+    Agent, Error, Event, ModelInfo, ModelList, SessionData, SessionStore, SessionSummary,
+    SessionWriter, Steering, Thinking, TokenUsage,
 };
 use harness_sandbox::GitGuard;
 use tokio::sync::mpsc;
 use tokio::time::{interval_at, Instant, MissedTickBehavior};
 
 pub use app::{
-    printable, retry_notice, summary, Action, AgentUpdate, App, BannerLine, SlashCommand,
-    VIEWPORT_HEIGHT,
+    printable, pruned_notice, retry_notice, summary, Action, AgentUpdate, App, BannerLine,
+    SlashCommand, TRUNCATED_NOTICE, VIEWPORT_HEIGHT,
 };
 pub use clipboard::{last_assistant_text, osc52_sequence};
 pub use history::{History, MAX_HISTORY};
@@ -115,6 +115,12 @@ impl Session {
         self.writer.append_usage(usage, context)
     }
 
+    /// Persist that the conversation went back to `messages`, to send a
+    /// prompt again.
+    pub fn record_rewind(&mut self, messages: &[ChatMessage]) -> io::Result<()> {
+        self.writer.append_compact(messages)
+    }
+
     /// Cumulative token usage recorded in this session.
     pub fn usage(&self) -> TokenUsage {
         self.usage
@@ -166,10 +172,72 @@ impl Session {
     }
 }
 
+/// Saves a prompt to its session while it runs, so that one stopped half
+/// way, even by a signal, loses the turn it was in at most.
+pub struct PromptSaver<'a> {
+    session: Option<&'a mut Session>,
+    /// Messages of the history that are saved.
+    saved: usize,
+    /// The first failure, reported when the prompt ends.
+    error: Option<io::Error>,
+}
+
+impl<'a> PromptSaver<'a> {
+    /// For a prompt about to join `history`, saved in `session` if any.
+    pub fn new(session: Option<&'a mut Session>, history: &[ChatMessage]) -> Self {
+        Self {
+            session,
+            saved: history.len(),
+            error: None,
+        }
+    }
+
+    /// Save what `event` says joined or replaced the history.
+    pub fn on_event(&mut self, event: &Event<'_>) {
+        let Some(session) = self.session.as_deref_mut() else {
+            return;
+        };
+        let res = match event {
+            Event::Messages(messages) => {
+                self.saved += messages.len();
+                session.writer.append_messages(messages)
+            }
+            Event::Compacted { messages, .. } => {
+                self.saved = messages.len();
+                session.context = 0;
+                session.writer.append_compact(messages)
+            }
+            _ => return,
+        };
+        if let Err(err) = res {
+            self.error.get_or_insert(err);
+        }
+    }
+
+    /// Save what is left of the prompt once it ended, with the `history`
+    /// it made, its token `usage`, and the tokens its last request sent
+    /// (0 when unknown).
+    pub fn finish(
+        self,
+        history: &[ChatMessage],
+        usage: TokenUsage,
+        context: u64,
+    ) -> io::Result<()> {
+        let Some(session) = self.session else {
+            return Ok(());
+        };
+        let res = session.record_prompt(&history[self.saved..], usage, context);
+        self.error.map_or(res, Err)
+    }
+}
+
 /// Optional state passed into [`run`].
 #[derive(Default)]
 pub struct RunOptions {
     pub session: Option<Session>,
+    /// The model the user asked for, which the session picked at startup
+    /// switches to: it keeps its own model otherwise.
+    pub model: Option<String>,
     pub history: Option<History>,
     pub picker_entries: Vec<SessionSummary>,
     pub adapters: Vec<AdapterKind>,
@@ -232,6 +300,7 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
     let mut agent = agent.with_asker(asker);
     let RunOptions {
         mut session,
+        model: mut startup_model,
         mut history,
         picker_entries,
         adapters,
@@ -267,11 +336,24 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
 
     draw(&mut term, &mut app)?;
 
+    // A prompt to send next, without waiting for the user.
+    let mut next_prompt = None;
     loop {
-        let Some(next) = events.next().await else {
-            break;
+        let action = match next_prompt.take() {
+            Some(prompt) => Action::Submit(prompt),
+            None => {
+                let Some(next) = events.next().await else {
+                    break;
+                };
+                handle_event_batch(next?, &mut events, &mut app)?
+            }
         };
-        match handle_event_batch(next?, &mut events, &mut app)? {
+        // Only for the picker shown at startup, until anything else is done.
+        let model = match action {
+            Action::None | Action::Redraw => None,
+            _ => startup_model.take(),
+        };
+        match action {
             Action::None | Action::Cancel | Action::Answer(_) => {}
             Action::Redraw => draw(&mut term, &mut app)?,
             Action::Quit => break,
@@ -285,6 +367,7 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
                     &mut questions,
                     session.as_mut(),
                     &mut models,
+                    &mut next_prompt,
                 )
                 .await?
                 {
@@ -293,7 +376,7 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
                 draw(&mut term, &mut app)?;
             }
             Action::ResumeSession(id) => {
-                resume_session(&id, &mut agent, &mut app, session.as_mut());
+                resume_session(&id, model, &mut agent, &mut app, session.as_mut());
                 draw(&mut term, &mut app)?;
             }
             Action::SelectModel(name) => {
@@ -303,6 +386,26 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
             Action::SetThinking(level) => {
                 agent.set_thinking(level);
                 draw(&mut term, &mut app)?;
+            }
+            Action::Shell(command) => {
+                if let Some(ref mut h) = history {
+                    let _ = h.record(&format!("!{command}"));
+                }
+                let quit = run_shell(
+                    &mut term,
+                    &mut app,
+                    &agent,
+                    &mut events,
+                    &mut questions,
+                    &command,
+                )
+                .await?;
+                let notices = after_commands(&agent, git_guard.as_mut(), true).await;
+                if quit {
+                    quit_with(term, &notices);
+                    return Ok(());
+                }
+                show_notices(&mut term, &mut app, &notices)?;
             }
             Action::Submit(prompt) => {
                 if let Some(ref mut h) = history {
@@ -320,21 +423,20 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
                     &prompt,
                 )
                 .await?;
-                // Before the git check: a program left running could
-                // recreate a repository right after it.
-                agent.stop_background().await;
-                let notices = check_git_guard(git_guard.as_mut(), turn.changed_files);
+                let notices = after_commands(&agent, git_guard.as_mut(), turn.changed_files).await;
                 if turn.quit {
-                    // Once the screen is back.
-                    drop(term);
-                    for notice in &notices {
-                        eprintln!("{}", printable(notice));
-                    }
+                    quit_with(term, &notices);
                     return Ok(());
                 }
-                if !notices.is_empty() {
-                    notices.iter().for_each(|notice| app.push_info(notice));
+                show_notices(&mut term, &mut app, &notices)?;
+                // Messages queued as the prompt ended make the next one; a
+                // cancelled prompt leaves them in the editor.
+                if turn.cancelled {
+                    restore_queued(&agent, &mut app);
                     draw(&mut term, &mut app)?;
+                } else {
+                    let queued = agent.steering().take().join("\n\n");
+                    next_prompt = (!queued.is_empty()).then_some(queued);
                 }
             }
         }
@@ -342,12 +444,104 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
     Ok(())
 }
 
+/// Take the last prompt out of the conversation, to send it again.
+fn retry(agent: &mut Agent, app: &mut App, session: Option<&mut Session>) -> Option<String> {
+    let Some(prompt) = agent.take_last_prompt() else {
+        app.push_info("[nothing to retry]");
+        return None;
+    };
+    if let Some(session) = session {
+        if let Err(err) = session.record_rewind(agent.history()) {
+            app.push_info(format!("[session save error: {err}]"));
+        }
+    }
+    app.push_info("[retrying the last prompt]");
+    Some(prompt)
+}
+
+/// Stop what commands left running in the background, then disable the git
+/// repositories they created when they may have changed files, returning
+/// what to tell the user.
+async fn after_commands(
+    agent: &Agent,
+    guard: Option<&mut GitGuard>,
+    changed_files: bool,
+) -> Vec<String> {
+    // Before the git check: a program left running could recreate a
+    // repository right after it.
+    agent.stop_background().await;
+    check_git_guard(guard, changed_files)
+}
+
+/// Leave the TUI, printing `notices` once the screen is back.
+fn quit_with(term: InlineTerminal, notices: &[String]) {
+    drop(term);
+    for notice in notices {
+        eprintln!("{}", printable(notice));
+    }
+}
+
+fn show_notices(term: &mut InlineTerminal, app: &mut App, notices: &[String]) -> Result<(), Error> {
+    if notices.is_empty() {
+        return Ok(());
+    }
+    notices.iter().for_each(|notice| app.push_info(notice));
+    draw(term, app)
+}
+
+/// Run the shell `command` the user typed after `!`, showing it as a `bash`
+/// call. Returns `true` if the user requested to quit.
+async fn run_shell(
+    term: &mut InlineTerminal,
+    app: &mut App,
+    agent: &Agent,
+    events: &mut EventReader,
+    questions: &mut mpsc::UnboundedReceiver<Question>,
+    command: &str,
+) -> Result<bool, Error> {
+    app.start_activity();
+    app.apply_update(AgentUpdate::ToolCall {
+        name: "bash".to_owned(),
+        args: serde_json::json!({ "command": command }).to_string(),
+    });
+    draw(term, app)?;
+
+    let (tx, rx) = mpsc::unbounded_channel::<AgentUpdate>();
+    let run = async {
+        let content = agent
+            .run_command(command, |chunk| {
+                let _ = tx.send(AgentUpdate::ToolOutput(chunk.to_owned()));
+            })
+            .await;
+        let _ = tx.send(AgentUpdate::ToolResult {
+            content,
+            details: None,
+        });
+        Ok(String::new())
+    };
+    let res = drive_agent(term, app, events, questions, rx, agent.steering(), run).await?;
+    if finish_activity(app, res) {
+        return Ok(true);
+    }
+    restore_queued(agent, app);
+    Ok(false)
+}
+
+/// Put messages typed while no prompt ran back in the editor.
+fn restore_queued(agent: &Agent, app: &mut App) {
+    let queued = agent.steering().take().join("\n\n");
+    if !queued.is_empty() {
+        app.restore_queued(&queued);
+    }
+}
+
 struct ModelCatalog {
     adapters: Vec<AdapterKind>,
     cached: Option<Vec<ModelInfo>>,
 }
 
-/// Execute a slash command. Returns `true` when the user requested to quit.
+/// Execute a slash command, setting `next_prompt` to a prompt to send.
+/// Returns `true` when the user requested to quit.
 #[allow(clippy::too_many_arguments)]
 async fn handle_slash(
     cmd: SlashCommand,
@@ -358,9 +552,11 @@ async fn handle_slash(
     questions: &mut mpsc::UnboundedReceiver<Question>,
     session: Option<&mut Session>,
     models: &mut ModelCatalog,
+    next_prompt: &mut Option<String>,
 ) -> Result<bool, Error> {
     match cmd {
         SlashCommand::Quit => return Ok(true),
+        SlashCommand::Retry => *next_prompt = retry(agent, app, session),
         SlashCommand::Compact(focus) => {
             if agent.history().is_empty() {
                 app.push_info("[nothing to compact]");
@@ -384,6 +580,7 @@ async fn handle_slash(
                 .map(|s| if messages == 0 { "new" } else { s.short_id() });
             app.push_info(app.status_text(label, messages));
         }
+        SlashCommand::Output => app.show_tool_output(),
         SlashCommand::Copy => match clipboard::last_assistant_text(agent.history()) {
             None => app.push_info("[nothing to copy]"),
             Some(text) => match clipboard::copy(&text) {
@@ -422,7 +619,7 @@ async fn handle_slash(
             app.push_info(format!("thinking: {}", agent.thinking()));
         }
         SlashCommand::Resume(Some(id)) => {
-            resume_session(&id, agent, app, session);
+            resume_session(&id, None, agent, app, session);
         }
         SlashCommand::Resume(None) => match session {
             None => app.push_info("[sessions disabled (--no-session)]"),
@@ -546,7 +743,14 @@ async fn fetch_models(
     }
 }
 
-fn resume_session(id: &str, agent: &mut Agent, app: &mut App, session: Option<&mut Session>) {
+/// Switch to the session `id`, with its own model unless `model` is given.
+fn resume_session(
+    id: &str,
+    model: Option<String>,
+    agent: &mut Agent,
+    app: &mut App,
+    session: Option<&mut Session>,
+) {
     let Some(session) = session else {
         app.push_info("[sessions disabled (--no-session)]");
         return;
@@ -563,8 +767,14 @@ fn resume_session(id: &str, agent: &mut Agent, app: &mut App, session: Option<&m
         return;
     }
     session.activate(&data);
-    agent.set_model(&data.meta.model);
-    app.set_model(&data.meta.model);
+    let model = model.unwrap_or_else(|| data.meta.model.clone());
+    if model != data.meta.model {
+        if let Err(err) = session.record_model(&model) {
+            app.push_info(format!("[session save error: {err}]"));
+        }
+    }
+    agent.set_model(&model);
+    app.set_model(&model);
     agent.set_history(data.messages);
     let short = short_id(&data.meta.id);
     app.push_info(format!(
@@ -579,7 +789,6 @@ fn resume_session(id: &str, agent: &mut Agent, app: &mut App, session: Option<&m
 #[derive(Default)]
 struct DriveStats {
     usage: TokenUsage,
-    compacted: bool,
     changed_files: bool,
 }
 
@@ -592,6 +801,7 @@ struct DriveResult {
 
 struct TurnOutcome {
     quit: bool,
+    cancelled: bool,
     changed_files: bool,
 }
 
@@ -603,6 +813,7 @@ async fn drive_agent(
     events: &mut EventReader,
     questions: &mut mpsc::UnboundedReceiver<Question>,
     mut rx: mpsc::UnboundedReceiver<AgentUpdate>,
+    steering: Steering,
     fut: impl std::future::Future<Output = Result<String, Error>>,
 ) -> Result<DriveResult, Error> {
     let mut cancelled = false;
@@ -635,8 +846,12 @@ async fn drive_agent(
                                 break;
                             }
                             Action::Redraw => draw(term, app)?,
+                            Action::Submit(text) => {
+                                steering.push(text);
+                                draw(term, app)?;
+                            }
                             Action::None
-                            | Action::Submit(_)
+                            | Action::Shell(_)
                             | Action::Slash(_)
                             | Action::ResumeSession(_)
                             | Action::SelectModel(_)
@@ -703,7 +918,7 @@ async fn run_turn(
     session: Option<&mut Session>,
     prompt: &str,
 ) -> Result<TurnOutcome, Error> {
-    let prev_len = agent.history().len();
+    let mut saver = PromptSaver::new(session, agent.history());
     let (tx, rx) = mpsc::unbounded_channel::<AgentUpdate>();
     let res = drive_agent(
         term,
@@ -711,32 +926,27 @@ async fn run_turn(
         events,
         questions,
         rx,
-        agent.prompt(prompt, |event| forward_event(&tx, event)),
+        agent.steering(),
+        agent.prompt(prompt, |event| {
+            saver.on_event(&event);
+            forward_event(&tx, event);
+        }),
     )
     .await?;
 
     let changed_files = res.stats.changed_files;
-    if let Some(session) = session {
-        let save = if res.stats.compacted {
-            session.record_compact(agent.history(), res.stats.usage, app.context())
-        } else {
-            let added = &agent.history()[prev_len..];
-            session.record_prompt(added, res.stats.usage, app.context())
-        };
-        if let Err(err) = save {
-            app.push_info(format!("[session save error: {err}]"));
-        }
+    let cancelled = res.cancelled;
+    if let Err(err) = saver.finish(agent.history(), res.stats.usage, app.context()) {
+        app.push_info(format!("[session save error: {err}]"));
     }
 
-    if finish_activity(app, res) {
-        return Ok(TurnOutcome {
-            quit: true,
-            changed_files,
-        });
+    let quit = finish_activity(app, res);
+    if !quit {
+        draw(term, app)?;
     }
-    draw(term, app)?;
     Ok(TurnOutcome {
-        quit: false,
+        quit,
+        cancelled,
         changed_files,
     })
 }
@@ -764,6 +974,7 @@ async fn run_compact(
         events,
         questions,
         rx,
+        agent.steering(),
         agent.compact(focus, |event| forward_event(&tx, event)),
     )
     .await?;
@@ -773,6 +984,8 @@ async fn run_compact(
     if finish_activity(app, res) {
         return Ok(true);
     }
+    // Messages typed meanwhile wait in the editor.
+    restore_queued(agent, app);
     if compacted {
         app.set_context(0);
         if let Some(session) = session {
@@ -854,7 +1067,6 @@ fn drain_updates(
 fn apply_and_track(update: AgentUpdate, app: &mut App, stats: &mut DriveStats) {
     match &update {
         AgentUpdate::TurnEnd(usage) => stats.usage += *usage,
-        AgentUpdate::Compacted(_) => stats.compacted = true,
         AgentUpdate::ToolCall { name, .. } if !is_read_only(name) => stats.changed_files = true,
         _ => {}
     }

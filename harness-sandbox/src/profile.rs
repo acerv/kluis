@@ -33,9 +33,8 @@ const DEFAULT_READ: &[&str] = &[
     "/etc/services",
 ];
 
-/// Processes and threads the sandboxed process and its children may run at once.
 /// Paths in the home folder that hold credentials, keys or private history,
-/// hidden even though the home folder is shown.
+/// hidden even inside a folder of it that is shown.
 const HOME_SECRETS: &[&str] = &[
     // Keys and passwords.
     ".ssh",
@@ -84,6 +83,26 @@ const HOME_SECRETS: &[&str] = &[
     ".config/discord",
 ];
 
+/// The credentials, keys and history of `$HOME` that exist at, below or
+/// above one of the `shown` paths: [`Sandbox::with_defaults`] hides them
+/// even so, which tells that a path shows more than it should.
+pub fn hidden_secrets(shown: &[PathBuf]) -> Vec<PathBuf> {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return Vec::new();
+    };
+    HOME_SECRETS
+        .iter()
+        .map(|secret| home.join(secret))
+        .filter(|secret| {
+            shown
+                .iter()
+                .any(|path| secret.starts_with(path) || path.starts_with(secret))
+                && secret.symlink_metadata().is_ok()
+        })
+        .collect()
+}
+
+/// Processes and threads the sandboxed process and its children may run at once.
 const MAX_PROCESSES: u64 = 1024;
 
 /// A quarter of the memory, the default size of the private `/tmp`.
@@ -121,9 +140,12 @@ impl Sandbox {
     /// [`Sandbox::container`].
     ///
     /// It may run programs from `/usr`, read the few `/etc` files commonly
-    /// needed, the CA certificates rustls uses, and `$HOME` without the
-    /// credentials, keys and history kept there, and change the
-    /// [`Options::write`] paths. By default it runs with no network
+    /// needed and the CA certificates rustls uses, and change the
+    /// [`Options::write`] paths. `$HOME` is an empty
+    /// [private folder](Sandbox::private_dir) showing only the
+    /// [`Options::read`] and [`Options::write`] paths below it, without the
+    /// credentials, keys and history kept there, unless one of them is
+    /// `$HOME` or above it. By default it runs with no network
     /// (`CLONE_NEWNET`); [`Options::connect`] enables Landlock TCP rules for
     /// those ports, and [`Options::network`] allows unrestricted network. It
     /// may run at most 1024 processes and threads (or
@@ -144,13 +166,21 @@ impl Sandbox {
         {
             sandbox = sandbox.allow_read(path);
         }
-        // Toolchains, caches and settings of the user live there.
+        // Credentials and keys of the user live there: show only what is
+        // allowed, and never the secrets, even inside an allowed folder.
         if let Some(home) = std::env::var_os("HOME").filter(|h| Path::new(h).is_dir()) {
             let home = PathBuf::from(home);
             for secret in HOME_SECRETS {
                 sandbox = sandbox.deny_read(home.join(secret));
             }
-            sandbox = sandbox.allow_read(home);
+            if !options
+                .read
+                .iter()
+                .chain(&options.write)
+                .any(|p| home.starts_with(p))
+            {
+                sandbox = sandbox.private_dir(home);
+            }
         }
         // The certificates rustls loads, found the same way it finds them,
         // including SSL_CERT_FILE and SSL_CERT_DIR.

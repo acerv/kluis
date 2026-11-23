@@ -2,10 +2,12 @@
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
 use std::fs::File;
-use std::io::{ErrorKind, Read};
+use std::io::{ErrorKind, Read, Seek};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use genai::chat::Tool;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -22,6 +24,10 @@ pub const DEFAULT_READ_LIMIT: usize = 500;
 pub const MAX_READ_BYTES: usize = 24 * 1024;
 
 const READ_CHUNK_BYTES: usize = 64 * 1024;
+
+/// Largest image [`ReadTool::run`] returns: encoded, it stays under the
+/// 5 MB providers take.
+pub const MAX_IMAGE_BYTES: u64 = 3_500_000;
 
 /// A call of the `read` tool.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,6 +51,17 @@ pub struct ReadOutput {
     /// Offset of the first line after the window, when there is one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_offset: Option<usize>,
+    /// The file, when it is an image, sent to the model apart from the
+    /// text.
+    #[serde(skip)]
+    pub image: Option<Image>,
+}
+
+/// An image file, base64 encoded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Image {
+    pub mime: String,
+    pub data: String,
 }
 
 impl ReadTool {
@@ -65,8 +82,8 @@ impl ReadTool {
     pub fn definition() -> Tool {
         Tool::new("read")
             .with_description(
-                "Read a text file. Use offset and limit to page through \
-                 large files.",
+                "Read a text file or an image. Use offset and limit to \
+                 page through large files.",
             )
             .with_schema(Self::schema())
     }
@@ -75,9 +92,10 @@ impl ReadTool {
     ///
     /// The window holds at most `limit` lines and [`MAX_READ_BYTES`] bytes,
     /// and ends at a line boundary; a first line larger than that is an
-    /// error. A leading `~` in the path expands to `$HOME`. Files containing
-    /// a NUL byte are rejected as binary; other invalid UTF-8 is replaced
-    /// with U+FFFD.
+    /// error. A leading `~` in the path expands to `$HOME`. A PNG, JPEG,
+    /// GIF or WebP image up to [`MAX_IMAGE_BYTES`] comes whole in
+    /// [`ReadOutput::image`]. Other files containing a NUL byte are rejected
+    /// as binary; other invalid UTF-8 is replaced with U+FFFD.
     ///
     /// Lines keep their original endings (`\n`, `\r\n` or none on the last
     /// line), so reading a whole file returns its exact text. A relative
@@ -130,6 +148,9 @@ fn read_window(
     stop: &AtomicBool,
 ) -> Result<ReadOutput, ToolError> {
     let mut file = File::open(path).map_err(|e| ToolError::io(display, e))?;
+    if let Some(mime) = image_type(&mut file).map_err(|e| ToolError::io(display, e))? {
+        return read_image(file, mime, display);
+    }
     let start = offset - 1;
     let end = start.saturating_add(limit);
 
@@ -206,6 +227,7 @@ fn read_window(
             total_lines: 0,
             truncated: false,
             next_offset: None,
+            image: None,
         });
     }
     if offset > total_lines {
@@ -229,6 +251,7 @@ fn read_window(
         total_lines,
         truncated,
         next_offset: truncated.then_some(last + 1),
+        image: None,
     })
 }
 
@@ -245,4 +268,41 @@ fn flush_line(
         content.push_str(&decoded);
     }
     line_buf.clear();
+}
+
+/// The MIME type of `file` when it is an image the providers take, from its
+/// first bytes. The file is read from its start again afterwards.
+fn image_type(file: &mut File) -> std::io::Result<Option<&'static str>> {
+    let mut head = Vec::with_capacity(12);
+    file.take(12).read_to_end(&mut head)?;
+    file.rewind()?;
+    Ok(match head.as_slice() {
+        [0x89, b'P', b'N', b'G', ..] => Some("image/png"),
+        [0xff, 0xd8, 0xff, ..] => Some("image/jpeg"),
+        [b'G', b'I', b'F', b'8', ..] => Some("image/gif"),
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P'] => Some("image/webp"),
+        _ => None,
+    })
+}
+
+fn read_image(file: File, mime: &str, display: &str) -> Result<ReadOutput, ToolError> {
+    let mut data = Vec::new();
+    file.take(MAX_IMAGE_BYTES + 1)
+        .read_to_end(&mut data)
+        .map_err(|e| ToolError::io(display, e))?;
+    if data.len() as u64 > MAX_IMAGE_BYTES {
+        return Err(ToolError::new(format!(
+            "{display}: image larger than {MAX_IMAGE_BYTES} bytes"
+        )));
+    }
+    Ok(ReadOutput {
+        content: format!("{mime} image of {} bytes, attached", data.len()),
+        total_lines: 0,
+        truncated: false,
+        next_offset: None,
+        image: Some(Image {
+            mime: mime.to_owned(),
+            data: STANDARD.encode(&data),
+        }),
+    })
 }

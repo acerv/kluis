@@ -107,11 +107,37 @@ pub fn tool_calls(calls: &[(&str, &str, Value)]) -> Reply {
 /// A truncated (`finish_reason = "length"`) reply with raw argument strings,
 /// allowing incomplete JSON to be streamed just like a `max_tokens` cut.
 pub fn truncated_tool_calls(calls: &[(&str, &str, &str)]) -> Reply {
+    truncated(raw_tool_calls(calls))
+}
+
+/// A reply calling tools with raw argument strings, as a model writing
+/// arguments that are not JSON does.
+pub fn raw_tool_calls(calls: &[(&str, &str, &str)]) -> Reply {
     let raw: Vec<_> = calls
         .iter()
         .map(|(id, name, args)| (*id, *name, (*args).to_owned()))
         .collect();
-    tool_calls_turn(&raw, Some("length".into()))
+    tool_calls_turn(&raw, None)
+}
+
+/// `reply`, cut at the token limit (`finish_reason = "length"`).
+pub fn truncated(reply: Reply) -> Reply {
+    match reply {
+        Reply::Turn {
+            reasoning,
+            text,
+            calls,
+            usage,
+            ..
+        } => Reply::Turn {
+            reasoning,
+            text,
+            calls,
+            finish_reason: Some("length".into()),
+            usage,
+        },
+        _ => panic!("only a whole turn can be cut"),
+    }
 }
 
 fn tool_calls_turn(calls: &[(&str, &str, String)], finish_reason: Option<String>) -> Reply {

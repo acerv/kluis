@@ -317,6 +317,37 @@ async fn sandbox_executor_streams_multiplexes_isolates_and_respawns() {
     assert_eq!(recovered.content, r#"{"pong":true}"#);
 }
 
+#[tokio::test(start_paused = true)]
+async fn worker_that_does_not_stop_background_is_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let sandbox = Sandbox::with_defaults(&Options {
+        write: vec![dir.path().to_path_buf()],
+        ..Options::default()
+    })
+    .no_network();
+    let exec = Executor::sandbox(SandboxConfig {
+        sandbox,
+        program: PathBuf::from("/bin/bash"),
+        args: vec!["-c".into(), MOCK_WORKER_SCRIPT.into()],
+        cwd: dir.path().to_path_buf(),
+        env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+    })
+    .unwrap();
+    let cancels = || async {
+        let (resp, _) = exec.execute(&call("c", "cancels", json!({})), |_| {}).await;
+        resp.content
+    };
+    let hang = call("h", "hang", json!({}));
+    let cancelled = tokio::time::timeout(Duration::from_millis(50), exec.execute(&hang, |_| {}));
+    assert!(cancelled.await.is_err());
+    assert_eq!(cancels().await, r#"{"cancels":1}"#);
+
+    // The mock never answers, as a worker a command stopped: the wait
+    // ends, and the next call gets a new worker, which saw no cancel.
+    exec.stop_background().await;
+    assert_eq!(cancels().await, r#"{"cancels":0}"#);
+}
+
 #[test]
 fn sandbox_executor_fails_fast_when_worker_exits_before_ready() {
     let dir = tempfile::tempdir().unwrap();

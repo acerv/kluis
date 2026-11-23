@@ -14,8 +14,9 @@
   <a href="https://www.kernel.org/"><img alt="Platform: Linux" src="https://img.shields.io/badge/platform-Linux-9cf"></a>
 </p>
 
-K-Luis is the project, `kl` is the command you run. The Cargo crates and
-`HARNESS_*` environment variables use the internal name, `harness`.
+> **Note:** K-Luis is an experimental project, born from the idea of studying
+> AI integration inside projects and building something useful for my daily
+> routine job.
 
 ## Why K-Luis
 
@@ -71,7 +72,7 @@ thinking = "medium"               # default, low, medium or high
 code_theme = "solarized-dark"     # colors of code blocks
 
 [sandbox]
-read = ["/etc/ssl"]               # extra folders the model can read
+read = ["~/.cargo", "~/.rustup"]  # extra folders the model can read; $HOME is empty otherwise
 write = ["~/scratch"]             # extra folders the model can change
 deny = ["~/work/secrets"]         # folders to hide
 connect = [5432]                  # TCP ports commands can reach, e.g. a local PostgreSQL

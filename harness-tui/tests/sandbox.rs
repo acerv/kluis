@@ -94,3 +94,20 @@ fn strict_checks_explicit_paths() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("/no/such/folder"), "{stderr}");
 }
+
+#[test]
+fn refuses_to_run_as_root() {
+    for args in [&[][..], &["--no-sandbox"]] {
+        // Root in a user namespace of its own, which needs no privilege.
+        let out = Command::new("unshare")
+            .arg("--map-root-user")
+            .arg(env!("CARGO_BIN_EXE_kl"))
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{args:?}");
+        assert!(stderr.contains("refusing to run as root"), "{stderr}");
+    }
+}

@@ -34,7 +34,7 @@ mod write;
 use genai::chat::{ToolCall, ToolResponse};
 
 pub use bash::{
-    BashContext, BashOutput, BashTool, PreExec, DEFAULT_BASH_TIMEOUT, MAX_BASH_LINES,
+    BashContext, BashOutput, BashTool, OutputFiles, PreExec, DEFAULT_BASH_TIMEOUT, MAX_BASH_LINES,
     MAX_BASH_LOG_BYTES, MAX_BASH_OUTPUT,
 };
 pub use diff::{Diff, DiffHunk, DiffLine, DIFF_CONTEXT_LINES, MAX_DIFF_BYTES};
@@ -48,7 +48,7 @@ pub use find::{FindOutput, FindTool, DEFAULT_FIND_LIMIT, MAX_FIND_BYTES};
 pub use grep::{GrepOutput, GrepTool, DEFAULT_GREP_LIMIT, MAX_GREP_BYTES, MAX_GREP_LINE_CHARS};
 pub use ls::{LsOutput, LsTool, DEFAULT_LS_LIMIT, MAX_LS_BYTES};
 pub use protocol::{Request, Response, MAX_FRAME_BYTES};
-pub use read::{ReadOutput, ReadTool, DEFAULT_READ_LIMIT, MAX_READ_BYTES};
+pub use read::{Image, ReadOutput, ReadTool, DEFAULT_READ_LIMIT, MAX_IMAGE_BYTES, MAX_READ_BYTES};
 pub use sandbox::{ExecError, SandboxConfig, SandboxExecutor};
 pub use todo::{
     Todo, TodoOutput, TodoStatus, TodoTool, MAX_TODO_ITEMS, MAX_TODO_ITEM_BYTES, TODO_TOOL,

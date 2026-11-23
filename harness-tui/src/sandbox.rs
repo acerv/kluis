@@ -3,7 +3,8 @@
 
 //! Sandboxed tool executor for `kl`: spawns `kl --tool-executor` inside a
 //! `hakoniwa` container with the current folder writable (or read-only with
-//! `--strict`), `~/.kluis` hidden, zero API keys in the environment, and no
+//! `--strict`), an empty private `$HOME` showing only the allowed paths,
+//! `~/.kluis` hidden, zero API keys in the environment, and no
 //! network unless `--network` or `--allow-connect` is given. Commands
 //! cannot create user namespaces, nor Unix sockets without `--network`.
 
@@ -161,6 +162,25 @@ pub fn executor(args: &Args, cwd: &Path) -> Result<(Executor, GitGuard), Error> 
         env,
     })?;
     Ok((executor, git_guard))
+}
+
+/// Warning about the credentials below the paths `args` show in `cwd`: they
+/// stay hidden, but a path holding them shows more than commands need.
+pub fn secrets_warning(args: &Args, cwd: &Path) -> Option<String> {
+    let mut shown = args.allow_read.clone();
+    shown.extend_from_slice(&args.allow_write);
+    shown.push(cwd.to_path_buf());
+    let hidden: Vec<_> = harness_sandbox::hidden_secrets(&shown)
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect();
+    (!hidden.is_empty()).then(|| {
+        format!(
+            "the folders shown to commands hold credentials, which stay hidden: {}. \
+             Show narrower folders instead",
+            hidden.join(", ")
+        )
+    })
 }
 
 /// Warnings about what git on the host would run of what commands write in

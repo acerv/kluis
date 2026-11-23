@@ -13,9 +13,11 @@ indexmap.workspace = true
 nix.workspace = true
 openssl-probe.workspace = true
 rustix.workspace = true
+seccompiler.workspace = true
 thiserror.workspace = true
 walkdir.workspace = true
 
 [dev-dependencies]
+caps.workspace = true
 libc.workspace = true
 tempfile.workspace = true

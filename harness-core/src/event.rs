@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use genai::chat::{ToolCall, ToolResponse, Usage};
+use genai::chat::{ChatMessage, ToolCall, ToolResponse, Usage};
 
 use crate::tools::ToolDetails;
 
@@ -15,6 +15,13 @@ use crate::tools::ToolDetails;
 /// need to keep beyond the callback.
 #[derive(Debug, Clone, Copy)]
 pub enum Event<'a> {
+    /// Messages that joined the history since the last such event of the
+    /// prompt, sent before every turn so they can be saved while it runs.
+    /// The ones after the last event are left to read from the history.
+    Messages(&'a [ChatMessage]),
+    /// A message the user queued with [`Steering`](crate::Steering) joined
+    /// the conversation.
+    Steered(&'a str),
     /// The agent is asking the model for its next turn.
     TurnStart,
     /// A piece of the model's reasoning, as it arrives, from models that
@@ -36,6 +43,8 @@ pub enum Event<'a> {
     /// The model finished its turn, with the tokens it used when the
     /// provider reports them. Not sent for a turn cut short.
     TurnEnd(Option<&'a Usage>),
+    /// The final text of the model was cut at its token limit.
+    Truncated,
     /// A tool call the model made, before it runs.
     ToolCall(&'a ToolCall),
     /// A cleaned chunk of live output from a running tool (e.g. `bash`).
@@ -46,8 +55,16 @@ pub enum Event<'a> {
     /// Context usage crossed the auto-compaction threshold and the agent is
     /// summarizing the conversation.
     Compacting { context_tokens: u64 },
-    /// Auto-compaction replaced `before` messages with a compact summary.
-    Compacted { before: usize },
+    /// Auto-compaction replaced `before` messages with `messages`, now the
+    /// whole history.
+    Compacted {
+        before: usize,
+        messages: &'a [ChatMessage],
+    },
     /// Auto-compaction failed and left the existing history untouched.
     CompactFailed(&'a str),
+    /// The request was too large for the model: the outputs of this many
+    /// tool calls before the last turn were removed from the history, and
+    /// the model is asked again.
+    Pruned(usize),
 }

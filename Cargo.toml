@@ -23,6 +23,7 @@ harness-tui = { path = "harness-tui" }
 genai = "0.7.5"
 anstyle-parse = "1"
 base64 = "0.23"
+caps = "0.5"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4", features = ["derive", "env"] }
 crossterm = "0.29"
@@ -44,6 +45,7 @@ openssl-probe = "0.2"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm_0_29", "layout-cache", "std"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 rustix = { version = "1", default-features = false, features = ["fs", "std"] }
+seccompiler = "0.5"
 scopeguard = { version = "1", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

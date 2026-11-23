@@ -1,36 +1,26 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
+mod common;
+
 use std::net::{Ipv4Addr, TcpListener};
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-use hakoniwa::Output;
+use common::{connect, errno, fs_size, inside, list, read, write};
 use harness_sandbox::{Options, Sandbox};
+use libc::{EACCES, ENETUNREACH, ENOENT, EROFS};
+use nix::sys::resource::{getrlimit, Resource};
 
-/// Run `script` with bash in the default container for `options`.
-fn run(options: &Options, script: &str) -> Output {
+/// The default sandbox for `options`.
+fn sandbox(options: &Options) -> Sandbox {
     Sandbox::with_defaults(options)
-        .container()
-        .unwrap()
-        .command("/bin/bash")
-        .args(["-c", script])
-        .env("PATH", "/usr/bin:/bin")
-        .output()
-        .unwrap()
-}
-
-fn stderr(out: &Output) -> String {
-    String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
 fn server() -> (TcpListener, u16) {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     (listener, port)
-}
-
-fn connect(port: u16) -> String {
-    format!("exec 3<>/dev/tcp/127.0.0.1/{port}")
 }
 
 #[test]
@@ -41,47 +31,49 @@ fn programs_run_in_given_folders() {
         ..Options::default()
     };
 
-    let script = format!(
-        "cd {} && echo hi > f.txt && cat f.txt && date >/dev/null",
-        dir.path().display()
+    let file = dir.path().join("f.txt");
+    let out = sandbox(&options)
+        .container()
+        .unwrap()
+        .command("/usr/bin/touch")
+        .arg(file.to_str().unwrap())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
     );
-    let out = run(&options, &script);
-    assert!(out.status.success(), "{}", stderr(&out));
-    assert_eq!(out.stdout, b"hi\n");
+    assert!(file.exists());
 }
 
 #[test]
 fn dns_files_are_readable() {
     for path in ["/etc/hosts", "/etc/os-release", "/etc/services"] {
         if Path::new(path).exists() {
-            let out = run(&Options::default(), &format!("cat {path}"));
-            assert!(out.status.success(), "{path}: {}", stderr(&out));
+            let res = inside(&sandbox(&Options::default()), read(Path::new(path)));
+            assert!(res.is_ok(), "{path}: {res:?}");
         }
     }
     if Path::new("/etc/alternatives").exists() {
-        let out = run(&Options::default(), "ls /etc/alternatives");
-        assert!(out.status.success(), "{}", stderr(&out));
+        let dir = Path::new("/etc/alternatives");
+        inside(&sandbox(&Options::default()), list(dir)).unwrap();
     }
 }
 
 #[test]
 fn cannot_write_elsewhere() {
-    let out = run(&Options::default(), "touch /f /usr/f");
-    assert!(!out.status.success());
-    let err = stderr(&out);
-    assert_eq!(err.matches("Read-only file system").count(), 2, "{err}");
+    for path in ["/f", "/usr/f"] {
+        let res = inside(&sandbox(&Options::default()), write(Path::new(path), "x"));
+        assert_eq!(errno(res), EROFS, "{path}");
+    }
 }
 
 #[test]
 fn default_isolates_all_network() {
     let (_server, port) = server();
-    let out = run(&Options::default(), &connect(port));
-    assert!(!out.status.success());
-    assert!(
-        stderr(&out).contains("Network is unreachable"),
-        "{}",
-        stderr(&out)
-    );
+    let res = inside(&sandbox(&Options::default()), connect(port));
+    assert_eq!(errno(res), ENETUNREACH);
 }
 
 #[test]
@@ -93,14 +85,9 @@ fn connect_to_listed_ports_only() {
         ..Options::default()
     };
 
-    let out = run(&options, &connect(port));
-    assert!(out.status.success(), "{}", stderr(&out));
-    let out = run(&options, &connect(other));
-    assert!(
-        stderr(&out).contains("Permission denied"),
-        "{}",
-        stderr(&out)
-    );
+    let sandbox = sandbox(&options);
+    inside(&sandbox, connect(port)).unwrap();
+    assert_eq!(errno(inside(&sandbox, connect(other))), EACCES);
 }
 
 #[test]
@@ -111,39 +98,86 @@ fn network_option_allows_any_port() {
         ..Options::default()
     };
 
-    let out = run(&options, &connect(port));
-    assert!(out.status.success(), "{}", stderr(&out));
+    inside(&sandbox(&options), connect(port)).unwrap();
+}
+
+/// A folder in the real `$HOME` holding `file.txt`.
+fn home_folder() -> tempfile::TempDir {
+    let dir = tempfile::tempdir_in(std::env::var("HOME").unwrap()).unwrap();
+    std::fs::write(dir.path().join("file.txt"), "data").unwrap();
+    dir
 }
 
 #[test]
-fn home_is_read_only() {
-    let home = std::env::var("HOME").unwrap();
-    let script = format!("ls -A {home} | wc -l; touch {home}/.harness-test");
-    let out = run(&Options::default(), &script);
+fn home_shows_allowed_paths_only() {
+    let shown = home_folder();
+    let hidden = home_folder();
+    let options = Options {
+        read: vec![shown.path().into()],
+        ..Options::default()
+    };
 
-    let entries = std::fs::read_dir(&home).unwrap().count();
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout).trim(),
-        entries.to_string()
-    );
-    assert!(
-        stderr(&out).contains("Read-only file system"),
-        "{}",
-        stderr(&out)
-    );
+    let sandbox = sandbox(&options);
+    let file = shown.path().join("file.txt");
+    assert_eq!(inside(&sandbox, read(&file)).unwrap(), "data");
+    assert_eq!(errno(inside(&sandbox, list(hidden.path()))), ENOENT);
+}
+
+#[test]
+fn home_is_private_and_writable() {
+    let hidden = home_folder();
+    let name = hidden.path().file_name().unwrap().to_str().unwrap();
+    let home = Path::new(&std::env::var("HOME").unwrap()).to_path_buf();
+    let path = home.clone();
+    let out = inside(&sandbox(&Options::default()), move || {
+        let names = list(&path)()?;
+        let mode = std::fs::metadata(&path)?.permissions().mode() & 0o777;
+        std::fs::write(path.join(".harness-test"), "x")?;
+        Ok(format!("{names}{mode:o}"))
+    })
+    .unwrap();
+
+    assert!(!out.contains(name), "{out}");
+    assert!(out.ends_with("700"), "{out}");
+    assert!(!home.join(".harness-test").exists());
+}
+
+#[test]
+fn whole_home_can_be_shown_without_secrets() {
+    let dir = home_folder();
+    let secret = Path::new(&std::env::var("HOME").unwrap()).join(".ssh");
+    let options = Options {
+        read: vec![std::env::var("HOME").unwrap().into()],
+        ..Options::default()
+    };
+
+    let sandbox = sandbox(&options);
+    let file = dir.path().join("file.txt");
+    assert_eq!(inside(&sandbox, read(&file)).unwrap(), "data");
+    let res = inside(&sandbox, write(&dir.path().join("x"), "x"));
+    assert_eq!(errno(res), EROFS);
+    if secret.exists() {
+        assert_eq!(inside(&sandbox, list(&secret)).unwrap(), "");
+    }
+}
+
+/// How many processes the user can have in the sandbox for `options`.
+fn max_processes(options: &Options) -> u64 {
+    let out = inside(&sandbox(options), || {
+        Ok(getrlimit(Resource::RLIMIT_NPROC)?.0.to_string())
+    });
+    out.unwrap().parse().unwrap()
 }
 
 #[test]
 fn processes_are_limited() {
-    let out = run(&Options::default(), "ulimit -u");
-    assert_eq!(out.stdout, b"1024\n");
+    assert_eq!(max_processes(&Options::default()), 1024);
 
     let options = Options {
         max_processes: Some(256),
         ..Options::default()
     };
-    let out = run(&options, "ulimit -u");
-    assert_eq!(out.stdout, b"256\n");
+    assert_eq!(max_processes(&options), 256);
 }
 
 #[test]
@@ -152,9 +186,7 @@ fn tmp_size_is_configurable() {
         tmp_size: Some(1 << 20),
         ..Options::default()
     };
-    let out = run(&options, "df --output=size -B1 /tmp | tail -1");
-    let size: u64 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap();
-    assert_eq!(size, 1 << 20);
+    assert_eq!(tmp_size(&options), 1 << 20);
 }
 
 #[test]
@@ -181,23 +213,15 @@ fn denied_paths_are_hidden() {
         deny: vec![secret.clone(), dir.path().join("missing")],
         ..Options::default()
     };
-    let script = format!("cat {} && ls {}", public.display(), secret.display());
-    let out = run(&options, &script);
-    assert!(!out.status.success());
-    assert_eq!(out.stdout, b"public\n");
-    assert!(
-        stderr(&out).contains("Permission denied"),
-        "{}",
-        stderr(&out)
-    );
+    let sandbox = sandbox(&options);
+    assert_eq!(inside(&sandbox, read(&public)).unwrap(), "public\n");
+    assert_eq!(errno(inside(&sandbox, list(&secret))), EACCES);
 }
 
 /// Size of the private `/tmp` for `options`, in bytes.
 fn tmp_size(options: &Options) -> u64 {
-    let out = run(options, "stat -f -c '%b %S' /tmp");
-    let text = String::from_utf8_lossy(&out.stdout);
-    let (blocks, size) = text.trim().split_once(' ').unwrap();
-    blocks.parse::<u64>().unwrap() * size.parse::<u64>().unwrap()
+    let size = inside(&sandbox(options), fs_size(Path::new("/tmp")));
+    size.unwrap().parse().unwrap()
 }
 
 #[test]

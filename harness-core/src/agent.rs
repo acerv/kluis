@@ -6,12 +6,13 @@
 use std::borrow::Cow;
 use std::fmt;
 use std::str::FromStr;
+use std::sync::{Arc, Mutex};
 
 use futures_util::StreamExt;
 use genai::adapter::AdapterKind;
 use genai::chat::{
-    CacheControl, ChatMessage, ChatOptions, ChatRequest, ChatRole, ChatStreamEvent, ContentPart,
-    MessageContent, ReasoningEffort, StopReason, ToolCall, ToolResponse, Usage,
+    Binary, CacheControl, ChatMessage, ChatOptions, ChatRequest, ChatRole, ChatStreamEvent,
+    ContentPart, MessageContent, ReasoningEffort, StopReason, ToolCall, ToolResponse, Usage,
 };
 use genai::{Client, ModelIden};
 use serde::{Deserialize, Serialize};
@@ -20,10 +21,11 @@ use uuid::Uuid;
 
 use crate::models::{discover_models, ModelList};
 use crate::oauth::OAuthLogins;
-use crate::retry::{EndedEarly, RetryPolicy};
+use crate::retry::{is_too_large, EndedEarly, RetryPolicy};
 use crate::session::TokenUsage;
 use crate::tools::{
-    self, error_response, AskTool, Asker, Executor, FetchTool, HostTools, ToolContext,
+    self, error_response, AskTool, Asker, Executor, FetchTool, HostTools, Image, ToolContext,
+    ToolDetails,
 };
 use crate::Event;
 
@@ -134,6 +136,33 @@ pub struct Agent {
     retry: RetryPolicy,
     max_turns: Option<usize>,
     auto_compact_tokens: Option<u64>,
+    steering: Steering,
+}
+
+/// Messages of the user waiting to join a running prompt, shared with the
+/// UI that queues them: see [`Agent::steering`].
+#[derive(Debug, Clone, Default)]
+pub struct Steering(Arc<Mutex<Vec<String>>>);
+
+impl Steering {
+    /// Queue `text` for the running prompt.
+    pub fn push(&self, text: impl Into<String>) {
+        self.queue().push(text.into());
+    }
+
+    /// Take the queued messages, oldest first.
+    pub fn take(&self) -> Vec<String> {
+        std::mem::take(&mut *self.queue())
+    }
+
+    fn is_empty(&self) -> bool {
+        self.queue().is_empty()
+    }
+
+    fn queue(&self) -> std::sync::MutexGuard<'_, Vec<String>> {
+        // The queue stays whole even if a thread panicked holding it.
+        self.0.lock().unwrap_or_else(|err| err.into_inner())
+    }
 }
 
 impl Agent {
@@ -157,6 +186,7 @@ impl Agent {
             retry: RetryPolicy::default(),
             max_turns: Some(DEFAULT_MAX_TURNS),
             auto_compact_tokens: Some(DEFAULT_AUTO_COMPACT_TOKENS),
+            steering: Steering::default(),
         }
     }
 
@@ -292,10 +322,44 @@ impl Agent {
         self
     }
 
+    /// Remove the last message the user sent, and all after it, from the
+    /// history, returning its text to send it again.
+    pub fn take_last_prompt(&mut self) -> Option<String> {
+        let idx = self.req.messages.iter().rposition(|m| {
+            m.role == ChatRole::User
+                && m.content.is_text_only()
+                && m.content.first_text() != Some(IMAGES)
+        })?;
+        let text = self.req.messages[idx].content.joined_texts()?;
+        self.req.messages.truncate(idx);
+        Some(text)
+    }
+
     /// The conversation so far: user messages, model turns and tool
     /// results, oldest first.
     pub fn history(&self) -> &[ChatMessage] {
         &self.req.messages
+    }
+
+    /// A handle to queue user messages while a prompt runs: they join the
+    /// conversation before the next model turn, after the results of the
+    /// tool calls running. A prompt whose model answered goes on with them
+    /// rather than ending; the ones queued once it ended stay queued.
+    pub fn steering(&self) -> Steering {
+        self.steering.clone()
+    }
+
+    /// Run the shell `command` for the user as the `bash` tool runs it for
+    /// the model, in the sandbox when the tools run there, and return its
+    /// result. Nothing joins the conversation.
+    pub async fn run_command(&self, command: &str, on_output: impl FnMut(&str)) -> String {
+        let call = ToolCall {
+            call_id: "user".to_owned(),
+            fn_name: "bash".to_owned(),
+            fn_arguments: json!({ "command": command }),
+            thought_signatures: None,
+        };
+        self.executor.execute(&call, on_output).await.0.content
     }
 
     /// Stop what tool commands left running in the background, when they
@@ -309,6 +373,9 @@ impl Agent {
     ///
     /// `on_event` is called as the work progresses.
     ///
+    /// A turn without text nor tool calls is an error, and stays out of the
+    /// history: providers refuse it when sent back.
+    ///
     /// Dropping the future, e.g. to cancel, keeps the history valid for the
     /// next prompt: the user message stays, a reply cut while streaming is
     /// left out, tool results already made stay, and the calls left get a
@@ -318,6 +385,8 @@ impl Agent {
         text: &str,
         mut on_event: impl FnMut(Event<'_>),
     ) -> Result<String, Error> {
+        // Where the messages not yet reported with `Event::Messages` start.
+        let mut saved = self.req.messages.len();
         self.req.messages.push(ChatMessage::user(text));
 
         let mut turns = 0usize;
@@ -333,8 +402,41 @@ impl Agent {
             }
             turns += 1;
 
+            for text in self.steering.take() {
+                on_event(Event::Steered(&text));
+                self.req.messages.push(ChatMessage::user(text));
+            }
+            if saved < self.req.messages.len() {
+                on_event(Event::Messages(&self.req.messages[saved..]));
+                saved = self.req.messages.len();
+            }
             on_event(Event::TurnStart);
-            let turn = self.next_turn_retrying(None, &mut on_event).await?;
+            let turn = match self.next_turn_retrying(None, &mut on_event).await {
+                Ok(turn) => turn,
+                // Tool outputs are most of a long conversation: drop the
+                // old ones and ask again, until none is left to drop.
+                Err(err) if is_too_large(err.as_ref()) => {
+                    match prune_tool_outputs(&mut self.req.messages) {
+                        0 => return Err(format!("{err} (start a new conversation)").into()),
+                        pruned => {
+                            on_event(Event::Pruned(pruned));
+                            turns -= 1;
+                            continue;
+                        }
+                    }
+                }
+                Err(err) => return Err(err),
+            };
+            if !turn.content.contains_text() && !turn.content.contains_tool_call() {
+                // Kept out of the history: providers refuse an empty turn.
+                on_event(Event::TurnEnd(turn.usage.as_ref()));
+                return Err(if turn.truncated {
+                    "the reply was cut at the token limit before any text"
+                } else {
+                    "the model returned an empty reply"
+                }
+                .into());
+            }
 
             // Keep the whole assistant turn (text, tool calls, thought
             // signatures) in the history, before any tool result.
@@ -364,11 +466,17 @@ impl Agent {
             // A copy, so results can join the history while calls run.
             let calls: Vec<ToolCall> = content.tool_calls().into_iter().cloned().collect();
             if calls.is_empty() {
-                let answer = answer.to_owned();
-                if need_compact {
-                    self.run_auto_compact(context, false, &mut on_event).await;
+                if turn.truncated {
+                    on_event(Event::Truncated);
                 }
-                return Ok(answer);
+                // Messages queued meanwhile go on with the prompt.
+                if self.steering.is_empty() {
+                    let answer = answer.to_owned();
+                    if need_compact {
+                        self.run_auto_compact(context, false, &mut on_event).await;
+                    }
+                    return Ok(answer);
+                }
             }
 
             let same_as_prev = !turn.truncated
@@ -385,11 +493,26 @@ impl Agent {
             prev_assistant_idx = (!turn.truncated).then_some(assistant_idx);
             let repeated_turn = repeat_streak >= MAX_REPEATED_CALLS;
 
+            // Why the call at `idx` must not run, if so.
+            let refusal = |idx: usize, call: &ToolCall| {
+                if turn.truncated {
+                    Some(TRUNCATED)
+                } else if turn.invalid.contains(&call.call_id) {
+                    Some(INVALID_ARGUMENTS)
+                } else if repeated_turn || is_within_turn_repeat(&calls[..idx], call) {
+                    Some(REPEATED_CALL)
+                } else {
+                    None
+                }
+            };
             let mut pending = Pending {
                 messages: &mut self.req.messages,
                 calls: &calls,
                 answered: 0,
             };
+            // Images the tools read, sent after all the results: a message
+            // between them would split the turn.
+            let mut images = Vec::new();
             let mut idx = 0;
             while idx < calls.len() {
                 // Batch consecutive read-only calls (`read`, `ls`, `find`, `grep`)
@@ -408,10 +531,8 @@ impl Agent {
                 if batch.len() == 1 {
                     let call = &batch[0];
                     on_event(Event::ToolCall(call));
-                    let (resp, details) = if turn.truncated {
-                        (error_response(call, TRUNCATED), None)
-                    } else if repeated_turn || is_within_turn_repeat(&calls[..idx], call) {
-                        (error_response(call, REPEATED_CALL), None)
+                    let (resp, details) = if let Some(why) = refusal(idx, call) {
+                        (error_response(call, why), None)
                     } else if let Some(resp) = self.host.run(call).await {
                         (resp, None)
                     } else {
@@ -419,16 +540,17 @@ impl Agent {
                             .execute(call, |chunk| on_event(Event::ToolOutput(chunk)))
                             .await
                     };
+                    let details = take_image(details, &mut images);
                     on_event(Event::ToolResult(&resp, details.as_ref()));
                     pending.answer(resp);
                 } else {
                     let executor = &self.executor;
                     let results = futures_util::future::join_all(batch.iter().enumerate().map(
                         |(off, call)| {
-                            let repeated = is_within_turn_repeat(&calls[..idx + off], call);
+                            let refusal = refusal(idx + off, call);
                             async move {
-                                if repeated {
-                                    (error_response(call, REPEATED_CALL), None)
+                                if let Some(why) = refusal {
+                                    (error_response(call, why), None)
                                 } else {
                                     executor.execute(call, |_| {}).await
                                 }
@@ -437,6 +559,7 @@ impl Agent {
                     ))
                     .await;
                     for (call, (resp, details)) in batch.iter().zip(results) {
+                        let details = take_image(details, &mut images);
                         on_event(Event::ToolCall(call));
                         on_event(Event::ToolResult(&resp, details.as_ref()));
                         pending.answer(resp);
@@ -446,9 +569,16 @@ impl Agent {
             }
             drop(pending);
             drop(calls);
+            if !images.is_empty() {
+                images.insert(0, ContentPart::Text(IMAGES.to_owned()));
+                self.req
+                    .messages
+                    .push(ChatMessage::user(MessageContent::from_parts(images)));
+            }
 
             if need_compact && self.max_turns.is_none_or(|limit| turns < limit) {
                 if self.run_auto_compact(context, true, &mut on_event).await {
+                    saved = self.req.messages.len();
                     prev_assistant_idx = None;
                     repeat_streak = 0;
                 }
@@ -482,7 +612,10 @@ impl Agent {
         on_event(Event::Compacting { context_tokens });
         match self.compact_inner(None, continue_task, on_event).await {
             Ok(_) => {
-                on_event(Event::Compacted { before });
+                on_event(Event::Compacted {
+                    before,
+                    messages: &self.req.messages,
+                });
                 true
             }
             Err(err) => {
@@ -665,22 +798,32 @@ impl Agent {
                     on_event(Event::ReasoningDelta(&chunk.content))
                 }
                 ChatStreamEvent::End(end) => {
-                    let mut content = end.captured_content.unwrap_or_default();
                     let truncated = end
                         .captured_stop_reason
                         .as_ref()
                         .is_some_and(StopReason::is_max_tokens);
-                    if truncated {
-                        // Replace incomplete/unparsed arguments with `{}` so
-                        // providers requiring an object accept the next turn.
-                        for part in content.iter_mut() {
-                            if let ContentPart::ToolCall(call) = part {
-                                if !call.fn_arguments.is_object() {
-                                    call.fn_arguments = json!({});
+                    let mut parts = end.captured_content.unwrap_or_default().into_parts();
+                    // Providers refuse blank text and arguments that are
+                    // not an object when the turn is sent back.
+                    parts.retain(
+                        |part| !matches!(part, ContentPart::Text(t) if t.trim().is_empty()),
+                    );
+                    let mut invalid = Vec::new();
+                    for part in &mut parts {
+                        if let ContentPart::ToolCall(call) = part {
+                            let args = &mut call.fn_arguments;
+                            if !args.is_object() {
+                                // No arguments at all is a call without any.
+                                let none = args.is_null()
+                                    || args.as_str().is_some_and(|s| s.trim().is_empty());
+                                if !none {
+                                    invalid.push(call.call_id.clone());
                                 }
+                                *args = json!({});
                             }
                         }
                     }
+                    let mut content = MessageContent::from_parts(parts);
                     // Unless the turn already carries its reasoning, e.g.
                     // signed, which an extra part would break.
                     let carried = content
@@ -696,6 +839,7 @@ impl Agent {
                         content,
                         usage: end.captured_usage,
                         truncated,
+                        invalid,
                     });
                 }
                 _ => {}
@@ -709,6 +853,8 @@ struct Turn {
     content: MessageContent,
     usage: Option<Usage>,
     truncated: bool,
+    /// Ids of the tool calls whose arguments were not a JSON object.
+    invalid: Vec<String>,
 }
 
 /// Whether the provider wants the reasoning of a turn back in the next
@@ -778,9 +924,23 @@ const CANCELLED: &str = "cancelled; the call may have partly run";
 /// Result of a tool call from a response truncated by the token limit.
 const TRUNCATED: &str = "response was truncated at max_tokens; tool call was not executed — please re-issue it (split into smaller calls if needed)";
 
+/// Result of a tool call whose arguments could not be read.
+const INVALID_ARGUMENTS: &str =
+    "arguments were not a valid JSON object; tool call was not executed, please re-issue it";
+
 /// Result of a tool call repeated identically too many times in a row.
 const REPEATED_CALL: &str =
     "repeated identical tool call; try a different approach or explain the blocker";
+
+/// Text before the images the tools read.
+const IMAGES: &str = "The images read by the tools above, in order:";
+
+/// Output of an old tool call removed to fit the context window.
+const PRUNED: &str =
+    r#"{"error":"output removed to fit the context window; run the tool again if needed"}"#;
+
+/// An old image removed to fit the context window.
+const PRUNED_IMAGE: &str = "[image removed to fit the context window]";
 
 const COMPACT_PROMPT: &str = "Summarize the conversation so far as a concise handoff so work can \
 continue seamlessly without the earlier messages. Do not call any tools. Include:\n\
@@ -799,6 +959,42 @@ fn compact_instruction(focus: Option<&str>) -> Cow<'static, str> {
             "{COMPACT_PROMPT}\n\nPay particular attention to: {focus}"
         )),
         None => Cow::Borrowed(COMPACT_PROMPT),
+    }
+}
+
+/// Replace the outputs of the tool calls before the last model turn with
+/// [`PRUNED`], returning how many were replaced. The last turn's outputs
+/// stay: the model needs them to go on.
+fn prune_tool_outputs(messages: &mut [ChatMessage]) -> usize {
+    let Some(last) = messages.iter().rposition(|m| m.role == ChatRole::Assistant) else {
+        return 0;
+    };
+    let mut pruned = 0;
+    for part in messages[..last]
+        .iter_mut()
+        .flat_map(|m| m.content.iter_mut())
+    {
+        match part {
+            ContentPart::ToolResponse(resp) if resp.content.len() > PRUNED.len() => {
+                resp.content = PRUNED.to_owned();
+            }
+            ContentPart::Binary(_) => *part = ContentPart::Text(PRUNED_IMAGE.to_owned()),
+            _ => continue,
+        }
+        pruned += 1;
+    }
+    pruned
+}
+
+/// Move an image a tool read from its `details` to `images`, as the model
+/// gets it in a message of its own.
+fn take_image(details: Option<ToolDetails>, images: &mut Vec<ContentPart>) -> Option<ToolDetails> {
+    match details {
+        Some(ToolDetails::Image(Image { mime, data })) => {
+            images.push(ContentPart::Binary(Binary::from_base64(mime, data, None)));
+            None
+        }
+        details => details,
     }
 }
 

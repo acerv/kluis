@@ -47,9 +47,15 @@ pub fn resize(master: &OwnedFd, rows: u16, cols: u16) {
 /// Run the TUI without sandbox on the terminal `slave`, as its controlling
 /// terminal, with `home` as `$HOME`.
 pub fn spawn_tui(home: &Path, slave: &OwnedFd) -> Child {
+    spawn_tui_with(home, slave, &[])
+}
+
+/// Like [`spawn_tui`], with more arguments.
+pub fn spawn_tui_with(home: &Path, slave: &OwnedFd, args: &[&str]) -> Child {
     let stdio = || Stdio::from(slave.try_clone().unwrap());
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_kl"));
     cmd.arg("--no-sandbox")
+        .args(args)
         .env("HOME", home)
         .env("TERM", "xterm")
         .env_remove("HARNESS_CONFIG")

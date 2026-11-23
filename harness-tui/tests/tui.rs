@@ -2,12 +2,13 @@
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use genai::chat::{ChatMessage, ContentPart, MessageContent, ToolCall, ToolResponse};
+use genai::chat::{ChatMessage, ChatRole, ContentPart, MessageContent, ToolCall, ToolResponse};
 use harness_core::tools::{Diff, DiffHunk, DiffLine};
-use harness_core::{TokenUsage, ToolDetails};
+use harness_core::{Event as AgentEvent, SessionStore, TokenUsage, ToolDetails};
 use harness_tui::{
     code_theme, flush_scrollback, last_assistant_text, osc52_sequence, Action, AgentUpdate, App,
-    BannerLine, SlashCommand, Status, Theme, VIEWPORT_HEIGHT,
+    BannerLine, PromptSaver, Session, SlashCommand, Status, Theme, TRUNCATED_NOTICE,
+    VIEWPORT_HEIGHT,
 };
 use ratatui::backend::TestBackend;
 use ratatui::style::{Color, Modifier, Style};
@@ -233,7 +234,9 @@ fn slash_commands() {
             "/compact keep api",
             Action::Slash(SlashCommand::Compact(Some("keep api".into()))),
         ),
+        ("/retry", Action::Slash(SlashCommand::Retry)),
         ("/status", Action::Slash(SlashCommand::Status)),
+        ("/output", Action::Slash(SlashCommand::Output)),
         ("/quit", Action::Slash(SlashCommand::Quit)),
         ("/help", Action::Slash(SlashCommand::Help)),
     ] {
@@ -402,8 +405,8 @@ fn streaming_lines_thinking_and_tool_diff() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(joined.contains("edit src/main.rs"), "{joined}");
-    assert!(joined.contains("-old"), "{joined}");
-    assert!(joined.contains("+new"), "{joined}");
+    assert!(joined.contains("1 -old"), "{joined}");
+    assert!(joined.contains("1 +new"), "{joined}");
     flush_scrollback(&mut term, tool_lines).unwrap();
 
     // Text streams line-by-line above the editor, with partial line live.
@@ -794,7 +797,7 @@ fn slash_command_autocomplete_popup_and_tab_completion() {
     assert!(screen.contains("/resume [id]"), "{screen}");
     assert!(screen.contains("/copy"), "{screen}");
     assert!(screen.contains("/new"), "{screen}");
-    assert!(screen.contains("/quit"), "{screen}");
+    assert!(screen.contains("/retry"), "{screen}");
     for cell in term.backend().buffer().content() {
         assert_eq!(cell.fg, Color::Reset, "fg set under NO_COLOR: {cell:?}");
         assert!(cell.modifier.is_empty(), "modifier set: {cell:?}");
@@ -1340,6 +1343,10 @@ fn replay_restores_an_unfinished_plan() {
     );
     assert!(render_text(&draw_app(&app)).contains("▸ build"));
 
+    // Another conversation takes its place, as with `/resume`: not its plan.
+    app.replay_history(&[ChatMessage::user("something else")]);
+    assert!(!render_text(&draw_app(&app)).contains("Plan"));
+
     let mut app = App::new("model", status(), Theme::new(false));
     app.replay_history(&call("c1", DONE, r#"{"count":1}"#));
     assert!(!render_text(&draw_app(&app)).contains("Plan"));
@@ -1361,6 +1368,55 @@ fn replay_restores_an_unfinished_plan() {
         scrollback[..2],
         ["todo", "  error: only one todo can be in_progress"]
     );
+}
+
+#[test]
+fn reply_cut_at_the_token_limit_shows_notice() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    app.start_prompt("go");
+    app.apply_update(AgentUpdate::Text("half a sen".into()));
+    app.apply_update(AgentUpdate::Truncated);
+    let lines = scrollback_lines(&mut app);
+    assert!(lines.iter().any(|l| l == TRUNCATED_NOTICE), "{lines:?}");
+}
+
+#[test]
+fn prompt_is_saved_while_it_runs() {
+    let home = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(home.path(), home.path());
+    let roles = |store: &SessionStore| -> Vec<ChatRole> {
+        let data = store.latest().unwrap().unwrap();
+        data.messages.into_iter().map(|m| m.role).collect()
+    };
+    let writer = store.create("model");
+    let mut session = Session::new(store.clone(), writer, TokenUsage::default(), 0);
+    let turn = [ChatMessage::user("go"), ChatMessage::assistant("on it")];
+
+    // A prompt stopped half way, as by a signal, keeps what it reported.
+    let mut saver = PromptSaver::new(Some(&mut session), &[]);
+    saver.on_event(&AgentEvent::Messages(&turn));
+    drop(saver);
+    assert_eq!(roles(&store), [ChatRole::User, ChatRole::Assistant]);
+
+    // A compaction replaces what was saved, and the end adds the rest.
+    let summary = [ChatMessage::user("summary")];
+    let history = [summary[0].clone(), turn[1].clone()];
+    let mut saver = PromptSaver::new(Some(&mut session), &turn);
+    saver.on_event(&AgentEvent::Compacted {
+        before: 2,
+        messages: &summary,
+    });
+    let usage = TokenUsage {
+        input: 7,
+        output: 3,
+        cached: 0,
+    };
+    saver.finish(&history, usage, 7).unwrap();
+    assert_eq!(roles(&store), [ChatRole::User, ChatRole::Assistant]);
+    let data = store.latest().unwrap().unwrap();
+    assert_eq!(data.messages[0].content.first_text(), Some("summary"));
+    assert_eq!((data.usage, data.context), (usage, 7));
+    assert_eq!((session.usage(), session.context()), (usage, 7));
 }
 
 #[test]
@@ -1704,4 +1760,311 @@ fn markdown_tables_scale_to_terminal_width_with_multiline_cells() {
             line.to_string()
         );
     }
+}
+
+fn scrollback_lines(app: &mut App) -> Vec<String> {
+    app.take_scrollback()
+        .iter()
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn run_tool(app: &mut App, name: &str, args: &str, content: &str, details: Option<ToolDetails>) {
+    app.apply_update(AgentUpdate::ToolCall {
+        name: name.into(),
+        args: args.into(),
+    });
+    app.apply_update(AgentUpdate::ToolResult {
+        content: content.into(),
+        details,
+    });
+}
+
+#[test]
+fn edit_diff_shows_line_numbers_of_each_hunk() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    app.start_prompt("fix it");
+    app.take_scrollback();
+
+    let diff = Diff {
+        hunks: vec![
+            DiffHunk {
+                old_start: 8,
+                old_lines: 2,
+                new_start: 8,
+                new_lines: 2,
+                lines: vec![
+                    DiffLine::Context("keep".into()),
+                    DiffLine::Removed("old".into()),
+                    DiffLine::Added("new".into()),
+                ],
+            },
+            DiffHunk {
+                old_start: 120,
+                old_lines: 1,
+                new_start: 120,
+                new_lines: 2,
+                lines: vec![
+                    DiffLine::Context("tail".into()),
+                    DiffLine::Added("more".into()),
+                ],
+            },
+        ],
+        first_changed_line: Some(9),
+        truncated: false,
+    };
+    let args = r#"{"path":"a.rs","edits":[]}"#;
+    run_tool(
+        &mut app,
+        "edit",
+        args,
+        r#"{"replacements":2}"#,
+        Some(ToolDetails::Edit(diff)),
+    );
+
+    assert_eq!(
+        scrollback_lines(&mut app),
+        [
+            "edit a.rs",
+            "    8  keep",
+            "    9 -old",
+            "    9 +new",
+            "    ⋮",
+            "  120  tail",
+            "  121 +more",
+            "",
+        ]
+    );
+}
+
+#[test]
+fn output_command_shows_the_whole_last_tool_output() {
+    let mut app = App::new("model", status(), Theme::new(false));
+
+    app.show_tool_output();
+    assert_eq!(scrollback_lines(&mut app), ["[no tool output]"]);
+
+    app.start_prompt("run it");
+    app.take_scrollback();
+    let output: Vec<String> = (1..=20).map(|i| format!("line {i}")).collect();
+    let content = serde_json::json!({ "exit_code": 0, "output": output.join("\n") });
+    run_tool(
+        &mut app,
+        "bash",
+        r#"{"command":"seq"}"#,
+        &content.to_string(),
+        None,
+    );
+    let preview = scrollback_lines(&mut app);
+    assert!(
+        preview.contains(&"  … +12 more lines".to_owned()),
+        "{preview:#?}"
+    );
+    assert!(!preview.contains(&"  line 20".to_owned()), "{preview:#?}");
+
+    app.show_tool_output();
+    let full = scrollback_lines(&mut app);
+    assert_eq!(full[0], "bash seq");
+    let expected: Vec<String> = output.iter().map(|l| format!("  {l}")).collect();
+    assert_eq!(full[1..21], expected[..]);
+
+    // Lists show one item per line; other results show their JSON.
+    run_tool(
+        &mut app,
+        "ls",
+        "{}",
+        r#"{"entries":["a/","b"],"total":2}"#,
+        None,
+    );
+    app.take_scrollback();
+    app.show_tool_output();
+    assert_eq!(scrollback_lines(&mut app), ["ls .", "  a/", "  b", ""]);
+
+    run_tool(
+        &mut app,
+        "read",
+        r#"{"path":"x"}"#,
+        r#"{"error":"no such file"}"#,
+        None,
+    );
+    app.take_scrollback();
+    app.show_tool_output();
+    assert_eq!(scrollback_lines(&mut app), ["read x", "  no such file", ""]);
+
+    // A long edit diff is shown whole.
+    let lines = (0..30).map(|i| DiffLine::Added(format!("l{i}"))).collect();
+    let diff = Diff {
+        hunks: vec![DiffHunk {
+            old_start: 0,
+            old_lines: 0,
+            new_start: 1,
+            new_lines: 30,
+            lines,
+        }],
+        first_changed_line: Some(1),
+        truncated: false,
+    };
+    let args = r#"{"path":"a.rs","edits":[]}"#;
+    run_tool(
+        &mut app,
+        "edit",
+        args,
+        r#"{"replacements":1}"#,
+        Some(ToolDetails::Edit(diff)),
+    );
+    let preview = scrollback_lines(&mut app);
+    assert!(
+        preview.contains(&"  … +6 more diff lines".to_owned()),
+        "{preview:#?}"
+    );
+    app.show_tool_output();
+    let full = scrollback_lines(&mut app);
+    assert_eq!(full.len(), 32, "{full:#?}");
+    assert_eq!(full[30], "  30 +l29");
+
+    // A new session forgets it.
+    app.reset_session();
+    app.show_tool_output();
+    assert_eq!(scrollback_lines(&mut app), ["[no tool output]"]);
+}
+
+#[test]
+fn output_command_shows_a_restored_tool_output() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    let history = vec![
+        ChatMessage::user("check main"),
+        ChatMessage::assistant(MessageContent::from_parts(vec![ContentPart::ToolCall(
+            ToolCall {
+                call_id: "c1".into(),
+                fn_name: "read".into(),
+                fn_arguments: serde_json::json!({ "path": "src/main.rs" }),
+                thought_signatures: None,
+            },
+        )])),
+        ChatMessage::from(ToolResponse::new(
+            "c1",
+            r#"{"content":"fn main() {}\n","total_lines":1}"#,
+        )),
+    ];
+    app.replay_history(&history);
+    app.take_scrollback();
+
+    app.show_tool_output();
+    assert_eq!(
+        scrollback_lines(&mut app),
+        ["read src/main.rs", "  fn main() {}", ""]
+    );
+
+    // Replaying a history without tools forgets the previous output.
+    app.replay_history(&[ChatMessage::user("hi")]);
+    app.take_scrollback();
+    app.show_tool_output();
+    assert_eq!(scrollback_lines(&mut app), ["[no tool output]"]);
+}
+
+#[test]
+fn tool_output_keeps_tab_indentation() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    app.start_prompt("run it");
+    app.take_scrollback();
+
+    let content = serde_json::json!({ "exit_code": 0, "output": "a\tb\n\tc" });
+    run_tool(
+        &mut app,
+        "bash",
+        r#"{"command":"x"}"#,
+        &content.to_string(),
+        None,
+    );
+    assert_eq!(
+        scrollback_lines(&mut app),
+        ["bash x", "  a   b", "      c", ""]
+    );
+
+    let diff = Diff {
+        hunks: vec![DiffHunk {
+            old_start: 1,
+            old_lines: 1,
+            new_start: 1,
+            new_lines: 1,
+            lines: vec![
+                DiffLine::Removed("\treturn 0;".into()),
+                DiffLine::Added("\treturn 1;".into()),
+            ],
+        }],
+        first_changed_line: Some(1),
+        truncated: false,
+    };
+    let args = r#"{"path":"a.c","edits":[]}"#;
+    run_tool(
+        &mut app,
+        "edit",
+        args,
+        r#"{"replacements":1}"#,
+        Some(ToolDetails::Edit(diff)),
+    );
+    assert_eq!(
+        scrollback_lines(&mut app),
+        ["edit a.c", "  1 -    return 0;", "  1 +    return 1;", ""]
+    );
+}
+
+#[test]
+fn messages_typed_while_busy_are_queued_and_shown_when_they_join() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    let mut terminal = inline_terminal(60, 20);
+    app.start_prompt("work");
+    let _ = app.take_scrollback();
+
+    // Commands wait for the prompt to end, keeping their text.
+    type_str(&mut app, "/status");
+    assert_eq!(app.handle_event(key(KeyCode::Enter)), Action::None);
+    app.handle_event(ctrl('u'));
+
+    type_str(&mut app, "use tabs");
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Submit("use tabs".into())
+    );
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert!(render_text(&terminal).contains("1 queued"));
+
+    app.apply_update(AgentUpdate::Steered("use tabs".into()));
+    let rows: Vec<String> = app
+        .take_scrollback()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert!(rows.contains(&"> use tabs".to_owned()), "{rows:?}");
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert!(!render_text(&terminal).contains("queued"));
+}
+
+#[test]
+fn queued_messages_of_a_cancelled_prompt_go_back_to_the_editor() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    app.start_prompt("work");
+    type_str(&mut app, "typed");
+    app.cancel_prompt();
+
+    app.restore_queued("queued");
+
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Submit("queued\n\ntyped".into())
+    );
+}
+
+#[test]
+fn bang_runs_a_shell_command_and_waits_while_busy() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    type_str(&mut app, "! git status");
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Shell("git status".into())
+    );
+
+    app.start_prompt("work");
+    type_str(&mut app, "!ls");
+    assert_eq!(app.handle_event(key(KeyCode::Enter)), Action::None);
 }

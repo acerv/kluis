@@ -5,6 +5,7 @@
 //!
 //! Only Linux is supported.
 
+use std::borrow::Cow;
 use std::ffi::OsString;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::hash::Hasher;
@@ -17,7 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::Utc;
 use fnv::FnvHasher;
-use genai::chat::{ChatMessage, ChatRole, Usage};
+use genai::chat::{ChatMessage, ChatRole, ContentPart, Usage};
 use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -292,7 +293,8 @@ impl SessionStore {
     }
 }
 
-/// Append-only writer for a single `.jsonl` session file.
+/// Writer for a single `.jsonl` session file, which only grows but on
+/// compaction.
 #[derive(Debug)]
 pub struct SessionWriter {
     id: String,
@@ -321,20 +323,26 @@ impl SessionWriter {
         }
         let writer = self.writer()?;
         for message in messages {
+            let message = &without_images(message);
             write_entry(writer, &SessionEntryRef::Message { message })?;
         }
         writer.flush()
     }
 
-    /// Record a conversation compaction, replacing prior messages when the
-    /// session is loaded while keeping the file append-only.
+    /// Record that `messages` replace the conversation, as after a
+    /// compaction or when a prompt is sent again.
+    ///
+    /// The file is rewritten without the messages they replace, but the
+    /// first one, which names the session in the list, so that long sessions
+    /// stay small enough to load.
     pub fn append_compact(&mut self, messages: &[ChatMessage]) -> io::Result<()> {
-        if messages.is_empty() {
+        if messages.is_empty() && !self.initialized {
             return Ok(());
         }
-        let writer = self.writer()?;
-        write_entry(writer, &SessionEntryRef::Compact { messages })?;
-        writer.flush()
+        // The header, and the end of a file cut by a crash repaired.
+        self.writer()?.flush()?;
+        self.file = None;
+        rewrite_compacted(&self.path, messages)
     }
 
     /// Record the token usage of a prompt and the tokens its last request
@@ -597,6 +605,74 @@ fn prompt_preview(text: &str) -> String {
         }
     }
     out
+}
+
+/// The `type` of a session file line.
+#[derive(Deserialize)]
+struct EntryKind {
+    #[serde(rename = "type")]
+    kind: String,
+}
+
+/// Rewrite the session file at `path` with what loading it still needs, its
+/// header, first message, model changes and token usage, then `messages`
+/// replacing the conversation. The new file replaces the old one only once
+/// complete.
+fn rewrite_compacted(path: &Path, messages: &[ChatMessage]) -> io::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    let res = write_compacted(path, &tmp, messages).and_then(|()| fs::rename(&tmp, path));
+    if res.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    res
+}
+
+fn write_compacted(path: &Path, tmp: &Path, messages: &[ChatMessage]) -> io::Result<()> {
+    let old = BufReader::new(File::open(path)?);
+    let mut out = BufWriter::new(
+        OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(tmp)?,
+    );
+    let mut first_message = true;
+    for line in old.split(b'\n') {
+        let line = line?;
+        // Corrupt lines, as one cut by a crash, are left out.
+        let keep = match serde_json::from_slice::<EntryKind>(&line) {
+            Ok(entry) => match entry.kind.as_str() {
+                "message" => std::mem::take(&mut first_message),
+                "compact" => false,
+                _ => true,
+            },
+            Err(_) => false,
+        };
+        if keep {
+            out.write_all(&line)?;
+            out.write_all(b"\n")?;
+        }
+    }
+    write_entry(&mut out, &SessionEntryRef::Compact { messages })?;
+    out.into_inner()?.sync_all()
+}
+
+/// `message` with its images replaced by a note: they would soon make the
+/// file too large to load.
+fn without_images(message: &ChatMessage) -> Cow<'_, ChatMessage> {
+    if !message.content.contains_binary() {
+        return Cow::Borrowed(message);
+    }
+    let mut message = message.clone();
+    for part in message.content.iter_mut() {
+        if matches!(part, ContentPart::Binary(_)) {
+            *part = ContentPart::Text("[image not saved]".to_owned());
+        }
+    }
+    Cow::Owned(message)
 }
 
 fn write_entry(writer: &mut BufWriter<File>, entry: &SessionEntryRef<'_>) -> io::Result<()> {

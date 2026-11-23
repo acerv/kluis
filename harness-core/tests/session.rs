@@ -436,3 +436,86 @@ fn compact_entry_replaces_loaded_history_and_keeps_first_prompt() {
     assert_eq!(summary.first_prompt.as_deref(), Some("original task"));
     assert_eq!(summary.message_count, 4);
 }
+
+#[test]
+fn images_are_left_out_of_the_file() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(root.path(), cwd.path());
+    let mut writer = store.create("deepseek-chat");
+
+    let image = ContentPart::Binary(genai::chat::Binary::from_base64("image/png", "AAAA", None));
+    let message = ChatMessage::user(MessageContent::from_parts(vec![
+        ContentPart::Text("see".to_owned()),
+        image,
+    ]));
+    writer.append_messages(&[message]).unwrap();
+
+    let loaded = store.latest().unwrap().expect("saved session");
+    let content = &loaded.messages[0].content;
+    assert!(!content.contains_binary());
+    assert_eq!(content.texts(), ["see", "[image not saved]"]);
+}
+
+#[test]
+fn compaction_rewrites_the_file_without_the_replaced_messages() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(root.path(), cwd.path());
+    let mut writer = store.create("deepseek-chat");
+    writer
+        .append_messages(&[
+            ChatMessage::user("original task"),
+            ChatMessage::assistant("a long reply"),
+        ])
+        .unwrap();
+    writer.append_model("gpt-4o").unwrap();
+
+    writer
+        .append_compact(&[ChatMessage::user("summary"), ChatMessage::assistant("ok")])
+        .unwrap();
+    writer
+        .append_messages(&[ChatMessage::user("next")])
+        .unwrap();
+
+    let file = std::fs::read_to_string(writer.path()).unwrap();
+    assert!(!file.contains("a long reply"), "{file}");
+    let dir = writer.path().parent().unwrap();
+    assert!(!dir.read_dir().unwrap().any(|e| {
+        let name = e.unwrap().file_name();
+        name.to_string_lossy().ends_with(".tmp")
+    }));
+    let loaded = store.load(writer.id()).unwrap();
+    assert_eq!(loaded.meta.model, "gpt-4o");
+    let texts: Vec<_> = loaded
+        .messages
+        .iter()
+        .map(|m| m.content.first_text().unwrap())
+        .collect();
+    assert_eq!(texts, ["summary", "ok", "next"]);
+    let summary = &store.list().unwrap()[0];
+    assert_eq!(summary.first_prompt.as_deref(), Some("original task"));
+    assert_eq!(summary.message_count, 3);
+}
+
+#[test]
+fn going_back_to_no_messages_is_saved() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(root.path(), cwd.path());
+    let mut writer = store.create("deepseek-chat");
+    writer.append_compact(&[]).unwrap();
+    assert!(!writer.path().exists());
+
+    writer
+        .append_messages(&[ChatMessage::user("task"), ChatMessage::assistant("done")])
+        .unwrap();
+    writer.append_compact(&[]).unwrap();
+    writer
+        .append_messages(&[ChatMessage::user("task again")])
+        .unwrap();
+
+    let loaded = store.load(writer.id()).unwrap();
+    assert_eq!(loaded.messages.len(), 1);
+    assert_eq!(loaded.messages[0].content.first_text(), Some("task again"));
+}

@@ -6,7 +6,10 @@ mod common;
 use std::path::Path;
 use std::time::Duration;
 
-use common::{text, thinking, tool_calls, truncated_tool_calls, with_usage, MockModel, Reply};
+use common::{
+    raw_tool_calls, text, thinking, tool_calls, truncated, truncated_tool_calls, with_usage,
+    MockModel, Reply,
+};
 use genai::adapter::AdapterKind;
 use genai::chat::{ChatMessage, ChatRole};
 use harness_core::tools::ToolContext;
@@ -167,6 +170,8 @@ async fn tool_call_round_trip() {
     let answer = agent
         .prompt("run it", |event| {
             events.push(match event {
+                Event::Messages(messages) => format!("messages {}", messages.len()),
+                Event::Truncated => "truncated".to_owned(),
                 Event::TurnStart => "start".to_owned(),
                 Event::TurnEnd(usage) => format!("end {:?}", usage.and_then(|u| u.total_tokens)),
                 Event::ReasoningDelta(text) => format!("reason {text}"),
@@ -177,8 +182,10 @@ async fn tool_call_round_trip() {
                 Event::ToolResult(resp, _) => format!("result {}", resp.call_id),
                 Event::Retry { reason, .. } => format!("retry {reason}"),
                 Event::Compacting { context_tokens } => format!("compacting {context_tokens}"),
-                Event::Compacted { before } => format!("compacted {before}"),
+                Event::Compacted { before, .. } => format!("compacted {before}"),
                 Event::CompactFailed(err) => format!("compact_failed {err}"),
+                Event::Pruned(count) => format!("pruned {count}"),
+                Event::Steered(text) => format!("steered {text}"),
             })
         })
         .await
@@ -188,11 +195,13 @@ async fn tool_call_round_trip() {
     assert_eq!(
         events,
         [
+            "messages 1",
             "start",
             "end Some(15)",
             "call bash",
             "out hi",
             "result call_1",
+            "messages 2",
             "start",
             "delta ok",
             "text ok",
@@ -213,6 +222,73 @@ async fn tool_call_round_trip() {
     assert_eq!(results[0]["tool_call_id"], "call_1");
     let output: Value = serde_json::from_str(results[0]["content"].as_str().unwrap()).unwrap();
     assert_eq!(output["output"], "hi\n");
+}
+
+#[tokio::test]
+async fn empty_reply_fails_and_stays_out_of_the_history() {
+    let model = MockModel::start(vec![text(""), text(" \n"), text("hi")]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = agent(&model, dir.path());
+
+    for _ in 0..2 {
+        let err = prompt(&mut agent, "hello").await.unwrap_err();
+        assert!(err.to_string().contains("empty reply"), "{err}");
+    }
+    // Providers refuse an empty turn sent back: none is.
+    assert_eq!(roles(&agent), [ChatRole::User, ChatRole::User]);
+
+    assert_eq!(prompt(&mut agent, "again").await.unwrap(), "hi");
+    assert!(sent(&model.requests()[2], "assistant").is_empty());
+}
+
+#[tokio::test]
+async fn reply_cut_at_the_token_limit_is_reported() {
+    let model = MockModel::start(vec![truncated(text("half a sen")), text("whole")]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = agent(&model, dir.path());
+
+    for (answer, cut) in [("half a sen", true), ("whole", false)] {
+        let mut truncated = false;
+        let got = agent
+            .prompt("tell", |event| {
+                truncated |= matches!(event, Event::Truncated)
+            })
+            .await
+            .unwrap();
+        assert_eq!(got, answer);
+        assert_eq!(truncated, cut, "{answer}");
+    }
+}
+
+#[tokio::test]
+async fn malformed_arguments_fail_without_running_and_go_back_as_objects() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("here.txt"), "").unwrap();
+    let malformed = raw_tool_calls(&[
+        ("call_1", "write", r#"{"path":"new.txt","content":oops}"#),
+        ("call_2", "ls", r#"["."]"#),
+        // No arguments at all: a call without any.
+        ("call_3", "ls", ""),
+    ]);
+    let model = MockModel::start(vec![malformed, text("done")]).await;
+    let mut agent = agent(&model, dir.path());
+
+    assert_eq!(prompt(&mut agent, "go").await.unwrap(), "done");
+
+    assert!(!dir.path().join("new.txt").exists());
+    let history = agent.history();
+    for (message, id) in [(&history[2], "call_1"), (&history[3], "call_2")] {
+        let result = result_of(message, id).unwrap();
+        assert!(result.contains("not a valid JSON object"), "{result}");
+    }
+    let listed = result_of(&history[4], "call_3").unwrap();
+    assert!(listed.contains("here.txt"), "{listed}");
+
+    // Providers refuse arguments that are not an object when sent back.
+    let calls = sent(&model.requests()[1], "assistant")[0]["tool_calls"].clone();
+    for call in calls.as_array().unwrap() {
+        assert_eq!(call["function"]["arguments"], "{}", "{call}");
+    }
 }
 
 #[tokio::test]
@@ -1167,12 +1243,18 @@ async fn auto_compact_triggers_mid_loop_and_continues_task() {
     assert_eq!(agent.auto_compact(), Some(1_000));
 
     let mut events = Vec::new();
+    // What the events say the history is: enough to save it as it grows.
+    let mut saved = Vec::new();
     let answer = agent
         .prompt("do both steps", |ev| match ev {
+            Event::Messages(messages) => saved.extend(messages.iter().map(|m| m.role.clone())),
             Event::Compacting { context_tokens } => {
                 events.push(format!("compacting:{context_tokens}"))
             }
-            Event::Compacted { before } => events.push(format!("compacted:{before}")),
+            Event::Compacted { before, messages } => {
+                events.push(format!("compacted:{before}"));
+                saved = messages.iter().map(|m| m.role.clone()).collect();
+            }
             _ => {}
         })
         .await
@@ -1180,6 +1262,8 @@ async fn auto_compact_triggers_mid_loop_and_continues_task() {
 
     assert_eq!(answer, "all done");
     assert_eq!(events, ["compacting:1200", "compacted:3"]);
+    // All but the messages of the last turn, left to read from the history.
+    assert_eq!(saved, roles(&agent)[..5]);
 
     // Request 2 (after mid-loop compaction) must start from [User(summary), Assistant(ack), User(continue)].
     let reqs = model.requests();
@@ -1281,4 +1365,210 @@ async fn auto_compact_triggers_at_end_of_prompt_and_guards_repeat_loop() {
         agent3.history()[1].content.first_text(),
         Some("kept answer")
     );
+}
+
+/// A provider error saying the request is over the context window.
+fn too_large() -> Reply {
+    Reply::Status(
+        400,
+        Vec::new(),
+        json!({ "error": { "code": "context_length_exceeded", "message": "too long" } })
+            .to_string(),
+    )
+}
+
+#[tokio::test]
+async fn oversized_request_drops_old_tool_outputs_and_asks_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = MockModel::start(vec![
+        tool_calls(&[("c1", "bash", json!({ "command": "seq 100; echo first" }))]),
+        tool_calls(&[("c2", "bash", json!({ "command": "seq 100; echo second" }))]),
+        too_large(),
+        text("done"),
+    ])
+    .await;
+    let mut agent = agent(&model, dir.path());
+
+    let mut pruned = Vec::new();
+    let answer = agent
+        .prompt("go", |event| {
+            if let Event::Pruned(count) = event {
+                pruned.push(count);
+            }
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(answer, "done");
+    assert_eq!(pruned, [1]);
+    let reqs = model.requests();
+    assert_eq!(reqs.len(), 4);
+    let tools = sent(&reqs[3], "tool");
+    assert!(!tools[0]["content"].as_str().unwrap().contains("first"));
+    assert!(tools[1]["content"].as_str().unwrap().contains("second"));
+}
+
+#[tokio::test]
+async fn oversized_request_fails_when_nothing_is_left_to_drop() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = MockModel::start(vec![
+        tool_calls(&[("c1", "bash", json!({ "command": "seq 100" }))]),
+        too_large(),
+    ])
+    .await;
+    let mut agent = agent(&model, dir.path());
+
+    let err = prompt(&mut agent, "go").await.unwrap_err();
+
+    assert!(
+        err.to_string().contains("start a new conversation"),
+        "{err}"
+    );
+    // The only tool output belongs to the last turn: nothing was dropped.
+    assert_eq!(model.requests().len(), 2);
+}
+
+#[tokio::test]
+async fn steering_message_joins_after_the_running_tool_calls() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = MockModel::start(vec![
+        tool_calls(&[("c1", "bash", json!({ "command": "echo hi" }))]),
+        text("done"),
+    ])
+    .await;
+    let mut agent = agent(&model, dir.path());
+    let steering = agent.steering();
+
+    let mut steered = Vec::new();
+    let answer = agent
+        .prompt("go", |event| match event {
+            Event::ToolCall(_) => steering.push("use tabs"),
+            Event::Steered(text) => steered.push(text.to_owned()),
+            _ => {}
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(answer, "done");
+    assert_eq!(steered, ["use tabs"]);
+    assert_eq!(
+        roles(&agent),
+        [
+            ChatRole::User,
+            ChatRole::Assistant,
+            ChatRole::Tool,
+            ChatRole::User,
+            ChatRole::Assistant,
+        ]
+    );
+    let users = sent(&model.requests()[1], "user");
+    assert_eq!(users[1]["content"], "use tabs");
+}
+
+#[tokio::test]
+async fn steering_message_queued_during_the_answer_continues_the_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = MockModel::start(vec![text("first"), text("second")]).await;
+    let mut agent = agent(&model, dir.path());
+    let steering = agent.steering();
+
+    let answer = agent
+        .prompt("go", |event| {
+            if matches!(event, Event::Text("first")) {
+                steering.push("and more");
+            }
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(answer, "second");
+    assert!(steering.take().is_empty());
+    assert_eq!(model.requests().len(), 2);
+    assert_eq!(
+        roles(&agent),
+        [
+            ChatRole::User,
+            ChatRole::Assistant,
+            ChatRole::User,
+            ChatRole::Assistant,
+        ]
+    );
+}
+
+#[tokio::test]
+async fn images_read_by_tools_follow_the_results() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.png"), b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR").unwrap();
+    std::fs::write(dir.path().join("b.txt"), "text").unwrap();
+    let model = MockModel::start(vec![
+        tool_calls(&[
+            ("c1", "read", json!({ "path": "a.png" })),
+            ("c2", "read", json!({ "path": "b.txt" })),
+        ]),
+        text("a picture"),
+    ])
+    .await;
+    let mut agent = agent(&model, dir.path());
+
+    // The image goes to the model, not to the UI.
+    let mut details = Vec::new();
+    agent
+        .prompt("look", |event| {
+            if let Event::ToolResult(_, d) = event {
+                details.push(d.cloned());
+            }
+        })
+        .await
+        .unwrap();
+
+    let request = &model.requests()[1];
+    let messages = request["messages"].as_array().unwrap();
+    // Both results, then the image.
+    let roles: Vec<_> = messages
+        .iter()
+        .map(|m| m["role"].as_str().unwrap())
+        .collect();
+    assert_eq!(roles[roles.len() - 3..], ["tool", "tool", "user"]);
+    let parts = messages.last().unwrap()["content"].as_array().unwrap();
+    let url = parts[1]["image_url"]["url"].as_str().unwrap();
+    assert_eq!(url, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==");
+    assert_eq!(details, [None, None]);
+}
+
+#[tokio::test]
+async fn user_command_runs_with_the_tools_and_stays_out_of_the_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = MockModel::start(Vec::new()).await;
+    let agent = agent(&model, dir.path());
+
+    let mut streamed = String::new();
+    let result = agent
+        .run_command("pwd", |chunk| streamed.push_str(chunk))
+        .await;
+
+    let cwd = dir.path().to_str().unwrap();
+    assert!(result.contains(cwd), "{result}");
+    assert!(streamed.contains(cwd), "{streamed}");
+    assert!(agent.history().is_empty());
+    assert!(model.requests().is_empty());
+}
+
+#[tokio::test]
+async fn last_prompt_is_taken_with_what_followed_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = MockModel::start(vec![
+        text("first answer"),
+        tool_calls(&[("c1", "bash", json!({ "command": "echo hi" }))]),
+        text("second answer"),
+    ])
+    .await;
+    let mut agent = agent(&model, dir.path());
+    prompt(&mut agent, "first").await.unwrap();
+    prompt(&mut agent, "second").await.unwrap();
+
+    assert_eq!(agent.take_last_prompt().as_deref(), Some("second"));
+    assert_eq!(roles(&agent), [ChatRole::User, ChatRole::Assistant]);
+    assert_eq!(agent.take_last_prompt().as_deref(), Some("first"));
+    assert!(agent.history().is_empty());
+    assert_eq!(agent.take_last_prompt(), None);
 }

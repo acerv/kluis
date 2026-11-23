@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use genai::chat::{ToolCall, ToolResponse};
 use hakoniwa::{Child, Stdio};
@@ -42,6 +43,10 @@ pub enum ExecError {
     #[error("sandbox: {0}")]
     Startup(String),
 }
+
+/// How long the worker may take to stop what runs in the background,
+/// before it is taken for stuck.
+const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
 type PendingMap = Arc<Mutex<HashMap<u64, mpsc::UnboundedSender<Response>>>>;
 
@@ -166,6 +171,10 @@ impl SandboxExecutor {
     /// Stop what commands left running in the background, such as a program
     /// started with `setsid`, and wait until it is gone. Call it when no
     /// call runs.
+    ///
+    /// A worker that does not answer in time, as one a command stopped
+    /// with `SIGSTOP`, is killed with its container: the next call starts
+    /// a new one.
     pub async fn stop_background(&self) {
         let alive = self.worker.lock().is_ok_and(|guard| {
             guard
@@ -177,11 +186,19 @@ impl SandboxExecutor {
             return;
         }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        if let Ok((_, mut rx)) = self.send_call(id, &Request::StopBackground { id }) {
+        let Ok((_, mut rx)) = self.send_call(id, &Request::StopBackground { id }) else {
+            return;
+        };
+        let stopped = async {
             while let Some(resp) = rx.recv().await {
                 if matches!(resp, Response::Result { .. }) {
                     break;
                 }
+            }
+        };
+        if tokio::time::timeout(STOP_TIMEOUT, stopped).await.is_err() {
+            if let Ok(mut guard) = self.worker.lock() {
+                guard.take();
             }
         }
     }

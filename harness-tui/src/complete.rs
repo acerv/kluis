@@ -40,9 +40,19 @@ const COMMANDS: &[CommandSpec] = &[
         description: "pick or resume a saved session",
     },
     CommandSpec {
+        name: "/output",
+        arg: None,
+        description: "show the full output of the last tool",
+    },
+    CommandSpec {
         name: "/copy",
         arg: None,
         description: "copy last assistant reply to clipboard",
+    },
+    CommandSpec {
+        name: "/retry",
+        arg: None,
+        description: "send the last prompt again",
     },
     CommandSpec {
         name: "/compact",
@@ -103,9 +113,14 @@ pub(crate) fn help_text() -> String {
         let usage = cmd.label();
         let _ = writeln!(out, "  {usage:<19}{}", cmd.description);
     }
+    let _ = writeln!(
+        out,
+        "  {:<19}run a shell command in the sandbox",
+        "!<command>"
+    );
     out.push_str(
         "\nKeys:\n\
-         \x20 Enter              send prompt\n\
+         \x20 Enter              send prompt (queued while the agent works)\n\
          \x20 Shift/Alt+Enter    insert newline (also Ctrl-J)\n\
          \x20 Tab                autocomplete command\n\
          \x20 Shift+Tab          cycle thinking effort\n\

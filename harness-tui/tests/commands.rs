@@ -224,6 +224,7 @@ fn commands_get_no_api_keys() {
 
 #[test]
 fn default_config_hides_ssh_and_kluis_dir() {
+    // The home folder is private: neither is there at all.
     let home = tempdir();
     let ssh = home.path().join(".ssh");
     std::fs::create_dir(&ssh).unwrap();
@@ -240,19 +241,91 @@ fn default_config_hides_ssh_and_kluis_dir() {
     });
 
     assert!(!output.contains("ssh-private-secret"), "{output}");
-    let ssh_line = output.lines().find(|l| l.starts_with("SSH=")).unwrap();
-    assert!(ssh_line.contains("Permission denied"), "{ssh_line}");
-    let cfg_r = output.lines().find(|l| l.starts_with("CFG_R=")).unwrap();
-    assert!(cfg_r.contains("Permission denied"), "{cfg_r}");
-    let cfg_w = output.lines().find(|l| l.starts_with("CFG_W=")).unwrap();
-    assert!(cfg_w.contains("Permission denied"), "{cfg_w}");
+    for name in ["SSH=", "CFG_R=", "CFG_W="] {
+        let line = output.lines().find(|l| l.starts_with(name)).unwrap();
+        assert!(line.contains("No such file"), "{line}");
+    }
 }
 
 #[test]
-fn credentials_in_home_stay_hidden() {
-    // Whatever the config hides besides: the home folder is shown.
+fn home_shows_only_allowed_folders() {
+    // The rest of the home folder is not there at all.
     let home = tempdir();
-    write_config(home.path(), "[sandbox]\ndeny = [\"/no/such/secret\"]\n");
+    write_config(home.path(), "[sandbox]\nread = [\"~/.config\"]\n");
+    let files = [
+        ".ssh/id_ed25519",
+        ".aws/credentials",
+        "notes.txt",
+        ".config/gh/hosts.yml",
+    ];
+    let shown = [".config/tool.toml"];
+    for file in files.iter().chain(&shown) {
+        let path = home.path().join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, format!("CONTENT-OF {file}\n")).unwrap();
+    }
+
+    let output = run_bash(home.path(), &[], &[], |_| {
+        format!(
+            r#"cd {}
+               for f in {} {}; do
+                 cat "$f" 2>/dev/null || echo "HIDDEN $f"
+               done
+               touch new.txt && echo WRITABLE"#,
+            home.path().display(),
+            files.join(" "),
+            shown.join(" ")
+        )
+    });
+    for file in files {
+        assert!(output.contains(&format!("HIDDEN {file}")), "{output}");
+    }
+    assert!(output.contains("CONTENT-OF .config/tool.toml"), "{output}");
+    assert!(output.contains("WRITABLE"), "{output}");
+    assert!(!home.path().join("new.txt").exists());
+}
+
+#[test]
+fn shown_folder_holding_credentials_is_warned_about() {
+    let home = tempdir();
+    for file in [
+        ".config/gh/hosts.yml",
+        ".config/tool.toml",
+        ".ssh/id_ed25519",
+    ] {
+        let path = home.path().join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "data").unwrap();
+    }
+    let cwd = tempdir();
+    let run = |args: &[&str]| run_bash_in(cwd.path(), home.path(), args, &[], |_| "true".into());
+
+    // Nothing of the home folder is shown: nothing to say.
+    let stderr = run(&[]).stderr;
+    assert!(!stderr.contains("credentials"), "{stderr}");
+
+    let config = home.path().join(".config");
+    let stderr = run(&["--allow-read", config.to_str().unwrap()]).stderr;
+    let warning = stderr
+        .lines()
+        .find(|l| l.starts_with("warning: the folders"));
+    let warning = warning.unwrap_or_else(|| panic!("{stderr}"));
+    assert!(
+        warning.contains(config.join("gh").to_str().unwrap()),
+        "{warning}"
+    );
+    assert!(!warning.contains(".ssh"), "{warning}");
+}
+
+#[test]
+fn credentials_in_shown_home_stay_hidden() {
+    // Whatever the config hides besides, and even with the whole home
+    // folder shown.
+    let home = tempdir();
+    write_config(
+        home.path(),
+        "[sandbox]\nread = [\"~\"]\ndeny = [\"/no/such/secret\"]\n",
+    );
     let files = [
         ".ssh/id_ed25519",
         ".config/gh/hosts.yml",
@@ -271,7 +344,7 @@ fn credentials_in_home_stay_hidden() {
     let output = run_bash(home.path(), &[], &[], |_| {
         format!(
             r#"cd {}
-               for f in {}; do
+               for f in {} .kluis/config.toml; do
                  cat "$f" 2>/dev/null || echo "HIDDEN $f"
                done"#,
             home.path().display(),
@@ -281,6 +354,7 @@ fn credentials_in_home_stay_hidden() {
     for file in &files[..files.len() - 1] {
         assert!(output.contains(&format!("HIDDEN {file}")), "{output}");
     }
+    assert!(output.contains("HIDDEN .kluis/config.toml"), "{output}");
     assert!(output.contains("CONTENT-OF .config/tool.toml"), "{output}");
 }
 
@@ -358,7 +432,7 @@ fn agents_md_loaded_and_protected_in_sandbox() {
         .lines()
         .find(|l| l.starts_with("GLOBAL="))
         .unwrap();
-    assert!(global_line.contains("Permission denied"), "{global_line}");
+    assert!(global_line.contains("No such file"), "{global_line}");
     let repo_line = result
         .output
         .lines()
@@ -610,7 +684,7 @@ fn auth_toml_authenticates_host_while_hidden_in_sandbox() {
         .lines()
         .find(|l| l.starts_with("AUTH="))
         .unwrap();
-    assert!(auth_line.contains("Permission denied"), "{auth_line}");
+    assert!(auth_line.contains("No such file"), "{auth_line}");
 }
 
 fn read_request_with_headers(stream: &TcpStream) -> (String, Value) {
@@ -670,7 +744,8 @@ fn socket_probe() {
 /// output and whether the host received anything.
 fn probe_host_socket(extra_args: &[&str]) -> (String, bool) {
     let home = tempdir();
-    let sock = home.path().join("app.sock");
+    let dir = tempdir();
+    let sock = dir.path().join("app.sock");
     let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
     listener.set_nonblocking(true).unwrap();
     let probe = std::env::current_exe().unwrap();
@@ -678,7 +753,12 @@ fn probe_host_socket(extra_args: &[&str]) -> (String, bool) {
     let sock = sock.to_str().unwrap();
 
     let mut args = vec!["--pass-env", "SOCK", "--pass-env", SOCKET_PROBE];
-    args.extend(["--allow-read", probe]);
+    args.extend([
+        "--allow-read",
+        probe,
+        "--allow-read",
+        dir.path().to_str().unwrap(),
+    ]);
     args.extend(extra_args);
     let env = [("SOCK", sock), (SOCKET_PROBE, "1")];
     let output = run_bash(home.path(), &args, &env, |_| {

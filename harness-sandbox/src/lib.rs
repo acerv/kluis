@@ -7,8 +7,9 @@
 //! A [`Sandbox`] lists the folders the harness may read and write and the
 //! TCP ports it may connect to, or allows any network. Its
 //! [`container`](Sandbox::container) shows only those folders, and
-//! Landlock (Linux 6.7 or newer) limits TCP to those ports. UDP is not
-//! filtered; [`NoNetwork`] takes away all network from commands.
+//! Landlock (Linux 6.7 or newer) limits TCP to those ports, while
+//! [`restrict_syscalls`] refuses UDP; [`Sandbox::no_network`] takes away
+//! all network.
 //!
 //! Programs of the host that can reach the network are kept away too: a
 //! mount below a shown folder whose filesystem could reach the network,
@@ -24,7 +25,6 @@ pub mod apparmor;
 mod env;
 mod git;
 mod init;
-mod network;
 mod profile;
 mod protect;
 mod seccomp;
@@ -32,9 +32,8 @@ mod seccomp;
 pub use env::command_env;
 pub use git::{GitCheck, GitGuard, NewRepository};
 pub use init::{start_init, stop_others};
-pub use network::NoNetwork;
-pub use profile::Options;
-pub use protect::{kill_first_on_oom, protect_self};
+pub use profile::{hidden_secrets, Options};
+pub use protect::{kill_first_on_oom, protect_self, refuse_root};
 pub use seccomp::{restrict_syscalls, NetworkAccess};
 
 use std::collections::{HashMap, VecDeque};
@@ -60,6 +59,7 @@ pub struct Sandbox {
     write: Vec<PathBuf>,
     read_only: Vec<PathBuf>,
     deny: Vec<PathBuf>,
+    private: Vec<PathBuf>,
     network: Network,
     max_processes: Option<u64>,
     max_tmp_size: Option<u64>,
@@ -141,6 +141,15 @@ impl Sandbox {
         self
     }
 
+    /// Show an empty, writable folder of this user at `path`, private to
+    /// the container and gone with it. Allowed paths below `path` still show
+    /// on top of it. It lives in memory and holds at most what
+    /// [`Sandbox::max_tmp_size`] lets the private `/tmp` hold.
+    pub fn private_dir(mut self, path: impl Into<PathBuf>) -> Self {
+        self.private.push(path.into());
+        self
+    }
+
     /// Isolate the container in an empty network namespace (`CLONE_NEWNET`)
     /// so no TCP, UDP, or host abstract Unix sockets are reachable.
     pub fn no_network(mut self) -> Self {
@@ -175,7 +184,8 @@ impl Sandbox {
         self
     }
 
-    /// Let the private `/tmp` hold at most `bytes`; it lives in memory.
+    /// Let the private `/tmp`, and each [`Sandbox::private_dir`], hold at
+    /// most `bytes`; they live in memory.
     pub fn max_tmp_size(mut self, bytes: u64) -> Self {
         self.max_tmp_size = Some(bytes);
         self
@@ -211,6 +221,19 @@ impl Sandbox {
                 MountOptions::NOSUID | MountOptions::NODEV,
                 self.max_tmp_size.map(|bytes| format!("size={bytes}")),
             );
+        let size = self
+            .max_tmp_size
+            .map_or(String::new(), |bytes| format!(",size={bytes}"));
+        for path in &self.private {
+            let path = absolute_utf8(path)?;
+            container.mount(
+                "tmpfs",
+                &path,
+                "tmpfs",
+                MountOptions::NOSUID | MountOptions::NODEV,
+                Some(format!("mode=700{size}")),
+            );
+        }
         for (path, kind) in self.mounts()? {
             match kind {
                 MountKind::Bind { writable: true } => {
@@ -743,7 +766,14 @@ fn resolve_read_only(
     for (mount, canon, writable) in canon_mounts {
         if *writable {
             if let Ok(rest) = canonical.strip_prefix(canon) {
-                ro_paths.insert(mount.join(rest));
+                // Not `join` for the mount itself: it adds a trailing slash,
+                // which a file does not take.
+                let path = if rest.as_os_str().is_empty() {
+                    mount.clone()
+                } else {
+                    mount.join(rest)
+                };
+                ro_paths.insert(path);
             }
         }
     }
@@ -873,4 +903,16 @@ pub(crate) fn checked(path: &Path) -> Result<PathBuf, SandboxError> {
         return Err(error(&"not UTF-8"));
     }
     Ok(path)
+}
+
+/// `path` made absolute, as UTF-8.
+fn absolute_utf8(path: &Path) -> Result<String, SandboxError> {
+    let error = |e: &dyn fmt::Display| SandboxError {
+        message: format!("{}: {e}", path.display()),
+    };
+    std::path::absolute(path)
+        .map_err(|e| error(&e))?
+        .into_os_string()
+        .into_string()
+        .map_err(|_| error(&"not UTF-8"))
 }
