@@ -5,7 +5,7 @@
 
 pub use harness_exec::{
     definitions, execute, execute_streaming, is_read_only, run, run_with, run_worker, BashContext,
-    Diff, DiffHunk, DiffLine, ExecError, Executor, OutputFiles, PreExec, SandboxConfig,
+    Diff, DiffHunk, DiffLine, ExecError, Executor, Image, OutputFiles, PreExec, SandboxConfig,
     SandboxExecutor, Todo, TodoOutput, TodoStatus, TodoTool, ToolContext, ToolDetails, ToolError,
     TODO_TOOL,
 };

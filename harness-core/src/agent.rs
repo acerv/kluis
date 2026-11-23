@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use futures_util::StreamExt;
 use genai::adapter::AdapterKind;
 use genai::chat::{
-    CacheControl, ChatMessage, ChatOptions, ChatRequest, ChatRole, ChatStreamEvent, ContentPart,
-    MessageContent, ReasoningEffort, StopReason, ToolCall, ToolResponse, Usage,
+    Binary, CacheControl, ChatMessage, ChatOptions, ChatRequest, ChatRole, ChatStreamEvent,
+    ContentPart, MessageContent, ReasoningEffort, StopReason, ToolCall, ToolResponse, Usage,
 };
 use genai::{Client, ModelIden};
 use serde::{Deserialize, Serialize};
@@ -24,7 +24,8 @@ use crate::oauth::OAuthLogins;
 use crate::retry::{is_too_large, EndedEarly, RetryPolicy};
 use crate::session::TokenUsage;
 use crate::tools::{
-    self, error_response, AskTool, Asker, Executor, FetchTool, HostTools, ToolContext,
+    self, error_response, AskTool, Asker, Executor, FetchTool, HostTools, Image, ToolContext,
+    ToolDetails,
 };
 use crate::Event;
 
@@ -483,6 +484,9 @@ impl Agent {
                 calls: &calls,
                 answered: 0,
             };
+            // Images the tools read, sent after all the results: a message
+            // between them would split the turn.
+            let mut images = Vec::new();
             let mut idx = 0;
             while idx < calls.len() {
                 // Batch consecutive read-only calls (`read`, `ls`, `find`, `grep`)
@@ -510,6 +514,7 @@ impl Agent {
                             .execute(call, |chunk| on_event(Event::ToolOutput(chunk)))
                             .await
                     };
+                    let details = take_image(details, &mut images);
                     on_event(Event::ToolResult(&resp, details.as_ref()));
                     pending.answer(resp);
                 } else {
@@ -528,6 +533,7 @@ impl Agent {
                     ))
                     .await;
                     for (call, (resp, details)) in batch.iter().zip(results) {
+                        let details = take_image(details, &mut images);
                         on_event(Event::ToolCall(call));
                         on_event(Event::ToolResult(&resp, details.as_ref()));
                         pending.answer(resp);
@@ -537,6 +543,12 @@ impl Agent {
             }
             drop(pending);
             drop(calls);
+            if !images.is_empty() {
+                images.insert(0, ContentPart::Text(IMAGES.to_owned()));
+                self.req
+                    .messages
+                    .push(ChatMessage::user(MessageContent::from_parts(images)));
+            }
 
             if need_compact && self.max_turns.is_none_or(|limit| turns < limit) {
                 if self.run_auto_compact(context, true, &mut on_event).await {
@@ -894,9 +906,15 @@ const INVALID_ARGUMENTS: &str =
 const REPEATED_CALL: &str =
     "repeated identical tool call; try a different approach or explain the blocker";
 
+/// Text before the images the tools read.
+const IMAGES: &str = "The images read by the tools above, in order:";
+
 /// Output of an old tool call removed to fit the context window.
 const PRUNED: &str =
     r#"{"error":"output removed to fit the context window; run the tool again if needed"}"#;
+
+/// An old image removed to fit the context window.
+const PRUNED_IMAGE: &str = "[image removed to fit the context window]";
 
 const COMPACT_PROMPT: &str = "Summarize the conversation so far as a concise handoff so work can \
 continue seamlessly without the earlier messages. Do not call any tools. Include:\n\
@@ -930,14 +948,28 @@ fn prune_tool_outputs(messages: &mut [ChatMessage]) -> usize {
         .iter_mut()
         .flat_map(|m| m.content.iter_mut())
     {
-        if let ContentPart::ToolResponse(resp) = part {
-            if resp.content.len() > PRUNED.len() {
+        match part {
+            ContentPart::ToolResponse(resp) if resp.content.len() > PRUNED.len() => {
                 resp.content = PRUNED.to_owned();
-                pruned += 1;
             }
+            ContentPart::Binary(_) => *part = ContentPart::Text(PRUNED_IMAGE.to_owned()),
+            _ => continue,
         }
+        pruned += 1;
     }
     pruned
+}
+
+/// Move an image a tool read from its `details` to `images`, as the model
+/// gets it in a message of its own.
+fn take_image(details: Option<ToolDetails>, images: &mut Vec<ContentPart>) -> Option<ToolDetails> {
+    match details {
+        Some(ToolDetails::Image(Image { mime, data })) => {
+            images.push(ContentPart::Binary(Binary::from_base64(mime, data, None)));
+            None
+        }
+        details => details,
+    }
 }
 
 fn same_call(a: &ToolCall, b: &ToolCall) -> bool {

@@ -5,6 +5,7 @@
 //!
 //! Only Linux is supported.
 
+use std::borrow::Cow;
 use std::ffi::OsString;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::hash::Hasher;
@@ -17,7 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::Utc;
 use fnv::FnvHasher;
-use genai::chat::{ChatMessage, ChatRole, Usage};
+use genai::chat::{ChatMessage, ChatRole, ContentPart, Usage};
 use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -321,6 +322,7 @@ impl SessionWriter {
         }
         let writer = self.writer()?;
         for message in messages {
+            let message = &without_images(message);
             write_entry(writer, &SessionEntryRef::Message { message })?;
         }
         writer.flush()
@@ -597,6 +599,21 @@ fn prompt_preview(text: &str) -> String {
         }
     }
     out
+}
+
+/// `message` with its images replaced by a note: they would soon make the
+/// file too large to load.
+fn without_images(message: &ChatMessage) -> Cow<'_, ChatMessage> {
+    if !message.content.contains_binary() {
+        return Cow::Borrowed(message);
+    }
+    let mut message = message.clone();
+    for part in message.content.iter_mut() {
+        if matches!(part, ContentPart::Binary(_)) {
+            *part = ContentPart::Text("[image not saved]".to_owned());
+        }
+    }
+    Cow::Owned(message)
 }
 
 fn write_entry(writer: &mut BufWriter<File>, entry: &SessionEntryRef<'_>) -> io::Result<()> {
