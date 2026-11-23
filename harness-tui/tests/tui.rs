@@ -717,7 +717,7 @@ fn persistent_history_round_trip_multiline_dedup_and_compaction() {
 }
 
 #[test]
-fn thinking_effort_slash_keybinding_and_footer() {
+fn thinking_effort_slash_and_footer() {
     use harness_core::Thinking;
 
     let mut term = inline_terminal(80, 14);
@@ -739,26 +739,9 @@ fn thinking_effort_slash_keybinding_and_footer() {
         Action::Slash(SlashCommand::Thinking(Some("high".into())))
     );
 
-    // Shift+Tab cycles default -> off -> low -> medium -> high -> default -> off and updates footer.
-    for expected in [
-        Thinking::Off,
-        Thinking::Low,
-        Thinking::Medium,
-        Thinking::High,
-        Thinking::Default,
-        Thinking::Off,
-    ] {
-        assert_eq!(
-            app.handle_event(shift(KeyCode::BackTab)),
-            Action::SetThinking(expected)
-        );
-        assert_eq!(app.thinking(), expected);
-    }
-
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
-    assert!(screen.contains("claude-sonnet-4-5 (off)  "), "{screen}");
-    assert!(screen.contains("Thinking: off"), "{screen}");
+    assert!(screen.contains("claude-sonnet-4-5 (default)  "), "{screen}");
 
     // Footer model color changes by thinking effort when color is enabled.
     let mut colored = App::new("deepseek-flash", status(), Theme::new(true));
@@ -2101,4 +2084,37 @@ fn at_completes_the_files_of_the_workspace() {
     // Hidden files are not offered.
     type_str(&mut app, "@sec");
     assert!(!app.is_completion_open());
+}
+
+#[test]
+fn shift_tab_switches_plan_mode() {
+    let mut term = inline_terminal(80, 14);
+    let mut app = App::new("model", status(), Theme::new(false));
+
+    assert_eq!(
+        app.handle_event(shift(KeyCode::BackTab)),
+        Action::SetPlan(true)
+    );
+    assert!(app.plan());
+    term.draw(|f| app.render(f)).unwrap();
+    let screen = render_text(&term);
+    assert!(screen.contains("model (default) · plan mode"), "{screen}");
+    assert!(screen.contains("Plan mode: the model plans"), "{screen}");
+    assert!(app.status_text(None, 0).contains("mode:    plan"));
+
+    // Not while the agent works: the prompt runs in the mode it started in.
+    app.start_prompt("plan it");
+    assert_ne!(
+        app.handle_event(shift(KeyCode::BackTab)),
+        Action::SetPlan(false)
+    );
+    assert!(app.plan());
+    app.finish_prompt(Ok(()));
+
+    assert_eq!(
+        app.handle_event(shift(KeyCode::BackTab)),
+        Action::SetPlan(false)
+    );
+    term.draw(|f| app.render(f)).unwrap();
+    assert!(!render_text(&term).contains("plan mode"));
 }

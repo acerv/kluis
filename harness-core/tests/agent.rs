@@ -138,14 +138,11 @@ async fn thinking_effort_is_sent_in_requests() {
     prompt(&mut agent, "fourth").await.unwrap();
     assert!(model.requests()[3].get("reasoning_effort").is_none());
 
-    // Parsing and cycling helpers.
+    // Parsing.
     assert_eq!("OFF".parse::<Thinking>(), Ok(Thinking::Off));
     assert_eq!("MEDIUM".parse::<Thinking>(), Ok(Thinking::Medium));
     assert_eq!("default".parse::<Thinking>(), Ok(Thinking::Default));
     assert!("turbo".parse::<Thinking>().is_err());
-    assert_eq!(Thinking::Default.next(), Thinking::Off);
-    assert_eq!(Thinking::Off.next(), Thinking::Low);
-    assert_eq!(Thinking::High.next(), Thinking::Default);
 }
 
 #[tokio::test]

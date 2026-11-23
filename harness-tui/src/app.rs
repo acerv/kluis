@@ -197,7 +197,8 @@ pub enum Action {
     Slash(SlashCommand),
     ResumeSession(String),
     SelectModel(String),
-    SetThinking(Thinking),
+    /// Plan mode switched on or off.
+    SetPlan(bool),
     /// The user's answer to the question of the model.
     Answer(String),
     Cancel,
@@ -209,6 +210,8 @@ pub enum Action {
 pub struct App {
     model: String,
     thinking: Thinking,
+    /// Plan mode: the model plans and changes nothing.
+    plan: bool,
     status: Status,
     theme: Theme,
     width: Cell<u16>,
@@ -255,6 +258,7 @@ impl App {
         Self {
             model: model.into(),
             thinking: Thinking::Default,
+            plan: false,
             status,
             theme,
             width: Cell::new(DEFAULT_WIDTH),
@@ -338,6 +342,11 @@ impl App {
 
     pub fn thinking(&self) -> Thinking {
         self.thinking
+    }
+
+    /// Whether plan mode is on.
+    pub fn plan(&self) -> bool {
+        self.plan
     }
 
     pub fn set_thinking(&mut self, thinking: Thinking) {
@@ -455,6 +464,9 @@ impl App {
 
         let mut out = String::with_capacity(128);
         let _ = write!(out, "model:   {} ({})", self.model, self.thinking);
+        if self.plan {
+            out.push_str("\nmode:    plan");
+        }
         let session_label = session.unwrap_or("off");
         let unit = if messages == 1 { "message" } else { "messages" };
         let _ = write!(out, "\nsession: {session_label} · {messages} {unit}");
@@ -493,9 +505,10 @@ impl App {
         let mut last_tool = None;
         for msg in messages {
             match msg.role {
+                // What the user typed, without the files and notes added.
                 ChatRole::User => {
-                    if let Some(text) = msg.content.joined_texts() {
-                        self.push_user_message(&text);
+                    if let Some(text) = msg.content.first_text() {
+                        self.push_user_message(text);
                     }
                 }
                 ChatRole::Assistant => {
@@ -917,10 +930,16 @@ impl App {
         }
 
         if key.code == KeyCode::BackTab && !self.busy {
-            let next = self.thinking.next();
-            self.thinking = next;
-            self.notice = Some(format!("Thinking: {next} (Shift+Tab to cycle)"));
-            return Action::SetThinking(next);
+            self.plan = !self.plan;
+            self.notice = Some(
+                if self.plan {
+                    "Plan mode: the model plans and changes nothing (Shift+Tab to leave)"
+                } else {
+                    "Regular mode: the model may change files and run commands"
+                }
+                .to_owned(),
+            );
+            return Action::SetPlan(self.plan);
         }
 
         if self.completion.is_open() {
@@ -1379,17 +1398,19 @@ impl App {
         }
         let width = area.width as usize;
         let model_label = format!("{} ({})", self.model, self.thinking);
+        let plan = if self.plan { " · plan mode" } else { "" };
         let right = format!("{} · {}", self.status.sandbox, self.status.folder);
         // Unknown before the first request of the conversation.
         let context = match self.context {
             0 => String::new(),
             tokens => format!(" · {} context", ScaledTokens(tokens)),
         };
-        let left_w = model_label.width() + context.width();
+        let left_w = model_label.width() + plan.width() + context.width();
         let gap = width.saturating_sub(left_w + right.width()).max(2);
 
         let line = Line::from(vec![
             Span::styled(model_label, self.theme.thinking_model(self.thinking)),
+            Span::styled(plan, self.theme.status_accent),
             Span::styled(context, self.theme.status_bar),
             Span::raw(" ".repeat(gap)),
             Span::styled(right, self.theme.status_bar),

@@ -134,7 +134,7 @@ pub(crate) fn help_text() -> String {
          \x20 Enter              send prompt (queued while the agent works)\n\
          \x20 Shift/Alt+Enter    insert newline (also Ctrl-J)\n\
          \x20 Tab                autocomplete command\n\
-         \x20 Shift+Tab          cycle thinking effort\n\
+         \x20 Shift+Tab          switch plan mode on or off\n\
          \x20 Up/Down            browse prompt history\n\
          \x20 Ctrl-O             toggle thinking visibility\n\
          \x20 Esc / Ctrl-C       cancel turn or clear input\n\
