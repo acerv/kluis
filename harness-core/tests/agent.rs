@@ -170,6 +170,7 @@ async fn tool_call_round_trip() {
     let answer = agent
         .prompt("run it", |event| {
             events.push(match event {
+                Event::Messages(messages) => format!("messages {}", messages.len()),
                 Event::Truncated => "truncated".to_owned(),
                 Event::TurnStart => "start".to_owned(),
                 Event::TurnEnd(usage) => format!("end {:?}", usage.and_then(|u| u.total_tokens)),
@@ -181,7 +182,7 @@ async fn tool_call_round_trip() {
                 Event::ToolResult(resp, _) => format!("result {}", resp.call_id),
                 Event::Retry { reason, .. } => format!("retry {reason}"),
                 Event::Compacting { context_tokens } => format!("compacting {context_tokens}"),
-                Event::Compacted { before } => format!("compacted {before}"),
+                Event::Compacted { before, .. } => format!("compacted {before}"),
                 Event::CompactFailed(err) => format!("compact_failed {err}"),
             })
         })
@@ -192,11 +193,13 @@ async fn tool_call_round_trip() {
     assert_eq!(
         events,
         [
+            "messages 1",
             "start",
             "end Some(15)",
             "call bash",
             "out hi",
             "result call_1",
+            "messages 2",
             "start",
             "delta ok",
             "text ok",
@@ -1238,12 +1241,18 @@ async fn auto_compact_triggers_mid_loop_and_continues_task() {
     assert_eq!(agent.auto_compact(), Some(1_000));
 
     let mut events = Vec::new();
+    // What the events say the history is: enough to save it as it grows.
+    let mut saved = Vec::new();
     let answer = agent
         .prompt("do both steps", |ev| match ev {
+            Event::Messages(messages) => saved.extend(messages.iter().map(|m| m.role.clone())),
             Event::Compacting { context_tokens } => {
                 events.push(format!("compacting:{context_tokens}"))
             }
-            Event::Compacted { before } => events.push(format!("compacted:{before}")),
+            Event::Compacted { before, messages } => {
+                events.push(format!("compacted:{before}"));
+                saved = messages.iter().map(|m| m.role.clone()).collect();
+            }
             _ => {}
         })
         .await
@@ -1251,6 +1260,8 @@ async fn auto_compact_triggers_mid_loop_and_continues_task() {
 
     assert_eq!(answer, "all done");
     assert_eq!(events, ["compacting:1200", "compacted:3"]);
+    // All but the messages of the last turn, left to read from the history.
+    assert_eq!(saved, roles(&agent)[..5]);
 
     // Request 2 (after mid-loop compaction) must start from [User(summary), Assistant(ack), User(continue)].
     let reqs = model.requests();

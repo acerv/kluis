@@ -321,6 +321,8 @@ impl Agent {
         text: &str,
         mut on_event: impl FnMut(Event<'_>),
     ) -> Result<String, Error> {
+        // Where the messages not yet reported with `Event::Messages` start.
+        let mut saved = self.req.messages.len();
         self.req.messages.push(ChatMessage::user(text));
 
         let mut turns = 0usize;
@@ -336,6 +338,10 @@ impl Agent {
             }
             turns += 1;
 
+            if saved < self.req.messages.len() {
+                on_event(Event::Messages(&self.req.messages[saved..]));
+                saved = self.req.messages.len();
+            }
             on_event(Event::TurnStart);
             let turn = self.next_turn_retrying(None, &mut on_event).await?;
             if !turn.content.contains_text() && !turn.content.contains_tool_call() {
@@ -475,6 +481,7 @@ impl Agent {
 
             if need_compact && self.max_turns.is_none_or(|limit| turns < limit) {
                 if self.run_auto_compact(context, true, &mut on_event).await {
+                    saved = self.req.messages.len();
                     prev_assistant_idx = None;
                     repeat_streak = 0;
                 }
@@ -508,7 +515,10 @@ impl Agent {
         on_event(Event::Compacting { context_tokens });
         match self.compact_inner(None, continue_task, on_event).await {
             Ok(_) => {
-                on_event(Event::Compacted { before });
+                on_event(Event::Compacted {
+                    before,
+                    messages: &self.req.messages,
+                });
                 true
             }
             Err(err) => {

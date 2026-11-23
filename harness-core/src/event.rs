@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use genai::chat::{ToolCall, ToolResponse, Usage};
+use genai::chat::{ChatMessage, ToolCall, ToolResponse, Usage};
 
 use crate::tools::ToolDetails;
 
@@ -15,6 +15,10 @@ use crate::tools::ToolDetails;
 /// need to keep beyond the callback.
 #[derive(Debug, Clone, Copy)]
 pub enum Event<'a> {
+    /// Messages that joined the history since the last such event of the
+    /// prompt, sent before every turn so they can be saved while it runs.
+    /// The ones after the last event are left to read from the history.
+    Messages(&'a [ChatMessage]),
     /// The agent is asking the model for its next turn.
     TurnStart,
     /// A piece of the model's reasoning, as it arrives, from models that
@@ -48,8 +52,12 @@ pub enum Event<'a> {
     /// Context usage crossed the auto-compaction threshold and the agent is
     /// summarizing the conversation.
     Compacting { context_tokens: u64 },
-    /// Auto-compaction replaced `before` messages with a compact summary.
-    Compacted { before: usize },
+    /// Auto-compaction replaced `before` messages with `messages`, now the
+    /// whole history.
+    Compacted {
+        before: usize,
+        messages: &'a [ChatMessage],
+    },
     /// Auto-compaction failed and left the existing history untouched.
     CompactFailed(&'a str),
 }
