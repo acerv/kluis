@@ -60,6 +60,7 @@ pub struct Sandbox {
     write: Vec<PathBuf>,
     read_only: Vec<PathBuf>,
     deny: Vec<PathBuf>,
+    private: Vec<PathBuf>,
     network: Network,
     max_processes: Option<u64>,
     max_tmp_size: Option<u64>,
@@ -141,6 +142,15 @@ impl Sandbox {
         self
     }
 
+    /// Show an empty, writable folder of this user at `path`, private to
+    /// the container and gone with it. Allowed paths below `path` still show
+    /// on top of it. It lives in memory and holds at most what
+    /// [`Sandbox::max_tmp_size`] lets the private `/tmp` hold.
+    pub fn private_dir(mut self, path: impl Into<PathBuf>) -> Self {
+        self.private.push(path.into());
+        self
+    }
+
     /// Isolate the container in an empty network namespace (`CLONE_NEWNET`)
     /// so no TCP, UDP, or host abstract Unix sockets are reachable.
     pub fn no_network(mut self) -> Self {
@@ -175,7 +185,8 @@ impl Sandbox {
         self
     }
 
-    /// Let the private `/tmp` hold at most `bytes`; it lives in memory.
+    /// Let the private `/tmp`, and each [`Sandbox::private_dir`], hold at
+    /// most `bytes`; they live in memory.
     pub fn max_tmp_size(mut self, bytes: u64) -> Self {
         self.max_tmp_size = Some(bytes);
         self
@@ -211,6 +222,19 @@ impl Sandbox {
                 MountOptions::NOSUID | MountOptions::NODEV,
                 self.max_tmp_size.map(|bytes| format!("size={bytes}")),
             );
+        let size = self
+            .max_tmp_size
+            .map_or(String::new(), |bytes| format!(",size={bytes}"));
+        for path in &self.private {
+            let path = absolute_utf8(path)?;
+            container.mount(
+                "tmpfs",
+                &path,
+                "tmpfs",
+                MountOptions::NOSUID | MountOptions::NODEV,
+                Some(format!("mode=700{size}")),
+            );
+        }
         for (path, kind) in self.mounts()? {
             match kind {
                 MountKind::Bind { writable: true } => {
@@ -873,4 +897,16 @@ pub(crate) fn checked(path: &Path) -> Result<PathBuf, SandboxError> {
         return Err(error(&"not UTF-8"));
     }
     Ok(path)
+}
+
+/// `path` made absolute, as UTF-8.
+fn absolute_utf8(path: &Path) -> Result<String, SandboxError> {
+    let error = |e: &dyn fmt::Display| SandboxError {
+        message: format!("{}: {e}", path.display()),
+    };
+    std::path::absolute(path)
+        .map_err(|e| error(&e))?
+        .into_os_string()
+        .into_string()
+        .map_err(|_| error(&"not UTF-8"))
 }

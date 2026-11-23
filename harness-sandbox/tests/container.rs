@@ -141,6 +141,53 @@ fn other_folders_hidden() {
 }
 
 #[test]
+fn private_folder_is_empty_and_writable() {
+    let (dir, file) = folder();
+    let sandbox = system().private_dir(dir.path());
+
+    let script = format!(
+        "ls -A {0}; stat -c %a {0}; echo x > {0}/new.txt && cat {0}/new.txt",
+        dir.path().display()
+    );
+    let out = run(&sandbox, &script);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "700\nx\n");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "data");
+    assert!(!dir.path().join("new.txt").exists());
+}
+
+#[test]
+fn allowed_folders_show_inside_private_folder() {
+    let (dir, _) = folder();
+    let shown = dir.path().join("shown");
+    let hidden = dir.path().join("hidden");
+    for sub in [&shown, &hidden] {
+        std::fs::create_dir(sub).unwrap();
+        std::fs::write(sub.join("f.txt"), "data").unwrap();
+    }
+    let sandbox = system().private_dir(dir.path()).allow_read(&shown);
+
+    let script = format!(
+        "ls -A {}; cat {}/f.txt",
+        dir.path().display(),
+        shown.display()
+    );
+    let out = run(&sandbox, &script);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "shown\ndata");
+}
+
+#[test]
+fn private_folder_size_follows_tmp() {
+    let (dir, _) = folder();
+    let sandbox = system().private_dir(dir.path()).max_tmp_size(1 << 20);
+
+    let script = format!("df --output=size -B1 {} | tail -1", dir.path().display());
+    let out = run(&sandbox, &script);
+    assert_eq!(stdout(&out).trim(), (1 << 20).to_string());
+}
+
+#[test]
 fn write_inside_read_only_folder() {
     let (dir, file) = folder();
     let sub = dir.path().join("sub");
