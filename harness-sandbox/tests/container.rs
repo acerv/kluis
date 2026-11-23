@@ -5,10 +5,11 @@ use std::ffi::OsStr;
 use std::io::ErrorKind;
 use std::net::{Ipv4Addr, TcpListener};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::net::UnixDatagram;
 use std::path::{Path, PathBuf};
 
 use hakoniwa::Output;
-use harness_sandbox::Sandbox;
+use harness_sandbox::{restrict_syscalls, NetworkAccess, Sandbox};
 
 /// Run `script` with bash in the container of `sandbox`.
 fn run(sandbox: &Sandbox, script: &str) -> Output {
@@ -941,4 +942,76 @@ fn no_core_dumps() {
     let limits: Vec<&str> = text.lines().next().unwrap().split_whitespace().collect();
     assert_eq!(limits[4..7], ["1", "1", "bytes"], "{text}");
     assert!(text.contains("FIXED"), "{text}");
+}
+
+/// The error of `call` in the container of `sandbox`, its system calls
+/// restricted for `network` as the tool executor does, or 0 when it
+/// succeeds.
+fn call_error<F>(sandbox: &Sandbox, network: NetworkAccess, call: F) -> i32
+where
+    F: Fn() -> libc::c_long + Send + Sync + 'static,
+{
+    let container = sandbox.container().unwrap();
+    // SAFETY: as in `bind`; the closure only makes plain system calls.
+    let mut command = unsafe {
+        container.command_from_closure(move || {
+            if restrict_syscalls(network).is_err() {
+                return -1;
+            }
+            match call() {
+                -1 => std::io::Error::last_os_error().raw_os_error().unwrap(),
+                _ => 0,
+            }
+        })
+    };
+    command.status().unwrap().code
+}
+
+/// Send a byte from a socket pair of `kind` to the datagram socket at
+/// `path`.
+fn send_from_pair(kind: libc::c_int, path: &Path) -> libc::c_long {
+    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (dst, &src) in addr.sun_path.iter_mut().zip(path.as_os_str().as_bytes()) {
+        *dst = src as libc::c_char;
+    }
+    let mut fds = [0; 2];
+    // SAFETY: plain system calls on a buffer and an address that outlive
+    // them.
+    unsafe {
+        if libc::socketpair(libc::AF_UNIX, kind, 0, fds.as_mut_ptr()) != 0 {
+            return -1;
+        }
+        libc::sendto(
+            fds[0],
+            b"x".as_ptr().cast(),
+            1,
+            0,
+            (&addr as *const libc::sockaddr_un).cast(),
+            std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t,
+        ) as libc::c_long
+    }
+}
+
+#[test]
+fn socket_pairs_do_not_reach_host_sockets() {
+    // A datagram socket of the host below a shown folder.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("app.sock");
+    let host = UnixDatagram::bind(&path).unwrap();
+    host.set_nonblocking(true).unwrap();
+    let sandbox = system().allow_write(dir.path());
+
+    for network in [NetworkAccess::None, NetworkAccess::Ports] {
+        for kind in [libc::SOCK_DGRAM, libc::SOCK_STREAM, libc::SOCK_SEQPACKET] {
+            let target = path.clone();
+            let err = call_error(&sandbox, network, move || send_from_pair(kind, &target));
+            if kind == libc::SOCK_DGRAM {
+                assert_eq!(err, libc::EACCES, "{network:?}");
+            }
+            let mut buf = [0];
+            let got = host.recv(&mut buf);
+            assert!(got.is_err(), "{network:?} {kind}: reached the host");
+        }
+    }
 }
