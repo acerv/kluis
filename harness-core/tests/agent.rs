@@ -1552,3 +1552,23 @@ async fn user_command_runs_with_the_tools_and_stays_out_of_the_history() {
     assert!(agent.history().is_empty());
     assert!(model.requests().is_empty());
 }
+
+#[tokio::test]
+async fn last_prompt_is_taken_with_what_followed_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = MockModel::start(vec![
+        text("first answer"),
+        tool_calls(&[("c1", "bash", json!({ "command": "echo hi" }))]),
+        text("second answer"),
+    ])
+    .await;
+    let mut agent = agent(&model, dir.path());
+    prompt(&mut agent, "first").await.unwrap();
+    prompt(&mut agent, "second").await.unwrap();
+
+    assert_eq!(agent.take_last_prompt().as_deref(), Some("second"));
+    assert_eq!(roles(&agent), [ChatRole::User, ChatRole::Assistant]);
+    assert_eq!(agent.take_last_prompt().as_deref(), Some("first"));
+    assert!(agent.history().is_empty());
+    assert_eq!(agent.take_last_prompt(), None);
+}

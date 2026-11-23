@@ -322,6 +322,19 @@ impl Agent {
         self
     }
 
+    /// Remove the last message the user sent, and all after it, from the
+    /// history, returning its text to send it again.
+    pub fn take_last_prompt(&mut self) -> Option<String> {
+        let idx = self.req.messages.iter().rposition(|m| {
+            m.role == ChatRole::User
+                && m.content.is_text_only()
+                && m.content.first_text() != Some(IMAGES)
+        })?;
+        let text = self.req.messages[idx].content.joined_texts()?;
+        self.req.messages.truncate(idx);
+        Some(text)
+    }
+
     /// The conversation so far: user messages, model turns and tool
     /// results, oldest first.
     pub fn history(&self) -> &[ChatMessage] {

@@ -497,3 +497,25 @@ fn compaction_rewrites_the_file_without_the_replaced_messages() {
     assert_eq!(summary.first_prompt.as_deref(), Some("original task"));
     assert_eq!(summary.message_count, 3);
 }
+
+#[test]
+fn going_back_to_no_messages_is_saved() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(root.path(), cwd.path());
+    let mut writer = store.create("deepseek-chat");
+    writer.append_compact(&[]).unwrap();
+    assert!(!writer.path().exists());
+
+    writer
+        .append_messages(&[ChatMessage::user("task"), ChatMessage::assistant("done")])
+        .unwrap();
+    writer.append_compact(&[]).unwrap();
+    writer
+        .append_messages(&[ChatMessage::user("task again")])
+        .unwrap();
+
+    let loaded = store.load(writer.id()).unwrap();
+    assert_eq!(loaded.messages.len(), 1);
+    assert_eq!(loaded.messages[0].content.first_text(), Some("task again"));
+}
