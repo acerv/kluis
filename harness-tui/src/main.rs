@@ -35,8 +35,8 @@ use harness_core::{
 };
 use harness_sandbox::{GitGuard, NetworkAccess};
 use harness_tui::{
-    check_git_guard, printable, retry_notice, summary, BannerLine, History, RunOptions, Session,
-    Status, TRUNCATED_NOTICE,
+    check_git_guard, printable, retry_notice, summary, BannerLine, History, PromptSaver,
+    RunOptions, Session, Status, TRUNCATED_NOTICE,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -514,14 +514,14 @@ async fn prompt_and_persist(
     git_guard: Option<&mut GitGuard>,
     text: &str,
 ) -> Result<(), Error> {
-    let prev_len = agent.history().len();
+    let mut saver = PromptSaver::new(session, agent.history());
     let mut usage = TokenUsage::default();
     let mut context = 0;
-    let mut compacted = false;
     let mut in_compact = false;
     let mut changed_files = false;
     let res = agent
         .prompt(text, |event| {
+            saver.on_event(&event);
             let suppress_stdout =
                 in_compact && matches!(event, Event::TextDelta(_) | Event::Text(_));
             match event {
@@ -538,7 +538,6 @@ async fn prompt_and_persist(
                     in_compact = true;
                 }
                 Event::Compacted { .. } => {
-                    compacted = true;
                     in_compact = false;
                     context = 0;
                 }
@@ -555,15 +554,8 @@ async fn prompt_and_persist(
     // Before the git check: a program left running could recreate a
     // repository right after it.
     agent.stop_background().await;
-    if let Some(session) = session {
-        let save = if compacted {
-            session.record_compact(agent.history(), usage, context)
-        } else {
-            session.record_prompt(&agent.history()[prev_len..], usage, context)
-        };
-        if let Err(err) = save {
-            eprintln!("warning: could not save session: {err}");
-        }
+    if let Err(err) = saver.finish(agent.history(), usage, context) {
+        eprintln!("warning: could not save session: {err}");
     }
     for notice in check_git_guard(git_guard, changed_files) {
         eprintln!("{}", printable(&notice));
@@ -675,7 +667,11 @@ fn print_event(event: Event<'_>) {
         }
         // Already printed piece by piece: end its line.
         Event::Text(_) => println!(),
-        Event::TurnStart | Event::ReasoningDelta(_) | Event::ToolOutput(_) | Event::TurnEnd(_) => {}
+        Event::Messages(_)
+        | Event::TurnStart
+        | Event::ReasoningDelta(_)
+        | Event::ToolOutput(_)
+        | Event::TurnEnd(_) => {}
         Event::Truncated => eprintln!("{TRUNCATED_NOTICE}"),
         Event::ToolCall(call) => println!(
             "→ {} {}",
@@ -695,7 +691,7 @@ fn print_event(event: Event<'_>) {
         Event::Compacting { context_tokens } => {
             eprintln!("[auto-compacting ({context_tokens} tokens)…]");
         }
-        Event::Compacted { before } => {
+        Event::Compacted { before, .. } => {
             eprintln!("[compacted {before} messages]");
         }
         Event::CompactFailed(err) => {

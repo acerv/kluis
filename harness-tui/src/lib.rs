@@ -27,8 +27,8 @@ use genai::adapter::AdapterKind;
 use genai::chat::ChatMessage;
 use harness_core::tools::{is_read_only, Question};
 use harness_core::{
-    Agent, Error, ModelInfo, ModelList, SessionData, SessionStore, SessionSummary, SessionWriter,
-    Thinking, TokenUsage,
+    Agent, Error, Event, ModelInfo, ModelList, SessionData, SessionStore, SessionSummary,
+    SessionWriter, Thinking, TokenUsage,
 };
 use harness_sandbox::GitGuard;
 use tokio::sync::mpsc;
@@ -163,6 +163,65 @@ impl Session {
         self.writer = self.store.create(model);
         self.usage = TokenUsage::default();
         self.context = 0;
+    }
+}
+
+/// Saves a prompt to its session while it runs, so that one stopped half
+/// way, even by a signal, loses the turn it was in at most.
+pub struct PromptSaver<'a> {
+    session: Option<&'a mut Session>,
+    /// Messages of the history that are saved.
+    saved: usize,
+    /// The first failure, reported when the prompt ends.
+    error: Option<io::Error>,
+}
+
+impl<'a> PromptSaver<'a> {
+    /// For a prompt about to join `history`, saved in `session` if any.
+    pub fn new(session: Option<&'a mut Session>, history: &[ChatMessage]) -> Self {
+        Self {
+            session,
+            saved: history.len(),
+            error: None,
+        }
+    }
+
+    /// Save what `event` says joined or replaced the history.
+    pub fn on_event(&mut self, event: &Event<'_>) {
+        let Some(session) = self.session.as_deref_mut() else {
+            return;
+        };
+        let res = match event {
+            Event::Messages(messages) => {
+                self.saved += messages.len();
+                session.writer.append_messages(messages)
+            }
+            Event::Compacted { messages, .. } => {
+                self.saved = messages.len();
+                session.context = 0;
+                session.writer.append_compact(messages)
+            }
+            _ => return,
+        };
+        if let Err(err) = res {
+            self.error.get_or_insert(err);
+        }
+    }
+
+    /// Save what is left of the prompt once it ended, with the `history`
+    /// it made, its token `usage`, and the tokens its last request sent
+    /// (0 when unknown).
+    pub fn finish(
+        self,
+        history: &[ChatMessage],
+        usage: TokenUsage,
+        context: u64,
+    ) -> io::Result<()> {
+        let Some(session) = self.session else {
+            return Ok(());
+        };
+        let res = session.record_prompt(&history[self.saved..], usage, context);
+        self.error.map_or(res, Err)
     }
 }
 
@@ -603,7 +662,6 @@ fn resume_session(
 #[derive(Default)]
 struct DriveStats {
     usage: TokenUsage,
-    compacted: bool,
     changed_files: bool,
 }
 
@@ -727,7 +785,7 @@ async fn run_turn(
     session: Option<&mut Session>,
     prompt: &str,
 ) -> Result<TurnOutcome, Error> {
-    let prev_len = agent.history().len();
+    let mut saver = PromptSaver::new(session, agent.history());
     let (tx, rx) = mpsc::unbounded_channel::<AgentUpdate>();
     let res = drive_agent(
         term,
@@ -735,21 +793,16 @@ async fn run_turn(
         events,
         questions,
         rx,
-        agent.prompt(prompt, |event| forward_event(&tx, event)),
+        agent.prompt(prompt, |event| {
+            saver.on_event(&event);
+            forward_event(&tx, event);
+        }),
     )
     .await?;
 
     let changed_files = res.stats.changed_files;
-    if let Some(session) = session {
-        let save = if res.stats.compacted {
-            session.record_compact(agent.history(), res.stats.usage, app.context())
-        } else {
-            let added = &agent.history()[prev_len..];
-            session.record_prompt(added, res.stats.usage, app.context())
-        };
-        if let Err(err) = save {
-            app.push_info(format!("[session save error: {err}]"));
-        }
+    if let Err(err) = saver.finish(agent.history(), res.stats.usage, app.context()) {
+        app.push_info(format!("[session save error: {err}]"));
     }
 
     if finish_activity(app, res) {
@@ -878,7 +931,6 @@ fn drain_updates(
 fn apply_and_track(update: AgentUpdate, app: &mut App, stats: &mut DriveStats) {
     match &update {
         AgentUpdate::TurnEnd(usage) => stats.usage += *usage,
-        AgentUpdate::Compacted(_) => stats.compacted = true,
         AgentUpdate::ToolCall { name, .. } if !is_read_only(name) => stats.changed_files = true,
         _ => {}
     }

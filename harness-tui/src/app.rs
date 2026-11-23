@@ -130,6 +130,7 @@ impl AgentUpdate {
     /// Convert a borrowed [`harness_core::Event`] into an owned update.
     pub fn from_event(event: AgentEvent<'_>) -> Option<Self> {
         Some(match event {
+            AgentEvent::Messages(_) => return None,
             AgentEvent::TurnStart => Self::TurnStart,
             AgentEvent::Truncated => Self::Truncated,
             AgentEvent::ReasoningDelta(text) => Self::ReasoningDelta(text.to_owned()),
@@ -155,7 +156,7 @@ impl AgentUpdate {
                 details: details.cloned(),
             },
             AgentEvent::Compacting { context_tokens } => Self::Compacting(context_tokens),
-            AgentEvent::Compacted { before } => Self::Compacted(before),
+            AgentEvent::Compacted { before, .. } => Self::Compacted(before),
             AgentEvent::CompactFailed(err) => Self::CompactFailed(err.to_owned()),
         })
     }

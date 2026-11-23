@@ -2,12 +2,13 @@
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use genai::chat::{ChatMessage, ContentPart, MessageContent, ToolCall, ToolResponse};
+use genai::chat::{ChatMessage, ChatRole, ContentPart, MessageContent, ToolCall, ToolResponse};
 use harness_core::tools::{Diff, DiffHunk, DiffLine};
-use harness_core::{TokenUsage, ToolDetails};
+use harness_core::{Event as AgentEvent, SessionStore, TokenUsage, ToolDetails};
 use harness_tui::{
     code_theme, flush_scrollback, last_assistant_text, osc52_sequence, Action, AgentUpdate, App,
-    BannerLine, SlashCommand, Status, Theme, TRUNCATED_NOTICE, VIEWPORT_HEIGHT,
+    BannerLine, PromptSaver, Session, SlashCommand, Status, Theme, TRUNCATED_NOTICE,
+    VIEWPORT_HEIGHT,
 };
 use ratatui::backend::TestBackend;
 use ratatui::style::{Color, Modifier, Style};
@@ -1376,6 +1377,45 @@ fn reply_cut_at_the_token_limit_shows_notice() {
     app.apply_update(AgentUpdate::Truncated);
     let lines = scrollback_lines(&mut app);
     assert!(lines.iter().any(|l| l == TRUNCATED_NOTICE), "{lines:?}");
+}
+
+#[test]
+fn prompt_is_saved_while_it_runs() {
+    let home = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(home.path(), home.path());
+    let roles = |store: &SessionStore| -> Vec<ChatRole> {
+        let data = store.latest().unwrap().unwrap();
+        data.messages.into_iter().map(|m| m.role).collect()
+    };
+    let writer = store.create("model");
+    let mut session = Session::new(store.clone(), writer, TokenUsage::default(), 0);
+    let turn = [ChatMessage::user("go"), ChatMessage::assistant("on it")];
+
+    // A prompt stopped half way, as by a signal, keeps what it reported.
+    let mut saver = PromptSaver::new(Some(&mut session), &[]);
+    saver.on_event(&AgentEvent::Messages(&turn));
+    drop(saver);
+    assert_eq!(roles(&store), [ChatRole::User, ChatRole::Assistant]);
+
+    // A compaction replaces what was saved, and the end adds the rest.
+    let summary = [ChatMessage::user("summary")];
+    let history = [summary[0].clone(), turn[1].clone()];
+    let mut saver = PromptSaver::new(Some(&mut session), &turn);
+    saver.on_event(&AgentEvent::Compacted {
+        before: 2,
+        messages: &summary,
+    });
+    let usage = TokenUsage {
+        input: 7,
+        output: 3,
+        cached: 0,
+    };
+    saver.finish(&history, usage, 7).unwrap();
+    assert_eq!(roles(&store), [ChatRole::User, ChatRole::Assistant]);
+    let data = store.latest().unwrap().unwrap();
+    assert_eq!(data.messages[0].content.first_text(), Some("summary"));
+    assert_eq!((data.usage, data.context), (usage, 7));
+    assert_eq!((session.usage(), session.context()), (usage, 7));
 }
 
 #[test]
