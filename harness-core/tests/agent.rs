@@ -1601,3 +1601,39 @@ async fn files_named_with_at_are_attached_to_the_prompt() {
     // Sent again, the files are read again, not twice.
     assert_eq!(agent.take_last_prompt().as_deref(), Some(prompt_text));
 }
+
+#[tokio::test]
+async fn plan_mode_runs_only_the_tools_that_change_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "alpha\n").unwrap();
+    let model = MockModel::start(vec![
+        tool_calls(&[
+            ("c1", "write", json!({ "path": "new.txt", "content": "x" })),
+            ("c2", "read", json!({ "path": "a.txt" })),
+        ]),
+        text("the plan"),
+        text("done"),
+        text("again"),
+    ])
+    .await;
+    let mut agent = agent(&model, dir.path());
+
+    agent.set_plan(true);
+    prompt(&mut agent, "add new.txt").await.unwrap();
+
+    assert!(!dir.path().join("new.txt").exists());
+    let requests = model.requests();
+    // The last user message, as the provider gets it.
+    let user = |request: &Value| sent(request, "user").last().unwrap()["content"].to_string();
+    assert!(user(&requests[0]).contains("[Plan mode: look around"));
+    let tools = sent(&requests[1], "tool");
+    assert!(tools[0]["content"].as_str().unwrap().contains("plan mode"));
+    assert!(tools[1]["content"].as_str().unwrap().contains("alpha"));
+
+    // Leaving plan mode is told once.
+    agent.set_plan(false);
+    prompt(&mut agent, "go").await.unwrap();
+    assert!(user(&model.requests()[2]).contains("[Plan mode is off"));
+    prompt(&mut agent, "more").await.unwrap();
+    assert!(!user(&model.requests()[3]).contains("Plan mode"));
+}
