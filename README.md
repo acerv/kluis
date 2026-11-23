@@ -119,7 +119,7 @@ Your own git, outside the sandbox, also runs repository hooks. See
 - [Features](docs/features.md): agent, tools and terminal UI
 - [Architecture](docs/architecture.md): crates, process model and design
   choices
-- [Roadmap](TODO.md): planned features
+- [Roadmap](https://github.com/acerv/kluis/issues): planned features
 
 ## License
 

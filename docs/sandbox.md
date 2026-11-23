@@ -57,6 +57,10 @@ Two tools run outside the sandbox because they need the user or the network:
 `ask_user` and `web_fetch`. `web_fetch` is offered only with `--network` (or
 `network = true`) or `--no-sandbox`.
 
+Running a file of unknown format makes the kernel run `modprobe` for a
+`binfmt-XXXX` module, outside the sandbox. Only a host setting can stop it:
+`kernel.modprobe` or `kernel.modules_disabled`.
+
 ## Git safety
 
 Your own git, outside the sandbox, runs hooks and some config settings of any
