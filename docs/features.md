@@ -59,6 +59,9 @@
 - Slash commands: `/model`, `/thinking`, `/resume`, `/copy`, `/output`,
   `/retry`, `/compact`, `/status`, `/new`, `/help`, `/quit`.
 - `/retry` sends the last prompt again, dropping what it led to.
+- `/thinking` offers only the levels the model takes when its provider says
+  which (Anthropic and Ollama), and falls back to `default` when a new model
+  does not take the current level. Other providers get every level.
 - Falls back to line mode when stdin or stdout is not a terminal.
 - For scripts: `-p`/`--print` runs one prompt with standard input appended,
   and `--json` prints one object with `result`, `usage` and `session`, or

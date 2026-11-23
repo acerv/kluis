@@ -15,6 +15,8 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
+use harness_core::Thinking;
+
 use crate::style::Theme;
 use crate::terminal::truncate_width;
 
@@ -107,14 +109,17 @@ impl CommandSpec {
     }
 }
 
-const THINKING_LEVELS: &[(&str, &str)] = &[
-    ("default", "leave provider reasoning default untouched"),
-    ("off", "disable reasoning"),
-    ("low", "light reasoning effort"),
-    ("medium", "balanced reasoning effort"),
-    ("high", "deep reasoning effort"),
-    ("xhigh", "extra-deep reasoning effort"),
-    ("max", "maximum reasoning effort"),
+const THINKING_LEVELS: &[(Thinking, &str)] = &[
+    (
+        Thinking::Default,
+        "leave provider reasoning default untouched",
+    ),
+    (Thinking::Off, "disable reasoning"),
+    (Thinking::Low, "light reasoning effort"),
+    (Thinking::Medium, "balanced reasoning effort"),
+    (Thinking::High, "deep reasoning effort"),
+    (Thinking::XHigh, "extra-deep reasoning effort"),
+    (Thinking::Max, "maximum reasoning effort"),
 ];
 
 /// Build the multi-line `/help` text from [`COMMANDS`] so help and
@@ -165,6 +170,8 @@ pub(crate) struct CommandCompletion {
     root: Option<PathBuf>,
     /// Its files, listed the first time `@` needs them.
     files: Option<Vec<String>>,
+    /// Thinking levels the model takes, when its provider says.
+    thinking_levels: Option<Vec<Thinking>>,
 }
 
 impl CommandCompletion {
@@ -207,6 +214,15 @@ impl CommandCompletion {
         self.files = None;
     }
 
+    pub(crate) fn thinking_levels(&self) -> Option<&[Thinking]> {
+        self.thinking_levels.as_deref()
+    }
+
+    /// Offer only `levels` after `/thinking`, or every level with `None`.
+    pub(crate) fn set_thinking_levels(&mut self, levels: Option<Vec<Thinking>>) {
+        self.thinking_levels = levels;
+    }
+
     /// List the files again the next time `@` needs them, as commands may
     /// have changed them.
     pub(crate) fn forget_files(&mut self) {
@@ -240,8 +256,13 @@ impl CommandCompletion {
                 return;
             }
             let prefix = rest.to_ascii_lowercase();
+            let takes = |level| {
+                self.thinking_levels
+                    .as_ref()
+                    .is_none_or(|l| l.contains(&level))
+            };
             for &(level, desc) in THINKING_LEVELS {
-                if level.starts_with(&prefix) {
+                if takes(level) && level.as_str().starts_with(&prefix) {
                     self.items.push(CompletionItem {
                         label: format!("/thinking {level}"),
                         insert: format!("/thinking {level}"),

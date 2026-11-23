@@ -192,3 +192,48 @@ fn session_picked_at_startup_takes_the_model_asked_for() {
     unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
     child.wait().unwrap();
 }
+
+#[test]
+fn thinking_falls_back_to_a_level_the_model_takes() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // An Ollama server whose model takes only on and off thinking.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let mut buf = [0; 4096];
+            let _ = stream.read(&mut buf);
+            let body = r#"{"thinking":{"values":[true,false],"default":true}}"#;
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                 content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    let home = tempfile::tempdir().unwrap();
+    let auth = home.path().join(".kluis/auth.toml");
+    std::fs::create_dir_all(auth.parent().unwrap()).unwrap();
+    std::fs::write(
+        &auth,
+        format!("[ollama]\nendpoint = \"http://127.0.0.1:{port}/\"\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&auth, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    let (master, slave) = openpty(24, 100);
+    let args = ["--model", "ollama::qwen3", "--thinking", "high"];
+    let mut child = spawn_tui_with(home.path(), &slave, &args);
+    let mut term = Emulator::new(&master, 24, 100);
+
+    term.wait_for("[ollama::qwen3 does not take thinking high; using default]");
+    term.type_text("/thinking max\r");
+    term.wait_for("it takes default, off]");
+    term.type_text("/thinking\r");
+    term.wait_for("thinking: default (this model takes default, off)");
+
+    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+    child.wait().unwrap();
+}
