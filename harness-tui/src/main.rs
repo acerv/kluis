@@ -89,7 +89,8 @@ pub struct Args {
     #[arg(long, conflicts_with = "no_sandbox")]
     strict: bool,
 
-    /// Also allow reading this path (repeatable).
+    /// Also allow reading this path (repeatable). $HOME is empty but for
+    /// the allowed paths and the current folder.
     #[arg(long, value_name = "PATH")]
     allow_read: Vec<PathBuf>,
 

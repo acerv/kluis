@@ -17,8 +17,10 @@
 //! code_theme = "solarized-dark"
 //!
 //! [sandbox]
-//! # Also allow reading, or changing, these paths; `~` is $HOME.
-//! read = ["/etc/ssl"]
+//! # Also allow reading, or changing, these paths; `~` is $HOME. $HOME
+//! # is otherwise an empty private folder showing only these paths and
+//! # the current folder, e.g. "~/.cargo" or "~/.gitconfig".
+//! read = ["/etc/ssl", "~/.cargo", "~/.rustup"]
 //! write = ["~/scratch"]
 //! # Also hide these paths, even inside a readable or writable folder:
 //! # credentials, keys and history in $HOME are always hidden.
