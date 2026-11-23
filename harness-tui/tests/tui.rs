@@ -234,6 +234,7 @@ fn slash_commands() {
             "/compact keep api",
             Action::Slash(SlashCommand::Compact(Some("keep api".into()))),
         ),
+        ("/retry", Action::Slash(SlashCommand::Retry)),
         ("/status", Action::Slash(SlashCommand::Status)),
         ("/output", Action::Slash(SlashCommand::Output)),
         ("/quit", Action::Slash(SlashCommand::Quit)),
@@ -796,7 +797,7 @@ fn slash_command_autocomplete_popup_and_tab_completion() {
     assert!(screen.contains("/resume [id]"), "{screen}");
     assert!(screen.contains("/copy"), "{screen}");
     assert!(screen.contains("/new"), "{screen}");
-    assert!(screen.contains("/quit"), "{screen}");
+    assert!(screen.contains("/retry"), "{screen}");
     for cell in term.backend().buffer().content() {
         assert_eq!(cell.fg, Color::Reset, "fg set under NO_COLOR: {cell:?}");
         assert!(cell.modifier.is_empty(), "modifier set: {cell:?}");
