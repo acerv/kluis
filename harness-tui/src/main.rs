@@ -6,6 +6,8 @@
 //! ```sh
 //! kl                           # interactive chat, Ctrl-D to quit
 //! kl "fix the typo in README.md"   # single prompt
+//! git diff | kl -p "review this"    # single prompt, stdin appended
+//! kl --json "list the TODOs"        # single prompt, JSON result
 //! kl --login anthropic         # use a Claude Pro/Max subscription
 //! ```
 //!
@@ -38,7 +40,10 @@ use harness_tui::{
     check_git_guard, printable, pruned_notice, retry_notice, summary, BannerLine, History,
     PromptSaver, RunOptions, Session, Status, TRUNCATED_NOTICE,
 };
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+
+/// Largest standard input `--print` adds to the prompt.
+const MAX_STDIN_BYTES: u64 = 4 << 20;
 
 /// Terminal coding agent with native sandboxing.
 #[derive(Parser)]
@@ -155,6 +160,16 @@ pub struct Args {
     #[arg(long, hide = true, requires = "tool_executor", default_value = "none")]
     network_access: NetworkAccess,
 
+    /// Run the prompt once and exit, with standard input appended to it
+    /// when it is not a terminal.
+    #[arg(short, long)]
+    print: bool,
+
+    /// Like --print, and write the result as one JSON object instead of
+    /// text: `result`, `usage` and `session`, or `error`.
+    #[arg(long)]
+    json: bool,
+
     /// Prompt to run once; starts an interactive chat when absent.
     prompt: Vec<String>,
 }
@@ -204,7 +219,7 @@ fn launch(mut args: Args) -> Result<ExitCode, Error> {
         runtime.block_on(logout(provider))?;
     } else {
         let config_model = apply_config(&mut args)?;
-        runtime.block_on(run(args, config_model))?;
+        return runtime.block_on(run(args, config_model));
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -303,8 +318,35 @@ fn apply_config(args: &mut Args) -> Result<Option<String>, Error> {
     Ok(config.generic.model)
 }
 
-async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
+async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, Error> {
     let cwd = std::env::current_dir()?;
+    let once = args.print || args.json;
+    if once {
+        let mut text = args.prompt.join(" ");
+        if !io::stdin().is_terminal() {
+            // Bounded: more could not fit in a request anyway.
+            let mut input = String::new();
+            tokio::io::stdin()
+                .take(MAX_STDIN_BYTES + 1)
+                .read_to_string(&mut input)
+                .await?;
+            if input.len() as u64 > MAX_STDIN_BYTES {
+                return Err(format!(
+                    "standard input is larger than {} MiB",
+                    MAX_STDIN_BYTES >> 20
+                )
+                .into());
+            }
+            if !text.is_empty() && !input.is_empty() {
+                text.push_str("\n\n");
+            }
+            text.push_str(&input);
+        }
+        if text.trim().is_empty() {
+            return Err("no prompt: give one as arguments or on standard input".into());
+        }
+        args.prompt = vec![text];
+    }
     // A wrong theme fails now, not only once the terminal UI starts.
     let code_theme = args
         .code_theme
@@ -431,8 +473,36 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
 
     if !args.prompt.is_empty() {
         let text = args.prompt.join(" ");
-        prompt_and_persist(&mut agent, session.as_mut(), git_guard.as_mut(), &text).await?;
-        return Ok(());
+        let res = prompt_and_persist(
+            &mut agent,
+            session.as_mut(),
+            git_guard.as_mut(),
+            &text,
+            !args.json,
+        )
+        .await;
+        if !args.json {
+            return res.map(|_| ExitCode::SUCCESS);
+        }
+        let failed = res.is_err();
+        let mut out = match res {
+            Ok(done) => serde_json::json!({
+                "result": done.text,
+                "usage": {
+                    "input": done.usage.input,
+                    "output": done.usage.output,
+                    "cached": done.usage.cached,
+                },
+            }),
+            Err(err) => serde_json::json!({ "error": err.to_string() }),
+        };
+        out["session"] = session.as_ref().map(Session::current_id).into();
+        println!("{out}");
+        return Ok(if failed {
+            ExitCode::FAILURE
+        } else {
+            ExitCode::SUCCESS
+        });
     }
 
     let sandbox = sandbox_label(&args);
@@ -450,7 +520,7 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
         ];
         banner.extend(warnings.into_iter().map(BannerLine::warning));
         let history = config::history_path().map(History::load);
-        return harness_tui::run(
+        harness_tui::run(
             agent,
             status,
             RunOptions {
@@ -464,7 +534,8 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
                 code_theme,
             },
         )
-        .await;
+        .await?;
+        return Ok(ExitCode::SUCCESS);
     }
 
     println!(
@@ -473,13 +544,19 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
         agent.thinking()
     );
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
+    let mut failed = false;
     loop {
         print!("> ");
         io::stdout().flush()?;
 
         let Some(line) = lines.next_line().await? else {
             println!();
-            return Ok(());
+            // Scripts feeding prompts learn that one failed.
+            return Ok(if failed {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            });
         };
         let line = line.trim();
         if line.is_empty() {
@@ -487,9 +564,11 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
         }
 
         // Keep the session alive on failures such as network errors.
-        let res = prompt_and_persist(&mut agent, session.as_mut(), git_guard.as_mut(), line).await;
+        let res =
+            prompt_and_persist(&mut agent, session.as_mut(), git_guard.as_mut(), line, true).await;
         if let Err(err) = res {
             eprintln!("error: {}", printable(&err.to_string()));
+            failed = true;
         }
     }
 }
@@ -508,17 +587,26 @@ fn open_loaded_session(
     Ok((model, data.messages, Some(session)))
 }
 
+/// What a prompt left: the last text of the model, and the tokens it used.
+struct Done {
+    text: String,
+    usage: TokenUsage,
+}
+
+/// Run a prompt, printing its events when `print` is set, and save it.
 async fn prompt_and_persist(
     agent: &mut Agent,
     session: Option<&mut Session>,
     git_guard: Option<&mut GitGuard>,
     text: &str,
-) -> Result<(), Error> {
+    print: bool,
+) -> Result<Done, Error> {
     let mut saver = PromptSaver::new(session, agent.history());
     let mut usage = TokenUsage::default();
     let mut context = 0;
     let mut in_compact = false;
     let mut changed_files = false;
+    let mut last_text = String::new();
     let res = agent
         .prompt(text, |event| {
             saver.on_event(&event);
@@ -544,9 +632,10 @@ async fn prompt_and_persist(
                 Event::ToolCall(call) if !is_read_only(&call.fn_name) => {
                     changed_files = true;
                 }
+                Event::Text(text) if !in_compact => last_text = text.to_owned(),
                 _ => {}
             }
-            if !suppress_stdout {
+            if print && !suppress_stdout {
                 print_event(event);
             }
         })
@@ -560,7 +649,10 @@ async fn prompt_and_persist(
     for notice in check_git_guard(git_guard, changed_files) {
         eprintln!("{}", printable(&notice));
     }
-    res.map(|_| ())
+    res.map(|_| Done {
+        text: last_text,
+        usage,
+    })
 }
 
 fn sandbox_label(args: &Args) -> String {

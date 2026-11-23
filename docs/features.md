@@ -57,3 +57,7 @@
   `/retry`, `/compact`, `/status`, `/new`, `/help`, `/quit`.
 - `/retry` sends the last prompt again, dropping what it led to.
 - Falls back to line mode when stdin or stdout is not a terminal.
+- For scripts: `-p`/`--print` runs one prompt with standard input appended,
+  and `--json` prints one object with `result`, `usage` and `session`, or
+  `error`. kl exits with 1 when a prompt failed, line mode included, and 2
+  on a wrong command line.
