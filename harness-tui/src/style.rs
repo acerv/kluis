@@ -108,6 +108,8 @@ impl Theme {
             Thinking::Low => Color::Cyan,
             Thinking::Medium => Color::Yellow,
             Thinking::High => Color::Indexed(208),
+            Thinking::XHigh => Color::Red,
+            Thinking::Max => Color::Magenta,
         };
         Style::default().fg(fg)
     }

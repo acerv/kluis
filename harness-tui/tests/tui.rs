@@ -751,6 +751,8 @@ fn thinking_effort_slash_and_footer() {
         (Thinking::Low, Color::Cyan),
         (Thinking::Medium, Color::Yellow),
         (Thinking::High, Color::Indexed(208)),
+        (Thinking::XHigh, Color::Red),
+        (Thinking::Max, Color::Magenta),
     ] {
         colored.set_thinking(level);
         term.draw(|f| colored.render(f)).unwrap();

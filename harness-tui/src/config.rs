@@ -7,7 +7,8 @@
 //! [generic]
 //! # Default model when `--model` / `HARNESS_MODEL` is not set.
 //! model = "deepseek-chat"
-//! # Default thinking effort: "default", "off", "low", "medium", or "high".
+//! # Default thinking effort: "default", "off", "low", "medium", "high",
+//! # "xhigh", or "max"..
 //! thinking = "medium"
 //! # Auto-compact context at this many prompt tokens (`0` disables it).
 //! auto_compact_tokens = 100000
@@ -88,7 +89,7 @@ pub struct GenericConfig {
     /// Default model when `--model` / `HARNESS_MODEL` is not set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// Default thinking effort (`default`, `off`, `low`, `medium`, `high`).
+    /// Default thinking effort (`default`, `off`, `low` ... `max`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<Thinking>,
     /// Colors of code blocks, like `--code-theme`: a built-in theme, or a
