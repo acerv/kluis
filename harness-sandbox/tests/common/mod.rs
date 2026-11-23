@@ -67,8 +67,12 @@ where
 }
 
 /// Drop the capabilities that the container's user namespace gives, as
-/// `execve` does for a program: the sandbox keeps a program without them.
+/// `execve` does for a program not run as root.
 fn drop_capabilities() -> io::Result<()> {
+    // SAFETY: a plain system call.
+    if unsafe { libc::geteuid() } == 0 {
+        return Ok(());
+    }
     for set in [CapSet::Effective, CapSet::Permitted] {
         caps::clear(None, set).map_err(io::Error::other)?;
     }
