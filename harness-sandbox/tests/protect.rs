@@ -4,10 +4,9 @@
 //! Kept apart from other tests: protecting the test process applies to all
 //! its threads.
 
-use std::os::unix::process::CommandExt;
 use std::process::{Command, Output};
 
-use harness_sandbox::{protect_self, NoNetwork};
+use harness_sandbox::protect_self;
 
 fn bash(script: &str) -> Command {
     let mut cmd = Command::new("bash");
@@ -32,18 +31,4 @@ fn children_cannot_read_environment() {
         "{}",
         stderr(&out)
     );
-}
-
-#[test]
-fn no_network_still_applies() {
-    protect_self().unwrap();
-
-    let no_network = NoNetwork::new();
-    let mut cmd = bash("id -u");
-    // SAFETY: apply only makes system calls.
-    unsafe {
-        cmd.pre_exec(move || no_network.apply());
-    }
-    let out = cmd.output().unwrap();
-    assert!(out.status.success(), "{}", stderr(&out));
 }

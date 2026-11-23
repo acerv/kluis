@@ -7,8 +7,9 @@
 //! A [`Sandbox`] lists the folders the harness may read and write and the
 //! TCP ports it may connect to, or allows any network. Its
 //! [`container`](Sandbox::container) shows only those folders, and
-//! Landlock (Linux 6.7 or newer) limits TCP to those ports. UDP is not
-//! filtered; [`NoNetwork`] takes away all network from commands.
+//! Landlock (Linux 6.7 or newer) limits TCP to those ports, while
+//! [`restrict_syscalls`] refuses UDP; [`Sandbox::no_network`] takes away
+//! all network.
 //!
 //! Programs of the host that can reach the network are kept away too: a
 //! mount below a shown folder whose filesystem could reach the network,
@@ -24,7 +25,6 @@ pub mod apparmor;
 mod env;
 mod git;
 mod init;
-mod network;
 mod profile;
 mod protect;
 mod seccomp;
@@ -32,7 +32,6 @@ mod seccomp;
 pub use env::command_env;
 pub use git::{GitCheck, GitGuard, NewRepository};
 pub use init::{start_init, stop_others};
-pub use network::NoNetwork;
 pub use profile::{hidden_secrets, Options};
 pub use protect::{kill_first_on_oom, protect_self, refuse_root};
 pub use seccomp::{restrict_syscalls, NetworkAccess};

@@ -28,7 +28,7 @@ pub fn refuse_root() -> io::Result<()> {
 ///
 /// Children inherit this until `exec`.
 pub fn protect_self() -> io::Result<()> {
-    set_dumpable(false)
+    nix::sys::prctl::set_dumpable(false).map_err(io::Error::from)
 }
 
 /// Make the calling process and those it starts the first ones the kernel
@@ -39,9 +39,4 @@ pub fn protect_self() -> io::Result<()> {
 /// value, which still leaves the biggest process to go.
 pub fn kill_first_on_oom() -> io::Result<()> {
     std::fs::write("/proc/self/oom_score_adj", "1000")
-}
-
-/// Set whether processes of the same user may inspect the calling process.
-pub(crate) fn set_dumpable(dumpable: bool) -> io::Result<()> {
-    nix::sys::prctl::set_dumpable(dumpable).map_err(io::Error::from)
 }
