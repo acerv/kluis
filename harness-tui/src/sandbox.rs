@@ -3,7 +3,8 @@
 
 //! Sandboxed tool executor for `kl`: spawns `kl --tool-executor` inside a
 //! `hakoniwa` container with the current folder writable (or read-only with
-//! `--strict`), `~/.kluis` hidden, zero API keys in the environment, and no
+//! `--strict`), an empty private `$HOME` showing only the allowed paths,
+//! `~/.kluis` hidden, zero API keys in the environment, and no
 //! network unless `--network` or `--allow-connect` is given. Commands
 //! cannot create user namespaces, nor Unix sockets without `--network`.
 
