@@ -309,6 +309,9 @@ impl Agent {
     ///
     /// `on_event` is called as the work progresses.
     ///
+    /// A turn without text nor tool calls is an error, and stays out of the
+    /// history: providers refuse it when sent back.
+    ///
     /// Dropping the future, e.g. to cancel, keeps the history valid for the
     /// next prompt: the user message stays, a reply cut while streaming is
     /// left out, tool results already made stay, and the calls left get a
@@ -335,6 +338,16 @@ impl Agent {
 
             on_event(Event::TurnStart);
             let turn = self.next_turn_retrying(None, &mut on_event).await?;
+            if !turn.content.contains_text() && !turn.content.contains_tool_call() {
+                // Kept out of the history: providers refuse an empty turn.
+                on_event(Event::TurnEnd(turn.usage.as_ref()));
+                return Err(if turn.truncated {
+                    "the reply was cut at the token limit before any text"
+                } else {
+                    "the model returned an empty reply"
+                }
+                .into());
+            }
 
             // Keep the whole assistant turn (text, tool calls, thought
             // signatures) in the history, before any tool result.
@@ -385,6 +398,18 @@ impl Agent {
             prev_assistant_idx = (!turn.truncated).then_some(assistant_idx);
             let repeated_turn = repeat_streak >= MAX_REPEATED_CALLS;
 
+            // Why the call at `idx` must not run, if so.
+            let refusal = |idx: usize, call: &ToolCall| {
+                if turn.truncated {
+                    Some(TRUNCATED)
+                } else if turn.invalid.contains(&call.call_id) {
+                    Some(INVALID_ARGUMENTS)
+                } else if repeated_turn || is_within_turn_repeat(&calls[..idx], call) {
+                    Some(REPEATED_CALL)
+                } else {
+                    None
+                }
+            };
             let mut pending = Pending {
                 messages: &mut self.req.messages,
                 calls: &calls,
@@ -408,10 +433,8 @@ impl Agent {
                 if batch.len() == 1 {
                     let call = &batch[0];
                     on_event(Event::ToolCall(call));
-                    let (resp, details) = if turn.truncated {
-                        (error_response(call, TRUNCATED), None)
-                    } else if repeated_turn || is_within_turn_repeat(&calls[..idx], call) {
-                        (error_response(call, REPEATED_CALL), None)
+                    let (resp, details) = if let Some(why) = refusal(idx, call) {
+                        (error_response(call, why), None)
                     } else if let Some(resp) = self.host.run(call).await {
                         (resp, None)
                     } else {
@@ -425,10 +448,10 @@ impl Agent {
                     let executor = &self.executor;
                     let results = futures_util::future::join_all(batch.iter().enumerate().map(
                         |(off, call)| {
-                            let repeated = is_within_turn_repeat(&calls[..idx + off], call);
+                            let refusal = refusal(idx + off, call);
                             async move {
-                                if repeated {
-                                    (error_response(call, REPEATED_CALL), None)
+                                if let Some(why) = refusal {
+                                    (error_response(call, why), None)
                                 } else {
                                     executor.execute(call, |_| {}).await
                                 }
@@ -665,22 +688,32 @@ impl Agent {
                     on_event(Event::ReasoningDelta(&chunk.content))
                 }
                 ChatStreamEvent::End(end) => {
-                    let mut content = end.captured_content.unwrap_or_default();
                     let truncated = end
                         .captured_stop_reason
                         .as_ref()
                         .is_some_and(StopReason::is_max_tokens);
-                    if truncated {
-                        // Replace incomplete/unparsed arguments with `{}` so
-                        // providers requiring an object accept the next turn.
-                        for part in content.iter_mut() {
-                            if let ContentPart::ToolCall(call) = part {
-                                if !call.fn_arguments.is_object() {
-                                    call.fn_arguments = json!({});
+                    let mut parts = end.captured_content.unwrap_or_default().into_parts();
+                    // Providers refuse blank text and arguments that are
+                    // not an object when the turn is sent back.
+                    parts.retain(
+                        |part| !matches!(part, ContentPart::Text(t) if t.trim().is_empty()),
+                    );
+                    let mut invalid = Vec::new();
+                    for part in &mut parts {
+                        if let ContentPart::ToolCall(call) = part {
+                            let args = &mut call.fn_arguments;
+                            if !args.is_object() {
+                                // No arguments at all is a call without any.
+                                let none = args.is_null()
+                                    || args.as_str().is_some_and(|s| s.trim().is_empty());
+                                if !none {
+                                    invalid.push(call.call_id.clone());
                                 }
+                                *args = json!({});
                             }
                         }
                     }
+                    let mut content = MessageContent::from_parts(parts);
                     // Unless the turn already carries its reasoning, e.g.
                     // signed, which an extra part would break.
                     let carried = content
@@ -696,6 +729,7 @@ impl Agent {
                         content,
                         usage: end.captured_usage,
                         truncated,
+                        invalid,
                     });
                 }
                 _ => {}
@@ -709,6 +743,8 @@ struct Turn {
     content: MessageContent,
     usage: Option<Usage>,
     truncated: bool,
+    /// Ids of the tool calls whose arguments were not a JSON object.
+    invalid: Vec<String>,
 }
 
 /// Whether the provider wants the reasoning of a turn back in the next
@@ -777,6 +813,10 @@ const CANCELLED: &str = "cancelled; the call may have partly run";
 
 /// Result of a tool call from a response truncated by the token limit.
 const TRUNCATED: &str = "response was truncated at max_tokens; tool call was not executed — please re-issue it (split into smaller calls if needed)";
+
+/// Result of a tool call whose arguments could not be read.
+const INVALID_ARGUMENTS: &str =
+    "arguments were not a valid JSON object; tool call was not executed, please re-issue it";
 
 /// Result of a tool call repeated identically too many times in a row.
 const REPEATED_CALL: &str =

@@ -6,7 +6,9 @@ mod common;
 use std::path::Path;
 use std::time::Duration;
 
-use common::{text, thinking, tool_calls, truncated_tool_calls, with_usage, MockModel, Reply};
+use common::{
+    raw_tool_calls, text, thinking, tool_calls, truncated_tool_calls, with_usage, MockModel, Reply,
+};
 use genai::adapter::AdapterKind;
 use genai::chat::{ChatMessage, ChatRole};
 use harness_core::tools::ToolContext;
@@ -213,6 +215,54 @@ async fn tool_call_round_trip() {
     assert_eq!(results[0]["tool_call_id"], "call_1");
     let output: Value = serde_json::from_str(results[0]["content"].as_str().unwrap()).unwrap();
     assert_eq!(output["output"], "hi\n");
+}
+
+#[tokio::test]
+async fn empty_reply_fails_and_stays_out_of_the_history() {
+    let model = MockModel::start(vec![text(""), text(" \n"), text("hi")]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = agent(&model, dir.path());
+
+    for _ in 0..2 {
+        let err = prompt(&mut agent, "hello").await.unwrap_err();
+        assert!(err.to_string().contains("empty reply"), "{err}");
+    }
+    // Providers refuse an empty turn sent back: none is.
+    assert_eq!(roles(&agent), [ChatRole::User, ChatRole::User]);
+
+    assert_eq!(prompt(&mut agent, "again").await.unwrap(), "hi");
+    assert!(sent(&model.requests()[2], "assistant").is_empty());
+}
+
+#[tokio::test]
+async fn malformed_arguments_fail_without_running_and_go_back_as_objects() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("here.txt"), "").unwrap();
+    let malformed = raw_tool_calls(&[
+        ("call_1", "write", r#"{"path":"new.txt","content":oops}"#),
+        ("call_2", "ls", r#"["."]"#),
+        // No arguments at all: a call without any.
+        ("call_3", "ls", ""),
+    ]);
+    let model = MockModel::start(vec![malformed, text("done")]).await;
+    let mut agent = agent(&model, dir.path());
+
+    assert_eq!(prompt(&mut agent, "go").await.unwrap(), "done");
+
+    assert!(!dir.path().join("new.txt").exists());
+    let history = agent.history();
+    for (message, id) in [(&history[2], "call_1"), (&history[3], "call_2")] {
+        let result = result_of(message, id).unwrap();
+        assert!(result.contains("not a valid JSON object"), "{result}");
+    }
+    let listed = result_of(&history[4], "call_3").unwrap();
+    assert!(listed.contains("here.txt"), "{listed}");
+
+    // Providers refuse arguments that are not an object when sent back.
+    let calls = sent(&model.requests()[1], "assistant")[0]["tool_calls"].clone();
+    for call in calls.as_array().unwrap() {
+        assert_eq!(call["function"]["arguments"], "{}", "{call}");
+    }
 }
 
 #[tokio::test]
