@@ -1572,3 +1572,32 @@ async fn last_prompt_is_taken_with_what_followed_it() {
     assert!(agent.history().is_empty());
     assert_eq!(agent.take_last_prompt(), None);
 }
+
+#[tokio::test]
+async fn files_named_with_at_are_attached_to_the_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "alpha\n").unwrap();
+    std::fs::write(dir.path().join("b.png"), b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR").unwrap();
+    let model = MockModel::start(vec![text("seen")]).await;
+    let mut agent = agent(&model, dir.path());
+
+    let prompt_text = "compare @a.txt, @b.png and @missing.rs; mail me@example.com";
+    prompt(&mut agent, prompt_text).await.unwrap();
+
+    let user = &sent(&model.requests()[0], "user")[0];
+    let parts = user["content"].as_array().unwrap();
+    let texts: Vec<_> = parts.iter().filter_map(|p| p["text"].as_str()).collect();
+    assert_eq!(
+        texts,
+        [
+            prompt_text,
+            "<file path=\"a.txt\">\nalpha\n</file>",
+            "Image b.png:"
+        ]
+    );
+    let url = parts[3]["image_url"]["url"].as_str().unwrap();
+    assert!(url.starts_with("data:image/png;base64,"), "{url}");
+
+    // Sent again, the files are read again, not twice.
+    assert_eq!(agent.take_last_prompt().as_deref(), Some(prompt_text));
+}

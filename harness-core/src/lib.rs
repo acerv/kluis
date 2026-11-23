@@ -13,6 +13,7 @@ mod auth;
 mod error;
 mod event;
 mod fetch;
+mod mention;
 mod models;
 pub mod oauth;
 mod private_file;
