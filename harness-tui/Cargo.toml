@@ -18,6 +18,7 @@ crossterm.workspace = true
 genai.workspace = true
 harness-core.workspace = true
 harness-sandbox.workspace = true
+ignore.workspace = true
 ratatui.workspace = true
 scopeguard.workspace = true
 serde.workspace = true

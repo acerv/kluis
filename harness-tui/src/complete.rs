@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
-//! Inline autocomplete popup for slash commands (`/`) and their fixed arguments.
+//! Inline autocomplete popup for slash commands (`/`) and their fixed
+//! arguments, and for the files a prompt names with `@`.
 
 use std::fmt::Write;
+use std::path::{Path, PathBuf};
+
+use ignore::WalkBuilder;
 
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -16,6 +20,12 @@ use crate::terminal::truncate_width;
 
 /// Maximum visible completion rows below the editor.
 const MAX_COMPLETION_ROWS: u16 = 10;
+
+/// Most files of the workspace offered after `@`.
+const MAX_FILES: usize = 10_000;
+
+/// Most files matching what follows `@` in the popup.
+const MAX_FILE_ITEMS: usize = 50;
 
 struct CommandSpec {
     name: &'static str,
@@ -118,6 +128,7 @@ pub(crate) fn help_text() -> String {
         "  {:<19}run a shell command in the sandbox",
         "!<command>"
     );
+    let _ = writeln!(out, "  {:<19}attach a file to the prompt", "@<path>");
     out.push_str(
         "\nKeys:\n\
          \x20 Enter              send prompt (queued while the agent works)\n\
@@ -140,7 +151,7 @@ pub(crate) struct CompletionItem {
     pub(crate) description: &'static str,
 }
 
-/// Active slash-command completion state.
+/// Active completion state.
 #[derive(Debug, Default)]
 pub(crate) struct CommandCompletion {
     last_input: String,
@@ -148,6 +159,10 @@ pub(crate) struct CommandCompletion {
     selected: usize,
     navigated: bool,
     dismissed: bool,
+    /// The folder whose files `@` offers.
+    root: Option<PathBuf>,
+    /// Its files, listed the first time `@` needs them.
+    files: Option<Vec<String>>,
 }
 
 impl CommandCompletion {
@@ -184,9 +199,23 @@ impl CommandCompletion {
         self.dismissed = false;
     }
 
+    /// Offer the files of `root` after `@`.
+    pub(crate) fn set_root(&mut self, root: PathBuf) {
+        self.root = Some(root);
+        self.files = None;
+    }
+
+    /// List the files again the next time `@` needs them, as commands may
+    /// have changed them.
+    pub(crate) fn forget_files(&mut self) {
+        self.files = None;
+    }
+
     /// Recompute completion candidates when the editor text changes.
     pub(crate) fn update(&mut self, input: &str) {
-        if !input.starts_with('/') || input.contains('\n') || input.len() > 64 {
+        let mention = trailing_mention(input);
+        let command = input.starts_with('/') && !input.contains('\n') && input.len() <= 64;
+        if mention.is_none() && !command {
             self.clear();
             return;
         }
@@ -200,6 +229,10 @@ impl CommandCompletion {
         self.selected = 0;
         self.items.clear();
 
+        if let Some((start, fragment)) = mention {
+            self.complete_file(&input[..start], fragment);
+            return;
+        }
         if let Some((cmd, rest)) = input.split_once(' ') {
             if !cmd.eq_ignore_ascii_case("/thinking") || rest.contains(char::is_whitespace) {
                 return;
@@ -231,6 +264,36 @@ impl CommandCompletion {
                 });
             }
         }
+    }
+
+    /// Offer the files whose path holds `fragment`, the ones whose name
+    /// starts with it first, to follow `before` and `@`.
+    fn complete_file(&mut self, before: &str, fragment: &str) {
+        let Some(root) = &self.root else {
+            return;
+        };
+        let files = self.files.get_or_insert_with(|| list_files(root));
+        let fragment = fragment.to_lowercase();
+        let mut matches: Vec<(bool, &String)> = files
+            .iter()
+            .filter_map(|path| {
+                let lower = path.to_lowercase();
+                lower.contains(&fragment).then(|| {
+                    let name = lower.rsplit('/').next().unwrap_or(&lower);
+                    (!name.starts_with(&fragment), path)
+                })
+            })
+            .collect();
+        matches.sort_by_key(|&(other, path)| (other, path.len()));
+        self.items = matches
+            .into_iter()
+            .take(MAX_FILE_ITEMS)
+            .map(|(_, path)| CompletionItem {
+                label: format!("@{path}"),
+                insert: format!("{before}@{path} "),
+                description: "",
+            })
+            .collect();
     }
 
     pub(crate) fn move_up(&mut self) -> bool {
@@ -306,4 +369,26 @@ impl CommandCompletion {
         }
         frame.render_widget(Paragraph::new(lines), area);
     }
+}
+
+/// Where the `@` word `input` ends with starts, and what follows `@`.
+fn trailing_mention(input: &str) -> Option<(usize, &str)> {
+    let word = input.rsplit(char::is_whitespace).next()?;
+    let start = input.len() - word.len();
+    word.strip_prefix('@').map(|fragment| (start, fragment))
+}
+
+/// The files below `root`, relative to it, without the ones git or a hidden
+/// name leaves out.
+fn list_files(root: &Path) -> Vec<String> {
+    WalkBuilder::new(root)
+        .build()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_some_and(|t| t.is_file()))
+        .filter_map(|entry| {
+            let path = entry.path().strip_prefix(root).ok()?;
+            path.to_str().map(str::to_owned)
+        })
+        .take(MAX_FILES)
+        .collect()
 }

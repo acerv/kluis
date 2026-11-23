@@ -4,6 +4,7 @@
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -442,6 +443,11 @@ impl App {
         self.context = tokens;
     }
 
+    /// Offer the files of `root` when completing `@` in the editor.
+    pub fn set_workspace(&mut self, root: PathBuf) {
+        self.completion.set_root(root);
+    }
+
     /// Multi-line summary of the active model, session, context, and token
     /// usage shown by `/status`.
     pub fn status_text(&self, session: Option<&str>, messages: usize) -> String {
@@ -635,6 +641,7 @@ impl App {
         self.active_tool = None;
         self.clear_live();
         self.completion.clear();
+        self.completion.forget_files();
         self.notice = None;
     }
 

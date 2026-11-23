@@ -2068,3 +2068,37 @@ fn bang_runs_a_shell_command_and_waits_while_busy() {
     type_str(&mut app, "!ls");
     assert_eq!(app.handle_event(key(KeyCode::Enter)), Action::None);
 }
+
+#[test]
+fn at_completes_the_files_of_the_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("src")).unwrap();
+    for file in ["src/main.rs", "src/domain.rs", "README.md", ".secret"] {
+        std::fs::write(dir.path().join(file), "").unwrap();
+    }
+    let mut app = App::new("model", status(), Theme::new(false));
+    app.set_workspace(dir.path().to_owned());
+
+    type_str(&mut app, "see @ma");
+    assert!(app.is_completion_open());
+    let mut term = inline_terminal_with(80, 16, app.viewport_height(80));
+    term.draw(|f| app.render(f)).unwrap();
+    let screen = render_text(&term);
+    // Names starting with what was typed first.
+    let main = screen.find("@src/main.rs").expect(&screen);
+    let domain = screen.find("@src/domain.rs").expect(&screen);
+    assert!(main < domain, "{screen}");
+    assert!(!screen.contains("README"), "{screen}");
+
+    // Enter takes the file, then sends the prompt.
+    assert_eq!(app.handle_event(key(KeyCode::Enter)), Action::Redraw);
+    assert!(!app.is_completion_open());
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Submit("see @src/main.rs".into())
+    );
+
+    // Hidden files are not offered.
+    type_str(&mut app, "@sec");
+    assert!(!app.is_completion_open());
+}

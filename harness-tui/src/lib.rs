@@ -319,6 +319,9 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
     if let Some(theme) = code_theme {
         app.set_code_theme(theme);
     }
+    if let Ok(cwd) = std::env::current_dir() {
+        app.set_workspace(cwd);
+    }
     if let Some(ref h) = history {
         app.set_history(h.entries());
     }

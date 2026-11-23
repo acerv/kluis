@@ -1128,6 +1128,7 @@ dependencies = [
  "genai",
  "harness-core",
  "harness-sandbox",
+ "ignore",
  "libc",
  "ratatui",
  "scopeguard",
