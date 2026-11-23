@@ -19,13 +19,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
+use crate::mention::mentions;
 use crate::models::{discover_models, ModelList};
 use crate::oauth::OAuthLogins;
 use crate::retry::{is_too_large, EndedEarly, RetryPolicy};
 use crate::session::TokenUsage;
 use crate::tools::{
-    self, error_response, AskTool, Asker, Executor, FetchTool, HostTools, Image, ToolContext,
-    ToolDetails,
+    self, error_response, AskTool, Asker, Executor, FetchTool, HostTools, Image, ReadOutput,
+    ToolContext, ToolDetails,
 };
 use crate::Event;
 
@@ -325,12 +326,12 @@ impl Agent {
     /// Remove the last message the user sent, and all after it, from the
     /// history, returning its text to send it again.
     pub fn take_last_prompt(&mut self) -> Option<String> {
+        // Its text comes first, before the files it names.
         let idx = self.req.messages.iter().rposition(|m| {
             m.role == ChatRole::User
-                && m.content.is_text_only()
-                && m.content.first_text() != Some(IMAGES)
+                && matches!(m.content.parts().first(), Some(ContentPart::Text(text)) if text != IMAGES)
         })?;
-        let text = self.req.messages[idx].content.joined_texts()?;
+        let text = self.req.messages[idx].content.first_text()?.to_owned();
         self.req.messages.truncate(idx);
         Some(text)
     }
@@ -353,13 +354,37 @@ impl Agent {
     /// the model, in the sandbox when the tools run there, and return its
     /// result. Nothing joins the conversation.
     pub async fn run_command(&self, command: &str, on_output: impl FnMut(&str)) -> String {
-        let call = ToolCall {
-            call_id: "user".to_owned(),
-            fn_name: "bash".to_owned(),
-            fn_arguments: json!({ "command": command }),
-            thought_signatures: None,
-        };
+        let call = user_call("bash", json!({ "command": command }));
         self.executor.execute(&call, on_output).await.0.content
+    }
+
+    /// The message of the user saying `text`, with the files it names with
+    /// `@path` attached as the `read` tool reads them for the model. A name
+    /// that is no file it can read stays a word of the text.
+    async fn user_message(&self, text: &str) -> ChatMessage {
+        let mut parts = vec![ContentPart::Text(text.to_owned())];
+        for path in mentions(text) {
+            let call = user_call("read", json!({ "path": path }));
+            let (resp, details) = self.executor.execute(&call, |_| {}).await;
+            let Ok(out) = serde_json::from_str::<ReadOutput>(&resp.content) else {
+                continue;
+            };
+            if let Some(ToolDetails::Image(Image { mime, data })) = details {
+                parts.push(ContentPart::Text(format!("Image {path}:")));
+                parts.push(ContentPart::Binary(Binary::from_base64(mime, data, None)));
+                continue;
+            }
+            let mut file = format!("<file path=\"{path}\">\n{}", out.content);
+            if !file.ends_with('\n') {
+                file.push('\n');
+            }
+            if let Some(next) = out.next_offset {
+                file.push_str(&format!("[cut: read the rest from line {next}]\n"));
+            }
+            file.push_str("</file>");
+            parts.push(ContentPart::Text(file));
+        }
+        ChatMessage::user(MessageContent::from_parts(parts))
     }
 
     /// Stop what tool commands left running in the background, when they
@@ -370,6 +395,9 @@ impl Agent {
 
     /// Send a user message, run the tool calls the model makes, and return
     /// the model's final answer.
+    ///
+    /// Files the message names with `@path` are attached to it, read as the
+    /// `read` tool reads them: text up to its limits, or an image.
     ///
     /// `on_event` is called as the work progresses.
     ///
@@ -387,7 +415,8 @@ impl Agent {
     ) -> Result<String, Error> {
         // Where the messages not yet reported with `Event::Messages` start.
         let mut saved = self.req.messages.len();
-        self.req.messages.push(ChatMessage::user(text));
+        let message = self.user_message(text).await;
+        self.req.messages.push(message);
 
         let mut turns = 0usize;
         let mut prev_assistant_idx: Option<usize> = None;
@@ -984,6 +1013,16 @@ fn prune_tool_outputs(messages: &mut [ChatMessage]) -> usize {
         pruned += 1;
     }
     pruned
+}
+
+/// A call of the tool `name` made for the user, not the model.
+fn user_call(name: &str, args: serde_json::Value) -> ToolCall {
+    ToolCall {
+        call_id: "user".to_owned(),
+        fn_name: name.to_owned(),
+        fn_arguments: args,
+        thought_signatures: None,
+    }
 }
 
 /// Move an image a tool read from its `details` to `images`, as the model
