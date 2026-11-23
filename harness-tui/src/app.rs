@@ -190,6 +190,8 @@ pub enum Action {
     None,
     Redraw,
     Submit(String),
+    /// A shell command typed after `!`, to run in the sandbox.
+    Shell(String),
     Slash(SlashCommand),
     ResumeSession(String),
     SelectModel(String),
@@ -961,7 +963,7 @@ impl App {
                 }
             }
             // Commands wait for the prompt to end.
-            if self.busy && self.input.text().trim_start().starts_with('/') {
+            if self.busy && self.input.text().trim_start().starts_with(['/', '!']) {
                 return Action::None;
             }
             self.completion.clear();
@@ -978,6 +980,9 @@ impl App {
                         Action::Redraw
                     }
                 };
+            }
+            if let Some(command) = trimmed.strip_prefix('!') {
+                return Action::Shell(command.trim_start().to_owned());
             }
             if self.busy {
                 self.queued += 1;

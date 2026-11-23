@@ -2053,3 +2053,17 @@ fn queued_messages_of_a_cancelled_prompt_go_back_to_the_editor() {
         Action::Submit("queued\n\ntyped".into())
     );
 }
+
+#[test]
+fn bang_runs_a_shell_command_and_waits_while_busy() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    type_str(&mut app, "! git status");
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Shell("git status".into())
+    );
+
+    app.start_prompt("work");
+    type_str(&mut app, "!ls");
+    assert_eq!(app.handle_event(key(KeyCode::Enter)), Action::None);
+}

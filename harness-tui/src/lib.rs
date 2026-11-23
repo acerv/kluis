@@ -373,6 +373,26 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
                 agent.set_thinking(level);
                 draw(&mut term, &mut app)?;
             }
+            Action::Shell(command) => {
+                if let Some(ref mut h) = history {
+                    let _ = h.record(&format!("!{command}"));
+                }
+                let quit = run_shell(
+                    &mut term,
+                    &mut app,
+                    &agent,
+                    &mut events,
+                    &mut questions,
+                    &command,
+                )
+                .await?;
+                let notices = after_commands(&agent, git_guard.as_mut(), true).await;
+                if quit {
+                    quit_with(term, &notices);
+                    return Ok(());
+                }
+                show_notices(&mut term, &mut app, &notices)?;
+            }
             Action::Submit(mut prompt) => loop {
                 if let Some(ref mut h) = history {
                     let _ = h.record(&prompt);
@@ -389,22 +409,12 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
                     &prompt,
                 )
                 .await?;
-                // Before the git check: a program left running could
-                // recreate a repository right after it.
-                agent.stop_background().await;
-                let notices = check_git_guard(git_guard.as_mut(), turn.changed_files);
+                let notices = after_commands(&agent, git_guard.as_mut(), turn.changed_files).await;
                 if turn.quit {
-                    // Once the screen is back.
-                    drop(term);
-                    for notice in &notices {
-                        eprintln!("{}", printable(notice));
-                    }
+                    quit_with(term, &notices);
                     return Ok(());
                 }
-                if !notices.is_empty() {
-                    notices.iter().for_each(|notice| app.push_info(notice));
-                    draw(&mut term, &mut app)?;
-                }
+                show_notices(&mut term, &mut app, &notices)?;
                 // Messages queued as the prompt ended make the next one,
                 // unless it was cancelled.
                 let queued = agent.steering().take().join("\n\n");
@@ -421,6 +431,82 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
         }
     }
     Ok(())
+}
+
+/// Stop what commands left running in the background, then disable the git
+/// repositories they created when they may have changed files, returning
+/// what to tell the user.
+async fn after_commands(
+    agent: &Agent,
+    guard: Option<&mut GitGuard>,
+    changed_files: bool,
+) -> Vec<String> {
+    // Before the git check: a program left running could recreate a
+    // repository right after it.
+    agent.stop_background().await;
+    check_git_guard(guard, changed_files)
+}
+
+/// Leave the TUI, printing `notices` once the screen is back.
+fn quit_with(term: InlineTerminal, notices: &[String]) {
+    drop(term);
+    for notice in notices {
+        eprintln!("{}", printable(notice));
+    }
+}
+
+fn show_notices(term: &mut InlineTerminal, app: &mut App, notices: &[String]) -> Result<(), Error> {
+    if notices.is_empty() {
+        return Ok(());
+    }
+    notices.iter().for_each(|notice| app.push_info(notice));
+    draw(term, app)
+}
+
+/// Run the shell `command` the user typed after `!`, showing it as a `bash`
+/// call. Returns `true` if the user requested to quit.
+async fn run_shell(
+    term: &mut InlineTerminal,
+    app: &mut App,
+    agent: &Agent,
+    events: &mut EventReader,
+    questions: &mut mpsc::UnboundedReceiver<Question>,
+    command: &str,
+) -> Result<bool, Error> {
+    app.start_activity();
+    app.apply_update(AgentUpdate::ToolCall {
+        name: "bash".to_owned(),
+        args: serde_json::json!({ "command": command }).to_string(),
+    });
+    draw(term, app)?;
+
+    let (tx, rx) = mpsc::unbounded_channel::<AgentUpdate>();
+    let run = async {
+        let content = agent
+            .run_command(command, |chunk| {
+                let _ = tx.send(AgentUpdate::ToolOutput(chunk.to_owned()));
+            })
+            .await;
+        let _ = tx.send(AgentUpdate::ToolResult {
+            content,
+            details: None,
+        });
+        Ok(String::new())
+    };
+    let res = drive_agent(term, app, events, questions, rx, agent.steering(), run).await?;
+    if finish_activity(app, res) {
+        return Ok(true);
+    }
+    restore_queued(agent, app);
+    Ok(false)
+}
+
+/// Put messages typed while no prompt ran back in the editor.
+fn restore_queued(agent: &Agent, app: &mut App) {
+    let queued = agent.steering().take().join("\n\n");
+    if !queued.is_empty() {
+        app.restore_queued(&queued);
+    }
 }
 
 struct ModelCatalog {
@@ -736,6 +822,7 @@ async fn drive_agent(
                                 draw(term, app)?;
                             }
                             Action::None
+                            | Action::Shell(_)
                             | Action::Slash(_)
                             | Action::ResumeSession(_)
                             | Action::SelectModel(_)
@@ -871,10 +958,7 @@ async fn run_compact(
         return Ok(true);
     }
     // Messages typed meanwhile wait in the editor.
-    let queued = agent.steering().take().join("\n\n");
-    if !queued.is_empty() {
-        app.restore_queued(&queued);
-    }
+    restore_queued(agent, app);
     if compacted {
         app.set_context(0);
         if let Some(session) = session {
