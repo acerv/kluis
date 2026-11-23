@@ -83,6 +83,25 @@ const HOME_SECRETS: &[&str] = &[
     ".config/discord",
 ];
 
+/// The credentials, keys and history of `$HOME` that exist at, below or
+/// above one of the `shown` paths: [`Sandbox::with_defaults`] hides them
+/// even so, which tells that a path shows more than it should.
+pub fn hidden_secrets(shown: &[PathBuf]) -> Vec<PathBuf> {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return Vec::new();
+    };
+    HOME_SECRETS
+        .iter()
+        .map(|secret| home.join(secret))
+        .filter(|secret| {
+            shown
+                .iter()
+                .any(|path| secret.starts_with(path) || path.starts_with(secret))
+                && secret.symlink_metadata().is_ok()
+        })
+        .collect()
+}
+
 /// Processes and threads the sandboxed process and its children may run at once.
 const MAX_PROCESSES: u64 = 1024;
 

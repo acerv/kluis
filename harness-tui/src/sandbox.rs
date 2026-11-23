@@ -164,6 +164,25 @@ pub fn executor(args: &Args, cwd: &Path) -> Result<(Executor, GitGuard), Error> 
     Ok((executor, git_guard))
 }
 
+/// Warning about the credentials below the paths `args` show in `cwd`: they
+/// stay hidden, but a path holding them shows more than commands need.
+pub fn secrets_warning(args: &Args, cwd: &Path) -> Option<String> {
+    let mut shown = args.allow_read.clone();
+    shown.extend_from_slice(&args.allow_write);
+    shown.push(cwd.to_path_buf());
+    let hidden: Vec<_> = harness_sandbox::hidden_secrets(&shown)
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect();
+    (!hidden.is_empty()).then(|| {
+        format!(
+            "the folders shown to commands hold credentials, which stay hidden: {}. \
+             Show narrower folders instead",
+            hidden.join(", ")
+        )
+    })
+}
+
 /// Warnings about what git on the host would run of what commands write in
 /// `cwd`. Nothing without git.
 pub fn git_warnings(cwd: &Path) -> Vec<String> {
