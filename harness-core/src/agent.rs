@@ -20,7 +20,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::mention::mentions;
-use crate::models::{discover_models, ModelList};
+use crate::models::{discover_models, thinking_levels, ModelList};
 use crate::oauth::OAuthLogins;
 use crate::retry::{is_too_large, EndedEarly, RetryPolicy};
 use crate::session::TokenUsage;
@@ -319,6 +319,12 @@ impl Agent {
     /// chat models.
     pub async fn list_models(&self, adapters: &[AdapterKind]) -> ModelList {
         discover_models(&self.client, self.oauth.as_ref(), adapters).await
+    }
+
+    /// Thinking levels the current model takes, as its provider reports
+    /// them; `None` when the provider does not say.
+    pub async fn thinking_levels(&self) -> Option<Vec<Thinking>> {
+        thinking_levels(&self.client, &self.model).await
     }
 
     /// Drop the conversation history, keeping the model, system prompt, and

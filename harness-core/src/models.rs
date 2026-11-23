@@ -7,12 +7,21 @@ use std::time::Duration;
 
 use futures_util::future::join_all;
 use genai::adapter::AdapterKind;
-use genai::Client;
+use genai::resolver::AuthData;
+use genai::{Client, Headers};
+use serde_json::{json, Value};
 
+use crate::agent::Thinking;
 use crate::oauth::OAuthLogins;
 
 /// Per-provider timeout when querying live `/models` endpoints.
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// Timeout when asking a provider which thinking levels a model takes.
+const THINKING_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// `anthropic-version` header of Anthropic API requests.
+const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 /// One chat-capable model discovered from a provider.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -164,4 +173,103 @@ pub fn is_chat_model(id: &str) -> bool {
                 .strip_prefix(pat)
                 .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
         })
+}
+
+/// Thinking levels `model` takes, as its provider reports them: the model
+/// capabilities of Anthropic, or `/api/show` of Ollama. `None` when the
+/// provider does not report them, or does not answer.
+pub async fn thinking_levels(client: &Client, model: &str) -> Option<Vec<Thinking>> {
+    let target = client.resolve_service_target(model).await.ok()?;
+    let kind = target.model.adapter_kind;
+    let name = target.model.model_name.namespace_and_name().1;
+    let http = reqwest::Client::new();
+    let request = match kind {
+        AdapterKind::Anthropic => {
+            let (base, headers) = match target.auth {
+                // An OAuth login, whose URL is the one of messages.
+                AuthData::RequestOverride { url, headers } => {
+                    (url.strip_suffix("messages")?.to_owned(), headers)
+                }
+                auth => (
+                    target.endpoint.base_url().to_owned(),
+                    Headers::from([
+                        ("x-api-key", auth.single_key_value().ok()?),
+                        ("anthropic-version", ANTHROPIC_VERSION.to_owned()),
+                    ]),
+                ),
+            };
+            let mut request = http.get(format!("{base}models/{name}"));
+            for (key, value) in headers.iter() {
+                request = request.header(key, value);
+            }
+            request
+        }
+        AdapterKind::Ollama | AdapterKind::OllamaCloud => {
+            let url = format!("{}api/show", target.endpoint.base_url());
+            let body = json!({ "model": name }).to_string();
+            let request = http
+                .post(url)
+                .header("content-type", "application/json")
+                .body(body);
+            match target.auth.single_key_value() {
+                Ok(key) if !key.is_empty() => request.bearer_auth(key),
+                _ => request,
+            }
+        }
+        _ => return None,
+    };
+    let body = tokio::time::timeout(THINKING_TIMEOUT, async {
+        request.send().await?.error_for_status()?.bytes().await
+    })
+    .await
+    .ok()?
+    .ok()?;
+    let body: Value = serde_json::from_slice(&body).ok()?;
+    let (info, takes): (&Value, fn(&Value, Thinking) -> bool) = match kind {
+        AdapterKind::Anthropic => (
+            body.get("capabilities").filter(|caps| !caps.is_null())?,
+            anthropic_takes,
+        ),
+        _ => (body.pointer("/thinking/values")?, ollama_takes),
+    };
+    Some(
+        Thinking::ALL
+            .into_iter()
+            .filter(|&level| takes(info, level))
+            .collect(),
+    )
+}
+
+/// Whether a model takes `level`, from its Anthropic `capabilities`.
+fn anthropic_takes(caps: &Value, level: Thinking) -> bool {
+    let supported = |path: &str| {
+        caps.pointer(&format!("{path}/supported"))
+            .and_then(Value::as_bool)
+            == Some(true)
+    };
+    match level {
+        Thinking::Default => true,
+        Thinking::Off => supported("/thinking/types/disabled"),
+        // Models without effort get a thinking budget for these from genai.
+        Thinking::Low | Thinking::Medium | Thinking::High if !supported("/effort") => {
+            supported("/thinking")
+        }
+        _ => supported("/effort") && supported(&format!("/effort/{level}")),
+    }
+}
+
+/// Whether a model takes `level`, from the `thinking.values` of its Ollama
+/// `/api/show`.
+fn ollama_takes(values: &Value, level: Thinking) -> bool {
+    // What genai sends as `think` for each level.
+    let think = match level {
+        Thinking::Default => return true,
+        Thinking::Off => json!(false),
+        // Sent as "max", like `Max`.
+        Thinking::XHigh => return false,
+        _ => json!(level.as_str()),
+    };
+    values
+        .as_array()
+        .is_some_and(|values| values.contains(&think))
 }
