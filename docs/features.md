@@ -48,6 +48,8 @@
 - Messages typed while the agent works join the conversation after the
   running tool calls; one sent as the model answers starts the next turn.
   Cancelling puts the ones left back in the editor.
+- `@path` in a prompt attaches the file, read as the `read` tool reads it
+  (images included); typing `@` offers the files of the folder.
 - `!<command>` runs a shell command as the `bash` tool does, in the sandbox
   when the tools run there, without adding it to the conversation.
 - `/output` shows the whole output of the last tool call.
