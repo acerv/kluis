@@ -10,17 +10,21 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
-    BashContext, BashTool, Diff, EditTool, FindTool, GrepTool, LsTool, ReadTool, Todo, TodoTool,
-    WriteTool,
+    BashContext, BashTool, Diff, EditTool, FindTool, GrepTool, Image, LsTool, ReadTool, Todo,
+    TodoTool, WriteTool,
 };
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
-/// Extra tool output meant for the UI, not sent back to the model.
+/// Extra tool output, not part of the text sent back to the model.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolDetails {
+    /// For the UI.
     Edit(Diff),
+    /// For the UI.
     Todo(Vec<Todo>),
+    /// For the model, which gets it next to the text.
+    Image(Image),
 }
 
 /// How tools run locally.
@@ -112,7 +116,11 @@ async fn dispatch(
 ) -> Result<(String, Option<ToolDetails>), Error> {
     let cwd = &ctx.cwd;
     match name {
-        "read" => plain(&ReadTool::deserialize(args)?.run_in(cwd).await?),
+        "read" => {
+            let mut out = ReadTool::deserialize(args)?.run_in(cwd).await?;
+            let image = out.image.take().map(ToolDetails::Image);
+            Ok((serde_json::to_string(&out)?, image))
+        }
         "write" => plain(&WriteTool::deserialize(args)?.run_in(cwd).await?),
         "edit" => {
             let out = EditTool::deserialize(args)?.run_in(cwd).await?;

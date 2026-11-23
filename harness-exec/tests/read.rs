@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use common::p;
-use harness_exec::{ReadTool, DEFAULT_READ_LIMIT, MAX_READ_BYTES};
+use harness_exec::{ReadTool, DEFAULT_READ_LIMIT, MAX_IMAGE_BYTES, MAX_READ_BYTES};
 
 fn call(path: &Path, offset: Option<usize>, limit: Option<usize>) -> ReadTool {
     ReadTool {
@@ -422,4 +422,33 @@ async fn streams_large_file_across_chunks() {
     let err = call(&f, None, None).run().await.unwrap_err();
     assert!(err.message.contains("line 1"), "{err}");
     assert!(err.message.contains("larger than"), "{err}");
+}
+
+/// The first bytes of a PNG file, then some that are not text.
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+
+#[tokio::test]
+async fn image_comes_whole_and_encoded() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("shot.png");
+    std::fs::write(&f, PNG).unwrap();
+
+    let out = call(&f, Some(2), Some(1)).run().await.unwrap();
+
+    let image = out.image.expect("an image");
+    assert_eq!(image.mime, "image/png");
+    assert_eq!(image.data, "iVBORw0KGgoAAAANSUhEUg==");
+    assert!(out.content.contains("attached"), "{}", out.content);
+}
+
+#[tokio::test]
+async fn image_too_large_is_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("big.png");
+    let mut data = PNG.to_vec();
+    data.resize(MAX_IMAGE_BYTES as usize + 1, 0);
+    std::fs::write(&f, data).unwrap();
+
+    let err = call(&f, None, None).run().await.unwrap_err();
+    assert!(err.to_string().contains("image larger than"), "{err}");
 }
