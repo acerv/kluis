@@ -2007,3 +2007,49 @@ fn tool_output_keeps_tab_indentation() {
         ["edit a.c", "  1 -    return 0;", "  1 +    return 1;", ""]
     );
 }
+
+#[test]
+fn messages_typed_while_busy_are_queued_and_shown_when_they_join() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    let mut terminal = inline_terminal(60, 20);
+    app.start_prompt("work");
+    let _ = app.take_scrollback();
+
+    // Commands wait for the prompt to end, keeping their text.
+    type_str(&mut app, "/status");
+    assert_eq!(app.handle_event(key(KeyCode::Enter)), Action::None);
+    app.handle_event(ctrl('u'));
+
+    type_str(&mut app, "use tabs");
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Submit("use tabs".into())
+    );
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert!(render_text(&terminal).contains("1 queued"));
+
+    app.apply_update(AgentUpdate::Steered("use tabs".into()));
+    let rows: Vec<String> = app
+        .take_scrollback()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert!(rows.contains(&"> use tabs".to_owned()), "{rows:?}");
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert!(!render_text(&terminal).contains("queued"));
+}
+
+#[test]
+fn queued_messages_of_a_cancelled_prompt_go_back_to_the_editor() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    app.start_prompt("work");
+    type_str(&mut app, "typed");
+    app.cancel_prompt();
+
+    app.restore_queued("queued");
+
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Submit("queued\n\ntyped".into())
+    );
+}

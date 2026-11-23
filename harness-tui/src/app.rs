@@ -127,6 +127,8 @@ pub enum AgentUpdate {
     Pruned(usize),
     /// The final text of the model was cut at its token limit.
     Truncated,
+    /// A message the user queued joined the conversation.
+    Steered(String),
 }
 
 impl AgentUpdate {
@@ -162,6 +164,7 @@ impl AgentUpdate {
             AgentEvent::Compacted { before, .. } => Self::Compacted(before),
             AgentEvent::CompactFailed(err) => Self::CompactFailed(err.to_owned()),
             AgentEvent::Pruned(count) => Self::Pruned(count),
+            AgentEvent::Steered(text) => Self::Steered(text.to_owned()),
         })
     }
 }
@@ -209,6 +212,8 @@ pub struct App {
     cursor: Cell<Option<Position>>,
     input: Input,
     busy: bool,
+    /// Messages typed while busy, waiting to join the conversation.
+    queued: usize,
     show_thinking: bool,
     is_thinking: bool,
     spinner: usize,
@@ -252,6 +257,7 @@ impl App {
             cursor: Cell::new(None),
             input: Input::default(),
             busy: false,
+            queued: 0,
             show_thinking: true,
             is_thinking: false,
             spinner: 0,
@@ -745,6 +751,12 @@ impl App {
             AgentUpdate::Truncated => {
                 self.push_notice(TRUNCATED_NOTICE.to_owned(), self.theme.error);
             }
+            AgentUpdate::Steered(text) => {
+                self.flush_reasoning();
+                self.flush_text();
+                self.queued = self.queued.saturating_sub(1);
+                self.push_user_message(&text);
+            }
         }
     }
 
@@ -760,6 +772,7 @@ impl App {
         self.flush_reasoning();
         self.flush_text();
         self.busy = false;
+        self.queued = 0;
         self.activity_started = None;
         self.active_tool = None;
         self.clear_live();
@@ -771,11 +784,25 @@ impl App {
         }
     }
 
+    /// Put messages queued for a cancelled prompt back in the editor, before
+    /// what is typed there.
+    pub fn restore_queued(&mut self, text: &str) {
+        let typed = self.input.text();
+        let text = if typed.is_empty() {
+            text.to_owned()
+        } else {
+            format!("{text}\n\n{typed}")
+        };
+        self.input.set_text(&text);
+        self.completion.update(self.input.text());
+    }
+
     /// Leave the busy state after the user cancels an in-flight prompt.
     pub fn cancel_prompt(&mut self) {
         self.flush_reasoning();
         self.flush_text();
         self.busy = false;
+        self.queued = 0;
         self.activity_started = None;
         self.active_tool = None;
         self.clear_live();
@@ -804,7 +831,7 @@ impl App {
                 }
                 Action::Redraw
             }
-            TermEvent::Paste(text) if !self.busy || self.picker.is_some() => {
+            TermEvent::Paste(text) => {
                 if let Some(picker) = &mut self.picker {
                     return if picker.paste(&text) {
                         Action::Redraw
@@ -879,11 +906,7 @@ impl App {
             _ => {}
         }
 
-        if self.busy {
-            return Action::None;
-        }
-
-        if key.code == KeyCode::BackTab {
+        if key.code == KeyCode::BackTab && !self.busy {
             let next = self.thinking.next();
             self.thinking = next;
             self.notice = Some(format!("Thinking: {next} (Shift+Tab to cycle)"));
@@ -937,6 +960,10 @@ impl App {
                     self.input.set_text(&insert);
                 }
             }
+            // Commands wait for the prompt to end.
+            if self.busy && self.input.text().trim_start().starts_with('/') {
+                return Action::None;
+            }
             self.completion.clear();
             let text = self.input.submit();
             let trimmed = text.trim();
@@ -951,6 +978,9 @@ impl App {
                         Action::Redraw
                     }
                 };
+            }
+            if self.busy {
+                self.queued += 1;
             }
             return Action::Submit(trimmed.to_owned());
         }
@@ -1244,6 +1274,10 @@ impl App {
                 }
                 None => format!("{spin} Working…{elapsed}  (Ctrl-O to hide · esc to cancel)"),
             };
+            let label = match self.queued {
+                0 => label,
+                n => format!("{label} · {n} queued"),
+            };
             Line::styled(label, self.theme.muted)
         } else if let Some(notice) = &self.notice {
             Line::styled(notice.as_str(), self.theme.muted)
@@ -1274,10 +1308,15 @@ impl App {
         let prefix_w = 2usize;
         let text_w = (area.width as usize).saturating_sub(prefix_w).max(1);
 
-        if self.input.is_empty() && !self.busy {
+        if self.input.is_empty() {
+            let hint = if self.busy {
+                "Type a message to send while the agent works…"
+            } else {
+                "Type a message… (/help for commands)"
+            };
             let line = Line::from(vec![
                 Span::styled("> ", self.theme.prompt),
-                Span::styled("Type a message… (/help for commands)", self.theme.muted),
+                Span::styled(hint, self.theme.muted),
             ]);
             frame.render_widget(Paragraph::new(line), area);
             self.set_cursor(
@@ -1309,18 +1348,16 @@ impl App {
         }
         frame.render_widget(Paragraph::new(rendered), area);
 
-        if !self.busy {
-            let x = area
-                .x
-                .saturating_add(prefix_w as u16)
-                .saturating_add(layout.cursor_col as u16)
-                .min(area.right().saturating_sub(1));
-            let y = area
-                .y
-                .saturating_add(layout.cursor_row.saturating_sub(scroll_row) as u16)
-                .min(area.bottom().saturating_sub(1));
-            self.set_cursor(frame, Position::new(x, y));
-        }
+        let x = area
+            .x
+            .saturating_add(prefix_w as u16)
+            .saturating_add(layout.cursor_col as u16)
+            .min(area.right().saturating_sub(1));
+        let y = area
+            .y
+            .saturating_add(layout.cursor_row.saturating_sub(scroll_row) as u16)
+            .min(area.bottom().saturating_sub(1));
+        self.set_cursor(frame, Position::new(x, y));
     }
 
     fn render_footer(&self, frame: &mut Frame<'_>, area: Rect) {

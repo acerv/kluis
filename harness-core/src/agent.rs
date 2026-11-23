@@ -6,6 +6,7 @@
 use std::borrow::Cow;
 use std::fmt;
 use std::str::FromStr;
+use std::sync::{Arc, Mutex};
 
 use futures_util::StreamExt;
 use genai::adapter::AdapterKind;
@@ -134,6 +135,33 @@ pub struct Agent {
     retry: RetryPolicy,
     max_turns: Option<usize>,
     auto_compact_tokens: Option<u64>,
+    steering: Steering,
+}
+
+/// Messages of the user waiting to join a running prompt, shared with the
+/// UI that queues them: see [`Agent::steering`].
+#[derive(Debug, Clone, Default)]
+pub struct Steering(Arc<Mutex<Vec<String>>>);
+
+impl Steering {
+    /// Queue `text` for the running prompt.
+    pub fn push(&self, text: impl Into<String>) {
+        self.queue().push(text.into());
+    }
+
+    /// Take the queued messages, oldest first.
+    pub fn take(&self) -> Vec<String> {
+        std::mem::take(&mut *self.queue())
+    }
+
+    fn is_empty(&self) -> bool {
+        self.queue().is_empty()
+    }
+
+    fn queue(&self) -> std::sync::MutexGuard<'_, Vec<String>> {
+        // The queue stays whole even if a thread panicked holding it.
+        self.0.lock().unwrap_or_else(|err| err.into_inner())
+    }
 }
 
 impl Agent {
@@ -157,6 +185,7 @@ impl Agent {
             retry: RetryPolicy::default(),
             max_turns: Some(DEFAULT_MAX_TURNS),
             auto_compact_tokens: Some(DEFAULT_AUTO_COMPACT_TOKENS),
+            steering: Steering::default(),
         }
     }
 
@@ -298,6 +327,14 @@ impl Agent {
         &self.req.messages
     }
 
+    /// A handle to queue user messages while a prompt runs: they join the
+    /// conversation before the next model turn, after the results of the
+    /// tool calls running. A prompt whose model answered goes on with them
+    /// rather than ending; the ones queued once it ended stay queued.
+    pub fn steering(&self) -> Steering {
+        self.steering.clone()
+    }
+
     /// Stop what tool commands left running in the background, when they
     /// run in the sandbox: call it between prompts.
     pub async fn stop_background(&self) {
@@ -338,6 +375,10 @@ impl Agent {
             }
             turns += 1;
 
+            for text in self.steering.take() {
+                on_event(Event::Steered(&text));
+                self.req.messages.push(ChatMessage::user(text));
+            }
             if saved < self.req.messages.len() {
                 on_event(Event::Messages(&self.req.messages[saved..]));
                 saved = self.req.messages.len();
@@ -401,11 +442,14 @@ impl Agent {
                 if turn.truncated {
                     on_event(Event::Truncated);
                 }
-                let answer = answer.to_owned();
-                if need_compact {
-                    self.run_auto_compact(context, false, &mut on_event).await;
+                // Messages queued meanwhile go on with the prompt.
+                if self.steering.is_empty() {
+                    let answer = answer.to_owned();
+                    if need_compact {
+                        self.run_auto_compact(context, false, &mut on_event).await;
+                    }
+                    return Ok(answer);
                 }
-                return Ok(answer);
             }
 
             let same_as_prev = !turn.truncated

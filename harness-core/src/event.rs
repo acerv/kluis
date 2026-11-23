@@ -19,6 +19,9 @@ pub enum Event<'a> {
     /// prompt, sent before every turn so they can be saved while it runs.
     /// The ones after the last event are left to read from the history.
     Messages(&'a [ChatMessage]),
+    /// A message the user queued with [`Steering`](crate::Steering) joined
+    /// the conversation.
+    Steered(&'a str),
     /// The agent is asking the model for its next turn.
     TurnStart,
     /// A piece of the model's reasoning, as it arrives, from models that
