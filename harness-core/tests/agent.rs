@@ -7,7 +7,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use common::{
-    raw_tool_calls, text, thinking, tool_calls, truncated_tool_calls, with_usage, MockModel, Reply,
+    raw_tool_calls, text, thinking, tool_calls, truncated, truncated_tool_calls, with_usage,
+    MockModel, Reply,
 };
 use genai::adapter::AdapterKind;
 use genai::chat::{ChatMessage, ChatRole};
@@ -169,6 +170,7 @@ async fn tool_call_round_trip() {
     let answer = agent
         .prompt("run it", |event| {
             events.push(match event {
+                Event::Truncated => "truncated".to_owned(),
                 Event::TurnStart => "start".to_owned(),
                 Event::TurnEnd(usage) => format!("end {:?}", usage.and_then(|u| u.total_tokens)),
                 Event::ReasoningDelta(text) => format!("reason {text}"),
@@ -232,6 +234,25 @@ async fn empty_reply_fails_and_stays_out_of_the_history() {
 
     assert_eq!(prompt(&mut agent, "again").await.unwrap(), "hi");
     assert!(sent(&model.requests()[2], "assistant").is_empty());
+}
+
+#[tokio::test]
+async fn reply_cut_at_the_token_limit_is_reported() {
+    let model = MockModel::start(vec![truncated(text("half a sen")), text("whole")]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = agent(&model, dir.path());
+
+    for (answer, cut) in [("half a sen", true), ("whole", false)] {
+        let mut truncated = false;
+        let got = agent
+            .prompt("tell", |event| {
+                truncated |= matches!(event, Event::Truncated)
+            })
+            .await
+            .unwrap();
+        assert_eq!(got, answer);
+        assert_eq!(truncated, cut, "{answer}");
+    }
 }
 
 #[tokio::test]

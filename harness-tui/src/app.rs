@@ -122,6 +122,8 @@ pub enum AgentUpdate {
     Compacting(u64),
     Compacted(usize),
     CompactFailed(String),
+    /// The final text of the model was cut at its token limit.
+    Truncated,
 }
 
 impl AgentUpdate {
@@ -129,6 +131,7 @@ impl AgentUpdate {
     pub fn from_event(event: AgentEvent<'_>) -> Option<Self> {
         Some(match event {
             AgentEvent::TurnStart => Self::TurnStart,
+            AgentEvent::Truncated => Self::Truncated,
             AgentEvent::ReasoningDelta(text) => Self::ReasoningDelta(text.to_owned()),
             AgentEvent::TextDelta(text) => Self::TextDelta(text.to_owned()),
             AgentEvent::Text(text) => Self::Text(text.to_owned()),
@@ -730,6 +733,9 @@ impl App {
             }
             AgentUpdate::CompactFailed(err) => {
                 self.push_notice(format!("[auto-compact failed: {err}]"), self.theme.error);
+            }
+            AgentUpdate::Truncated => {
+                self.push_notice(TRUNCATED_NOTICE.to_owned(), self.theme.error);
             }
         }
     }
@@ -1886,6 +1892,9 @@ fn layout_editor(input: &Input, width: usize) -> EditorLayout {
         cursor_col,
     }
 }
+
+/// The line telling the user the final text of the model is not whole.
+pub const TRUNCATED_NOTICE: &str = "[reply cut at the token limit of the model]";
 
 /// The line telling the user a failed model request is retried.
 pub fn retry_notice(attempt: u32, delay: Duration, reason: &str) -> String {

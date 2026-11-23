@@ -36,7 +36,7 @@ use harness_core::{
 use harness_sandbox::{GitGuard, NetworkAccess};
 use harness_tui::{
     check_git_guard, printable, retry_notice, summary, BannerLine, History, RunOptions, Session,
-    Status,
+    Status, TRUNCATED_NOTICE,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -676,6 +676,7 @@ fn print_event(event: Event<'_>) {
         // Already printed piece by piece: end its line.
         Event::Text(_) => println!(),
         Event::TurnStart | Event::ReasoningDelta(_) | Event::ToolOutput(_) | Event::TurnEnd(_) => {}
+        Event::Truncated => eprintln!("{TRUNCATED_NOTICE}"),
         Event::ToolCall(call) => println!(
             "→ {} {}",
             printable(&call.fn_name),
