@@ -71,6 +71,10 @@ impl FromStr for NetworkAccess {
 /// process making system calls of another architecture or ABI, which could
 /// get around the filter, is killed.
 ///
+/// Changing mounts fails with `EPERM`, as it does without privileges:
+/// commands run as root, by mistake or through a bug, could otherwise
+/// unmount the masks over denied paths.
+///
 /// Creating a socket fails with `EACCES` unless it is an IPv4, IPv6 or
 /// netlink one, which a network namespace confines: others, such as vsock,
 /// reach the host or the hypervisor past it. Those must use a common
@@ -108,6 +112,11 @@ pub fn restrict_syscalls(network: NetworkAccess) -> io::Result<()> {
         ret(ENOSYS),
         jump_eq(libc::SYS_clone3 as u32, 0, 1),
         ret(ENOSYS),
+    ]);
+    for &nr in MOUNT_CALLS {
+        program.extend([jump_eq(nr as u32, 0, 1), ret(EPERM)]);
+    }
+    program.extend([
         // `unshare` and `clone` take their flags first.
         jump_eq(libc::SYS_unshare as u32, 1, 0),
         jump_eq(libc::SYS_clone as u32, 0, 3),
@@ -163,6 +172,26 @@ pub fn restrict_syscalls(_network: NetworkAccess) -> io::Result<()> {
         "restricting system calls is not supported on this architecture",
     ))
 }
+
+/// `open_tree_attr`, which the libc crate does not name yet: the same
+/// number on every architecture, as for any system call since 424.
+const SYS_OPEN_TREE_ATTR: libc::c_long = 467;
+
+/// System calls changing mounts, or getting a copy of one without the
+/// mounts over it, which would undo the masks over denied paths.
+const MOUNT_CALLS: &[libc::c_long] = &[
+    libc::SYS_mount,
+    libc::SYS_umount2,
+    libc::SYS_pivot_root,
+    libc::SYS_move_mount,
+    libc::SYS_open_tree,
+    SYS_OPEN_TREE_ATTR,
+    libc::SYS_fsopen,
+    libc::SYS_fsconfig,
+    libc::SYS_fsmount,
+    libc::SYS_fspick,
+    libc::SYS_mount_setattr,
+];
 
 /// IPv4 protocols commands may use: the default for the type, TCP, UDP
 /// and ping.
