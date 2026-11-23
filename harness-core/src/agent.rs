@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 use crate::models::{discover_models, ModelList};
 use crate::oauth::OAuthLogins;
-use crate::retry::{EndedEarly, RetryPolicy};
+use crate::retry::{is_too_large, EndedEarly, RetryPolicy};
 use crate::session::TokenUsage;
 use crate::tools::{
     self, error_response, AskTool, Asker, Executor, FetchTool, HostTools, ToolContext,
@@ -343,7 +343,22 @@ impl Agent {
                 saved = self.req.messages.len();
             }
             on_event(Event::TurnStart);
-            let turn = self.next_turn_retrying(None, &mut on_event).await?;
+            let turn = match self.next_turn_retrying(None, &mut on_event).await {
+                Ok(turn) => turn,
+                // Tool outputs are most of a long conversation: drop the
+                // old ones and ask again, until none is left to drop.
+                Err(err) if is_too_large(err.as_ref()) => {
+                    match prune_tool_outputs(&mut self.req.messages) {
+                        0 => return Err(format!("{err} (start a new conversation)").into()),
+                        pruned => {
+                            on_event(Event::Pruned(pruned));
+                            turns -= 1;
+                            continue;
+                        }
+                    }
+                }
+                Err(err) => return Err(err),
+            };
             if !turn.content.contains_text() && !turn.content.contains_tool_call() {
                 // Kept out of the history: providers refuse an empty turn.
                 on_event(Event::TurnEnd(turn.usage.as_ref()));
@@ -835,6 +850,10 @@ const INVALID_ARGUMENTS: &str =
 const REPEATED_CALL: &str =
     "repeated identical tool call; try a different approach or explain the blocker";
 
+/// Output of an old tool call removed to fit the context window.
+const PRUNED: &str =
+    r#"{"error":"output removed to fit the context window; run the tool again if needed"}"#;
+
 const COMPACT_PROMPT: &str = "Summarize the conversation so far as a concise handoff so work can \
 continue seamlessly without the earlier messages. Do not call any tools. Include:\n\
 - The user's goal and key decisions or constraints\n\
@@ -853,6 +872,28 @@ fn compact_instruction(focus: Option<&str>) -> Cow<'static, str> {
         )),
         None => Cow::Borrowed(COMPACT_PROMPT),
     }
+}
+
+/// Replace the outputs of the tool calls before the last model turn with
+/// [`PRUNED`], returning how many were replaced. The last turn's outputs
+/// stay: the model needs them to go on.
+fn prune_tool_outputs(messages: &mut [ChatMessage]) -> usize {
+    let Some(last) = messages.iter().rposition(|m| m.role == ChatRole::Assistant) else {
+        return 0;
+    };
+    let mut pruned = 0;
+    for part in messages[..last]
+        .iter_mut()
+        .flat_map(|m| m.content.iter_mut())
+    {
+        if let ContentPart::ToolResponse(resp) = part {
+            if resp.content.len() > PRUNED.len() {
+                resp.content = PRUNED.to_owned();
+                pruned += 1;
+            }
+        }
+    }
+    pruned
 }
 
 fn same_call(a: &ToolCall, b: &ToolCall) -> bool {
