@@ -1,26 +1,63 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
+use std::io::Write;
 use std::process::{Command, Output, Stdio};
 
+/// Git set up as kl advises, so that it does not warn.
+const SAFE_GIT: &str = "[safe]\n\tbareRepository = explicit\n[core]\n\thooksPath = /dev/null\n";
+
 fn run_cli(args: &[&str]) -> Output {
+    run_cli_with_git(args, SAFE_GIT, "").0
+}
+
+/// Run `kl` with `args`, `gitconfig` as the only git configuration and
+/// `input` on its standard input. Also returns the git configuration after.
+fn run_cli_with_git(args: &[&str], gitconfig: &str, input: &str) -> (Output, String) {
     let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
-    // Git set up as kl advises, so that it does not warn.
-    let gitconfig = home.path().join("gitconfig");
-    std::fs::write(
-        &gitconfig,
-        "[safe]\n\tbareRepository = explicit\n[core]\n\thooksPath = /dev/null\n",
-    )
-    .unwrap();
-    Command::new(env!("CARGO_BIN_EXE_kl"))
+    let config = home.path().join("gitconfig");
+    std::fs::write(&config, gitconfig).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_kl"))
         .args(args)
         .env("HOME", home.path())
         .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", &gitconfig)
+        .env("GIT_CONFIG_GLOBAL", &config)
         .env_remove("HARNESS_CONFIG")
-        .stdin(Stdio::null())
-        .output()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
         .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    (out, std::fs::read_to_string(&config).unwrap())
+}
+
+#[test]
+fn setup_git_sets_bare_repository_when_confirmed() {
+    let (out, config) = run_cli_with_git(&["--setup-git"], "", "y\n");
+    assert!(out.status.success(), "{out:?}");
+    assert!(config.contains("bareRepository = explicit"), "{config}");
+}
+
+#[test]
+fn setup_git_changes_nothing_unless_confirmed() {
+    let (out, config) = run_cli_with_git(&["--setup-git"], "", "\n");
+    assert!(out.status.success(), "{out:?}");
+    assert!(config.is_empty(), "{config}");
+}
+
+#[test]
+fn setup_git_does_not_ask_when_already_set() {
+    let (out, _) = run_cli_with_git(&["--setup-git"], SAFE_GIT, "");
+    assert!(out.status.success(), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("already"), "{stdout}");
 }
 
 #[test]

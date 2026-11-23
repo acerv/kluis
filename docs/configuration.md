@@ -79,6 +79,7 @@ inline code, keep a plain style. With `NO_COLOR`, all of it stays plain.
 | `--strict`            | Make the current folder read-only                  |
 | `--no-sandbox`        | Run tools on the host                              |
 | `--login`, `--logout` | Log in to or out of a subscription (`anthropic`)   |
+| `--setup-git`         | Make git ignore repositories commands create       |
 
 ## Environment variables
 

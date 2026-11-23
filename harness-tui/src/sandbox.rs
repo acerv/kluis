@@ -5,8 +5,10 @@
 //! `hakoniwa` container with the current folder writable (or read-only with
 //! `--strict`), `~/.kluis` hidden, zero API keys in the environment, and no
 //! network unless `--network` or `--allow-connect` is given. Commands
-//! cannot create user namespaces, nor Unix sockets without `--network`.
+//! cannot create user namespaces, nor Unix sockets without `--network`,
+//! nor change the hooks git on the host runs.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use harness_core::tools::{Executor, SandboxConfig};
@@ -100,21 +102,14 @@ pub fn executor(args: &Args, cwd: &Path) -> Result<(Executor, GitGuard), Error> 
     // If `--config` lives inside a writable folder (outside `~/.kluis`), keep
     // it read-only so commands cannot tamper with it.
     let pin_config = args.config.as_ref().filter(|config| {
-        if kluis_dir
+        !kluis_dir
             .as_ref()
             .is_some_and(|dir| config.starts_with(dir))
-        {
-            return false;
-        }
-        let canon = std::fs::canonicalize(config).ok();
-        write.iter().any(|w| {
-            config.starts_with(w)
-                || canon
-                    .as_deref()
-                    .zip(std::fs::canonicalize(w).ok().as_deref())
-                    .is_some_and(|(c, cw)| c.starts_with(cw))
-        })
+            && inside_any(config, &write)
     });
+    // Git on the host runs the hooks there, as the user: keep them as they
+    // are, as for a `.git`, when they live in a writable folder.
+    let pin_hooks = hooks_dir(cwd).filter(|hooks| hooks.exists() && inside_any(hooks, &write));
 
     let mut sandbox = Sandbox::with_defaults(&Options {
         read,
@@ -128,6 +123,9 @@ pub fn executor(args: &Args, cwd: &Path) -> Result<(Executor, GitGuard), Error> 
     .allow_read(&exe);
     if let Some(config) = pin_config {
         sandbox = sandbox.keep_read_only(config);
+    }
+    if let Some(hooks) = pin_hooks {
+        sandbox = sandbox.keep_read_only(hooks);
     }
 
     let mut worker_args = vec!["--tool-executor".to_owned()];
@@ -163,26 +161,39 @@ pub fn executor(args: &Args, cwd: &Path) -> Result<(Executor, GitGuard), Error> 
     Ok((executor, git_guard))
 }
 
+/// Whether `path` lies below one of `folders`, as given or resolved.
+fn inside_any(path: &Path, folders: &[PathBuf]) -> bool {
+    let canon = std::fs::canonicalize(path).ok();
+    folders.iter().any(|folder| {
+        path.starts_with(folder)
+            || canon
+                .as_deref()
+                .zip(std::fs::canonicalize(folder).ok().as_deref())
+                .is_some_and(|(c, cf)| c.starts_with(cf))
+    })
+}
+
+/// The folder git takes hooks from in `cwd`, after all settings: `None`
+/// without git, outside a repository, or when hooks are turned off.
+fn hooks_dir(cwd: &Path) -> Option<PathBuf> {
+    let path = git(&["rev-parse", "--git-path", "hooks"], cwd)?;
+    (!path.is_empty() && path != "/dev/null").then(|| cwd.join(path))
+}
+
 /// Warnings about what git on the host would run of what commands write in
 /// `cwd`. Nothing without git.
 pub fn git_warnings(cwd: &Path) -> Vec<String> {
     let mut warnings = Vec::new();
     // Git takes any folder holding `HEAD`, `objects` and `refs` for a
-    // repository, and runs what its config names. Asked from `/`, so that
-    // a repository's own config does not answer: git ignores this setting
-    // there.
-    let bare = git(&["config", "--get", "safe.bareRepository"], Path::new("/"));
-    if bare.is_some_and(|value| !value.eq_ignore_ascii_case("explicit")) {
+    // repository, and runs what its config names.
+    if bare_repository().is_some_and(|value| !value.eq_ignore_ascii_case(EXPLICIT)) {
         warnings.push(
             "git would run repositories that commands create under any name: run \
-             `git config --global safe.bareRepository explicit`"
+             `kl --setup-git`"
                 .to_owned(),
         );
     }
-    // The folder git takes hooks from here, after all settings: none
-    // outside a repository, `/dev/null` when they are turned off.
-    let hooks = git(&["rev-parse", "--git-path", "hooks"], cwd);
-    if hooks.is_some_and(|path| !path.is_empty() && path != "/dev/null") {
+    if hooks_dir(cwd).is_some() {
         // A repository's own setting, as husky makes, beats the global one.
         let local = git(&["config", "--local", "--get", "core.hooksPath"], cwd);
         let fix = if local.is_some_and(|value| !value.is_empty()) {
@@ -195,6 +206,53 @@ pub fn git_warnings(cwd: &Path) -> Vec<String> {
         ));
     }
     warnings
+}
+
+/// The value of `safe.bareRepository` that makes git use only repositories
+/// named `.git`, or given with `--git-dir`.
+const EXPLICIT: &str = "explicit";
+
+/// The `safe.bareRepository` git uses: empty when not set, `None` without
+/// git. Asked from `/`, so that a repository's own config does not answer:
+/// git ignores this setting there.
+fn bare_repository() -> Option<String> {
+    git(&["config", "--get", "safe.bareRepository"], Path::new("/"))
+}
+
+/// Set `safe.bareRepository` to `explicit` in the user's git config, after
+/// asking, so that git no longer takes a folder of commands for a repository.
+pub fn setup_git() -> Result<(), Error> {
+    let mut output = std::io::stdout();
+    let current = bare_repository().ok_or("git not found")?;
+    if current.eq_ignore_ascii_case(EXPLICIT) {
+        writeln!(
+            output,
+            "git is already set up: safe.bareRepository is {EXPLICIT}."
+        )?;
+        return Ok(());
+    }
+    write!(
+        output,
+        "git takes any folder holding HEAD, objects and refs for a repository, \
+         and runs what its config names: commands could create one that \
+         runs on the host.\n\
+         Run `git config --global safe.bareRepository {EXPLICIT}`? [y/N] "
+    )?;
+    output.flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        writeln!(output, "Nothing changed.")?;
+        return Ok(());
+    }
+    let status = std::process::Command::new("git")
+        .args(["config", "--global", "safe.bareRepository", EXPLICIT])
+        .status()?;
+    if !status.success() {
+        return Err(format!("git config failed ({status})").into());
+    }
+    writeln!(output, "Done.")?;
+    Ok(())
 }
 
 /// The first line `git` prints for `args` in `cwd`: empty when it fails,

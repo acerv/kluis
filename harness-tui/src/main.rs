@@ -145,6 +145,11 @@ pub struct Args {
     #[arg(long, conflicts_with_all = ["login", "logout", "prompt"])]
     apparmor_profile: bool,
 
+    /// Set git up so that it does not run repositories commands create,
+    /// after asking, then exit.
+    #[arg(long, conflicts_with_all = ["login", "logout", "apparmor_profile", "prompt"])]
+    setup_git: bool,
+
     /// Internal mode: run the NDJSON tool worker inside the sandbox container.
     #[arg(long, hide = true)]
     tool_executor: bool,
@@ -171,6 +176,10 @@ fn main() -> ExitCode {
 fn launch(mut args: Args) -> Result<ExitCode, Error> {
     if args.apparmor_profile {
         print!("{}", sandbox::apparmor_profile()?);
+        return Ok(ExitCode::SUCCESS);
+    }
+    if args.setup_git {
+        sandbox::setup_git()?;
         return Ok(ExitCode::SUCCESS);
     }
     let mut below_init = false;

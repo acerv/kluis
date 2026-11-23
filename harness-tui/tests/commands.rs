@@ -799,6 +799,11 @@ fn git_warning(config: &str) -> String {
 
 /// Like [`git_warning`], run in `cwd`.
 fn git_warning_in(cwd: &Path, config: &str) -> String {
+    run_bash_with_git(cwd, config, "true").stderr
+}
+
+/// Run `cmd` with `kl` in `cwd`, with `config` as the only git configuration.
+fn run_bash_with_git(cwd: &Path, config: &str, cmd: &str) -> RunResult {
     let home = tempdir();
     let gitconfig = home.path().join("gitconfig");
     std::fs::write(&gitconfig, config).unwrap();
@@ -810,20 +815,20 @@ fn git_warning_in(cwd: &Path, config: &str) -> String {
         ("GIT_CONFIG_GLOBAL", gitconfig.to_str().unwrap()),
         ("GIT_CEILING_DIRECTORIES", ceiling.to_str().unwrap()),
     ];
-    run_bash_in(cwd, home.path(), &[], &env, |_| "true".into()).stderr
+    run_bash_in(cwd, home.path(), &[], &env, |_| cmd.into())
 }
 
 #[test]
 fn warns_when_git_uses_repositories_under_any_name() {
     // Git would take a folder of commands for a repository.
     let stderr = git_warning("");
-    assert!(stderr.contains("safe.bareRepository explicit"), "{stderr}");
+    assert!(stderr.contains("kl --setup-git"), "{stderr}");
 }
 
 #[test]
 fn no_git_warning_when_only_dot_git_is_used() {
     let stderr = git_warning("[safe]\n\tbareRepository = explicit\n");
-    assert!(!stderr.contains("safe.bareRepository"), "{stderr}");
+    assert!(!stderr.contains("kl --setup-git"), "{stderr}");
 }
 
 /// A folder holding a new git repository.
@@ -845,16 +850,39 @@ fn warns_when_git_runs_hooks_of_the_project() {
     assert!(stderr.contains("core.hooksPath /dev/null"), "{stderr}");
 }
 
+/// Set `core.hooksPath` of the repository in `repo` to `path`.
+fn set_hooks_path(repo: &Path, path: &str) {
+    let status = Command::new("git")
+        .args(["config", "core.hooksPath", path])
+        .current_dir(repo)
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+#[test]
+fn hooks_folder_of_the_project_stays_read_only() {
+    // Git on the host would run what commands write there.
+    let repo = repository();
+    set_hooks_path(repo.path(), ".husky/_");
+    let hooks = repo.path().join(".husky/_");
+    std::fs::create_dir_all(&hooks).unwrap();
+    let result = run_bash_with_git(
+        repo.path(),
+        "",
+        "echo x > .husky/_/pre-commit; echo x > .husky/pre-commit; echo done",
+    );
+    assert!(result.output.contains("Read-only"), "{}", result.output);
+    assert!(!hooks.join("pre-commit").exists());
+    // The rest of the project stays writable.
+    assert!(repo.path().join(".husky/pre-commit").exists());
+}
+
 #[test]
 fn hooks_warning_points_to_the_docs_when_the_repository_sets_hooks() {
     // As husky does: the global setting cannot turn these off.
     let repo = repository();
-    let status = Command::new("git")
-        .args(["config", "core.hooksPath", ".husky/_"])
-        .current_dir(repo.path())
-        .status()
-        .unwrap();
-    assert!(status.success());
+    set_hooks_path(repo.path(), ".husky/_");
     let stderr = git_warning_in(repo.path(), "[core]\n\thooksPath = /dev/null\n");
     assert!(stderr.contains("sets its own hooks"), "{stderr}");
     assert!(stderr.contains("#git-safety"), "{stderr}");

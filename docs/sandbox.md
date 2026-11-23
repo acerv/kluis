@@ -34,14 +34,17 @@ Two tools run outside the sandbox because they need the user or the network:
 ## Git safety
 
 Your own git, outside the sandbox, runs hooks and some config settings of any
-repository it finds, as you. `kl` warns at start when git would run hooks of
-the project, or repositories that commands create under any name.
+repository it finds, as you. `kl` keeps the folder git takes hooks from
+read-only when it lies in the project, as `.husky/_` does, and warns at start
+when git would run hooks of the project, or repositories that commands create
+under any name.
 
 A hook that runs a project file, as husky does with `.husky/pre-commit`, or a
 `make lint`, runs what commands wrote there. As with build scripts, review
 the changes, or turn hooks off.
 
-For full protection, set git up once:
+For full protection, set git up once, so that it uses only repositories named
+`.git`. `kl --setup-git` does this after asking:
 
 ```sh
 git config --global safe.bareRepository explicit
