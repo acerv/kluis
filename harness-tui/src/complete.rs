@@ -108,9 +108,14 @@ pub(crate) fn help_text() -> String {
         let usage = cmd.label();
         let _ = writeln!(out, "  {usage:<19}{}", cmd.description);
     }
+    let _ = writeln!(
+        out,
+        "  {:<19}run a shell command in the sandbox",
+        "!<command>"
+    );
     out.push_str(
         "\nKeys:\n\
-         \x20 Enter              send prompt\n\
+         \x20 Enter              send prompt (queued while the agent works)\n\
          \x20 Shift/Alt+Enter    insert newline (also Ctrl-J)\n\
          \x20 Tab                autocomplete command\n\
          \x20 Shift+Tab          cycle thinking effort\n\
