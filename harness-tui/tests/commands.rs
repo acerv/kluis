@@ -286,6 +286,38 @@ fn home_shows_only_allowed_folders() {
 }
 
 #[test]
+fn shown_folder_holding_credentials_is_warned_about() {
+    let home = tempdir();
+    for file in [
+        ".config/gh/hosts.yml",
+        ".config/tool.toml",
+        ".ssh/id_ed25519",
+    ] {
+        let path = home.path().join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "data").unwrap();
+    }
+    let cwd = tempdir();
+    let run = |args: &[&str]| run_bash_in(cwd.path(), home.path(), args, &[], |_| "true".into());
+
+    // Nothing of the home folder is shown: nothing to say.
+    let stderr = run(&[]).stderr;
+    assert!(!stderr.contains("credentials"), "{stderr}");
+
+    let config = home.path().join(".config");
+    let stderr = run(&["--allow-read", config.to_str().unwrap()]).stderr;
+    let warning = stderr
+        .lines()
+        .find(|l| l.starts_with("warning: the folders"));
+    let warning = warning.unwrap_or_else(|| panic!("{stderr}"));
+    assert!(
+        warning.contains(config.join("gh").to_str().unwrap()),
+        "{warning}"
+    );
+    assert!(!warning.contains(".ssh"), "{warning}");
+}
+
+#[test]
 fn credentials_in_shown_home_stay_hidden() {
     // Whatever the config hides besides, and even with the whole home
     // folder shown.
