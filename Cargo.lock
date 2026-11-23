@@ -1104,6 +1104,7 @@ dependencies = [
 name = "harness-sandbox"
 version = "0.1.0"
 dependencies = [
+ "caps",
  "hakoniwa",
  "indexmap 2.14.2",
  "libc",

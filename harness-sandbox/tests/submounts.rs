@@ -4,6 +4,8 @@
 //! A FUSE or network mount of the host below a shown folder must not
 //! arrive with it: commands would reach the network through it.
 
+mod common;
+
 use std::ffi::CString;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
@@ -13,38 +15,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
-use harness_sandbox::{GitGuard, Sandbox};
+use common::{inside, list, read, system, write};
+use harness_sandbox::GitGuard;
 
 /// Set in the test that re-runs itself in a user and mount namespace.
 const CHILD: &str = "HARNESS_TEST_SUBMOUNTS_CHILD";
-
-/// System folders needed to run programs.
-fn system() -> Sandbox {
-    let mut sandbox = Sandbox::new();
-    for path in ["/usr", "/bin", "/lib", "/lib64"] {
-        if Path::new(path).exists() {
-            sandbox = sandbox.allow_read(path);
-        }
-    }
-    sandbox
-}
-
-/// Run `script` with bash in the container of `sandbox`, returning its
-/// standard output and error.
-fn run(sandbox: &Sandbox, script: &str) -> (String, String) {
-    let out = sandbox
-        .container()
-        .unwrap()
-        .command("/bin/bash")
-        .args(["-c", script])
-        .env("PATH", "/usr/bin:/bin")
-        .output()
-        .unwrap();
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
-}
 
 /// Run `body` in a user and mount namespace, where we can mount a tmpfs like
 /// the host does, and skip the test when namespaces are unavailable.
@@ -213,14 +188,13 @@ fn fuse_mount_is_hidden() {
         let sandbox = system().allow_read(&dir);
 
         // The folder itself stays readable; the mount below it does not.
-        let (out, err) = run(&sandbox, &format!("cat {}/mount.txt", dir.display()));
-        assert_eq!(out, "plain", "{err}");
+        let out = inside(&sandbox, read(&dir.join("mount.txt")));
+        assert_eq!(out.unwrap(), "plain");
 
         // Nothing reaches the program serving it. (As root of the test's
         // user namespace, the command sees through the cover's permissions:
         // to it, the folder is just empty.)
-        let (_, err) = run(&sandbox, &format!("ls {}/leak-me", drive.display()));
-        assert!(!err.is_empty());
+        assert!(inside(&sandbox, list(&drive.join("leak-me"))).is_err());
         assert!(!fuse.lookups().contains(&"leak-me".into()));
     });
 }
@@ -232,8 +206,7 @@ fn fuse_mount_in_writable_folder_is_hidden() {
         let fuse = Fuse::mount(&drive, true);
         let sandbox = system().allow_write(&dir);
 
-        let (_, err) = run(&sandbox, &format!("touch {}/leak-me", drive.display()));
-        assert!(!err.is_empty());
+        assert!(inside(&sandbox, write(&drive.join("leak-me"), "")).is_err());
         assert!(!fuse.lookups().contains(&"leak-me".into()));
     });
 }
@@ -252,8 +225,8 @@ fn hidden_fuse_mounts_are_not_checked_for_git() {
         let mut guard = GitGuard::new(&sandbox).unwrap();
         let check = guard.disable_new();
         assert!(check.new.is_empty() && check.unchecked.is_none());
-        let (out, err) = run(&sandbox, &format!("cat {}/mount.txt", dir.display()));
-        assert_eq!(out, "plain", "{err}");
+        let out = inside(&sandbox, read(&dir.join("mount.txt")));
+        assert_eq!(out.unwrap(), "plain");
         assert!(fuse.lookups().is_empty(), "{:?}", fuse.lookups());
     });
 }
@@ -265,7 +238,7 @@ fn allowed_fuse_mount_is_shown() {
         let fuse = Fuse::mount(&drive, true);
         let sandbox = system().allow_read(&dir).allow_read(&drive);
 
-        run(&sandbox, &format!("ls {}/shown", drive.display()));
+        let _ = inside(&sandbox, list(&drive.join("shown")));
         assert!(fuse.lookups().contains(&"shown".into()));
     });
 }
@@ -278,8 +251,8 @@ fn dead_fuse_mount_does_not_stop_the_sandbox() {
         Fuse::mount(&drive, false);
         let sandbox = system().allow_read(&dir);
 
-        let (out, err) = run(&sandbox, &format!("cat {}/mount.txt", dir.display()));
-        assert_eq!(out, "plain", "{err}");
+        let out = inside(&sandbox, read(&dir.join("mount.txt")));
+        assert_eq!(out.unwrap(), "plain");
     });
 }
 
@@ -294,8 +267,8 @@ fn local_mount_over_fuse_is_shown() {
         std::fs::write(drive.join("file.txt"), "local").unwrap();
         let sandbox = system().allow_read(&dir);
 
-        let (out, err) = run(&sandbox, &format!("cat {}/file.txt", drive.display()));
-        assert_eq!(out, "local", "{err}");
+        let out = inside(&sandbox, read(&drive.join("file.txt")));
+        assert_eq!(out.unwrap(), "local");
     });
 }
 
@@ -308,7 +281,7 @@ fn fuse_mount_with_a_space_is_hidden() {
         let fuse = Fuse::mount(&drive, true);
         let sandbox = system().allow_read(dir);
 
-        run(&sandbox, &format!("ls '{}/leak-me'", drive.display()));
+        let _ = inside(&sandbox, list(&drive.join("leak-me")));
         assert!(!fuse.lookups().contains(&"leak-me".into()));
     });
 }
@@ -322,7 +295,7 @@ fn local_mount_is_shown() {
         std::fs::write(drive.join("file.txt"), "local").unwrap();
         let sandbox = system().allow_read(&dir);
 
-        let (out, err) = run(&sandbox, &format!("cat {}/file.txt", drive.display()));
-        assert_eq!(out, "local", "{err}");
+        let out = inside(&sandbox, read(&drive.join("file.txt")));
+        assert_eq!(out.unwrap(), "local");
     });
 }
