@@ -138,6 +138,10 @@ pub struct Agent {
     max_turns: Option<usize>,
     auto_compact_tokens: Option<u64>,
     steering: Steering,
+    /// Plan mode: the model may only look, not change anything.
+    plan: bool,
+    /// Whether the last prompt was sent in plan mode.
+    planned: bool,
 }
 
 /// Messages of the user waiting to join a running prompt, shared with the
@@ -188,6 +192,8 @@ impl Agent {
             max_turns: Some(DEFAULT_MAX_TURNS),
             auto_compact_tokens: Some(DEFAULT_AUTO_COMPACT_TOKENS),
             steering: Steering::default(),
+            plan: false,
+            planned: false,
         }
     }
 
@@ -212,6 +218,18 @@ impl Agent {
     /// Switch the thinking effort used for subsequent prompts.
     pub fn set_thinking(&mut self, thinking: Thinking) {
         self.thinking = thinking;
+    }
+
+    /// Switch plan mode for subsequent prompts: the model gets only the
+    /// tools that change nothing and is asked for a plan, until the user
+    /// turns it off to have the plan carried out.
+    pub fn set_plan(&mut self, plan: bool) {
+        self.plan = plan;
+    }
+
+    /// Whether plan mode is on.
+    pub fn plan(&self) -> bool {
+        self.plan
     }
 
     /// Set the tool executor used to run model tool calls.
@@ -384,6 +402,11 @@ impl Agent {
             file.push_str("</file>");
             parts.push(ContentPart::Text(file));
         }
+        if self.plan {
+            parts.push(ContentPart::Text(PLAN_ON.to_owned()));
+        } else if self.planned {
+            parts.push(ContentPart::Text(PLAN_OFF.to_owned()));
+        }
         ChatMessage::user(MessageContent::from_parts(parts))
     }
 
@@ -417,6 +440,8 @@ impl Agent {
         let mut saved = self.req.messages.len();
         let message = self.user_message(text).await;
         self.req.messages.push(message);
+        self.planned = self.plan;
+        let plan = self.plan;
 
         let mut turns = 0usize;
         let mut prev_assistant_idx: Option<usize> = None;
@@ -526,6 +551,8 @@ impl Agent {
             let refusal = |idx: usize, call: &ToolCall| {
                 if turn.truncated {
                     Some(TRUNCATED)
+                } else if plan && !allowed_in_plan(&call.fn_name) {
+                    Some(PLAN_REFUSAL)
                 } else if turn.invalid.contains(&call.call_id) {
                     Some(INVALID_ARGUMENTS)
                 } else if repeated_turn || is_within_turn_repeat(&calls[..idx], call) {
@@ -952,6 +979,23 @@ const CANCELLED: &str = "cancelled; the call may have partly run";
 
 /// Result of a tool call from a response truncated by the token limit.
 const TRUNCATED: &str = "response was truncated at max_tokens; tool call was not executed — please re-issue it (split into smaller calls if needed)";
+
+/// Told to the model with each prompt in plan mode.
+const PLAN_ON: &str = "[Plan mode: look around with the tools that change nothing, \
+then answer with a plan for the request. Do not change anything: the user \
+approves the plan first.]";
+
+/// Told to the model with the first prompt after plan mode.
+const PLAN_OFF: &str = "[Plan mode is off: you may now change files and run commands.]";
+
+/// Result of a tool call that would change something in plan mode.
+const PLAN_REFUSAL: &str =
+    "plan mode: only tools that change nothing may run until the user approves the plan";
+
+/// Whether the tool `name` may run in plan mode: it changes nothing.
+fn allowed_in_plan(name: &str) -> bool {
+    tools::is_read_only(name) || name == tools::TODO_TOOL || name == tools::FETCH_TOOL
+}
 
 /// Result of a tool call whose arguments could not be read.
 const INVALID_ARGUMENTS: &str =
