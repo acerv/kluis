@@ -8,12 +8,6 @@ use std::process::{Command, Output};
 
 use harness_sandbox::protect_self;
 
-fn bash(script: &str) -> Command {
-    let mut cmd = Command::new("bash");
-    cmd.args(["-c", script]);
-    cmd
-}
-
 fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
@@ -22,7 +16,9 @@ fn stderr(out: &Output) -> String {
 fn children_cannot_read_environment() {
     protect_self().unwrap();
 
-    let out = bash(&format!("cat /proc/{}/environ", std::process::id()))
+    // Another process: this one can always read its own.
+    let out = Command::new("cat")
+        .arg(format!("/proc/{}/environ", std::process::id()))
         .output()
         .unwrap();
     assert!(!out.status.success());
