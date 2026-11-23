@@ -1341,6 +1341,10 @@ fn replay_restores_an_unfinished_plan() {
     );
     assert!(render_text(&draw_app(&app)).contains("▸ build"));
 
+    // Another conversation takes its place, as with `/resume`: not its plan.
+    app.replay_history(&[ChatMessage::user("something else")]);
+    assert!(!render_text(&draw_app(&app)).contains("Plan"));
+
     let mut app = App::new("model", status(), Theme::new(false));
     app.replay_history(&call("c1", DONE, r#"{"count":1}"#));
     assert!(!render_text(&draw_app(&app)).contains("Plan"));

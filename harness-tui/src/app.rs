@@ -463,6 +463,8 @@ impl App {
     pub fn replay_history(&mut self, messages: &[ChatMessage]) {
         self.usage = TokenUsage::default();
         self.context = 0;
+        // The plan of the conversation shown until now is not of this one.
+        self.todos.clear();
         self.sync_markdown_width();
         let mut tool_calls: HashMap<&str, (&str, &Value)> = HashMap::new();
         let mut last_tool = None;
