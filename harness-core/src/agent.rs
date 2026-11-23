@@ -78,17 +78,6 @@ impl Thinking {
         }
     }
 
-    /// Next effort level in the cycle `default -> off -> low -> medium -> high -> default`.
-    pub fn next(self) -> Self {
-        match self {
-            Self::Default => Self::Off,
-            Self::Off => Self::Low,
-            Self::Low => Self::Medium,
-            Self::Medium => Self::High,
-            Self::High => Self::Default,
-        }
-    }
-
     fn reasoning_effort(self) -> Option<ReasoningEffort> {
         match self {
             Self::Default => None,

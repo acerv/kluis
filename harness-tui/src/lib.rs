@@ -386,8 +386,8 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
                 switch_model(&name, &mut agent, &mut app, session.as_mut());
                 draw(&mut term, &mut app)?;
             }
-            Action::SetThinking(level) => {
-                agent.set_thinking(level);
+            Action::SetPlan(plan) => {
+                agent.set_plan(plan);
                 draw(&mut term, &mut app)?;
             }
             Action::Shell(command) => {
@@ -858,7 +858,7 @@ async fn drive_agent(
                             | Action::Slash(_)
                             | Action::ResumeSession(_)
                             | Action::SelectModel(_)
-                            | Action::SetThinking(_) => {}
+                            | Action::SetPlan(_) => {}
                             Action::Answer(answer) => {
                                 if let Some(question) = question.take() {
                                     question.answer(answer);

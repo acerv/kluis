@@ -50,6 +50,9 @@
   Cancelling puts the ones left back in the editor.
 - `@path` in a prompt attaches the file, read as the `read` tool reads it
   (images included); typing `@` offers the files of the folder.
+- Shift+Tab switches plan mode: the model only looks around (`read`, `ls`,
+  `find`, `grep`, `todo`, `web_fetch`) and answers with a plan; other tools
+  are refused. Switch back and send a message to have the plan carried out.
 - `!<command>` runs a shell command as the `bash` tool does, in the sandbox
   when the tools run there, without adding it to the conversation.
 - `/output` shows the whole output of the last tool call.
