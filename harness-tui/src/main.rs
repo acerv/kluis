@@ -35,8 +35,8 @@ use harness_core::{
 };
 use harness_sandbox::{GitGuard, NetworkAccess};
 use harness_tui::{
-    check_git_guard, printable, retry_notice, summary, BannerLine, History, PromptSaver,
-    RunOptions, Session, Status, TRUNCATED_NOTICE,
+    check_git_guard, printable, pruned_notice, retry_notice, summary, BannerLine, History,
+    PromptSaver, RunOptions, Session, Status, TRUNCATED_NOTICE,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -697,5 +697,6 @@ fn print_event(event: Event<'_>) {
         Event::CompactFailed(err) => {
             eprintln!("[auto-compact failed: {}]", printable(err));
         }
+        Event::Pruned(count) => eprintln!("{}", pruned_notice(count)),
     }
 }

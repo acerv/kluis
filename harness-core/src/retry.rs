@@ -118,6 +118,50 @@ fn classify(err: &(dyn StdError + 'static)) -> Option<Transient> {
     }
 }
 
+/// Whether the provider refused `err`'s request for being larger than the
+/// model's context window.
+pub(crate) fn is_too_large(err: &(dyn StdError + 'static)) -> bool {
+    let Some(err) = err.downcast_ref::<genai::Error>() else {
+        return false;
+    };
+    match err {
+        genai::Error::HttpError { status, body, .. } => too_large(*status, body),
+        genai::Error::WebModelCall { webc_error, .. }
+        | genai::Error::WebAdapterCall { webc_error, .. } => match webc_error {
+            webc::Error::ResponseFailedStatus { status, body, .. } => too_large(*status, body),
+            _ => false,
+        },
+        genai::Error::ChatResponse { body, .. } => mentions_context(&body.to_string()),
+        genai::Error::WebStream { error, .. } => {
+            let inner: &(dyn StdError + 'static) = error.as_ref();
+            is_too_large(inner)
+        }
+        _ => false,
+    }
+}
+
+/// Whether a request failing with `status` and `body` was too large.
+fn too_large(status: StatusCode, body: &str) -> bool {
+    status == StatusCode::PAYLOAD_TOO_LARGE
+        || (status == StatusCode::BAD_REQUEST && mentions_context(body))
+}
+
+/// Whether an error `body` says the context window is exceeded, in the
+/// words of the common providers.
+fn mentions_context(body: &str) -> bool {
+    const PHRASES: [&str; 7] = [
+        "context_length_exceeded",
+        "context window",
+        "maximum context length",
+        "prompt is too long",
+        "input token count",
+        "too many tokens",
+        "request_too_large",
+    ];
+    let body = body.to_ascii_lowercase();
+    PHRASES.iter().any(|phrase| body.contains(phrase))
+}
+
 /// Whether a failed HTTP exchange may pass. A server that cannot be
 /// reached at all, e.g. with no network, will not be reached on a retry
 /// either; one that answered and then broke off may.

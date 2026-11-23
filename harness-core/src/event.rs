@@ -60,4 +60,8 @@ pub enum Event<'a> {
     },
     /// Auto-compaction failed and left the existing history untouched.
     CompactFailed(&'a str),
+    /// The request was too large for the model: the outputs of this many
+    /// tool calls before the last turn were removed from the history, and
+    /// the model is asked again.
+    Pruned(usize),
 }

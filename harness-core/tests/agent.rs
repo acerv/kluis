@@ -184,6 +184,7 @@ async fn tool_call_round_trip() {
                 Event::Compacting { context_tokens } => format!("compacting {context_tokens}"),
                 Event::Compacted { before, .. } => format!("compacted {before}"),
                 Event::CompactFailed(err) => format!("compact_failed {err}"),
+                Event::Pruned(count) => format!("pruned {count}"),
             })
         })
         .await
@@ -1363,4 +1364,62 @@ async fn auto_compact_triggers_at_end_of_prompt_and_guards_repeat_loop() {
         agent3.history()[1].content.first_text(),
         Some("kept answer")
     );
+}
+
+/// A provider error saying the request is over the context window.
+fn too_large() -> Reply {
+    Reply::Status(
+        400,
+        Vec::new(),
+        json!({ "error": { "code": "context_length_exceeded", "message": "too long" } })
+            .to_string(),
+    )
+}
+
+#[tokio::test]
+async fn oversized_request_drops_old_tool_outputs_and_asks_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = MockModel::start(vec![
+        tool_calls(&[("c1", "bash", json!({ "command": "seq 100; echo first" }))]),
+        tool_calls(&[("c2", "bash", json!({ "command": "seq 100; echo second" }))]),
+        too_large(),
+        text("done"),
+    ])
+    .await;
+    let mut agent = agent(&model, dir.path());
+
+    let mut pruned = Vec::new();
+    let answer = agent
+        .prompt("go", |event| {
+            if let Event::Pruned(count) = event {
+                pruned.push(count);
+            }
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(answer, "done");
+    assert_eq!(pruned, [1]);
+    let reqs = model.requests();
+    assert_eq!(reqs.len(), 4);
+    let tools = sent(&reqs[3], "tool");
+    assert!(!tools[0]["content"].as_str().unwrap().contains("first"));
+    assert!(tools[1]["content"].as_str().unwrap().contains("second"));
+}
+
+#[tokio::test]
+async fn oversized_request_fails_when_nothing_is_left_to_drop() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = MockModel::start(vec![
+        tool_calls(&[("c1", "bash", json!({ "command": "seq 100" }))]),
+        too_large(),
+    ])
+    .await;
+    let mut agent = agent(&model, dir.path());
+
+    let err = prompt(&mut agent, "go").await.unwrap_err();
+
+    assert!(err.to_string().contains("start a new conversation"), "{err}");
+    // The only tool output belongs to the last turn: nothing was dropped.
+    assert_eq!(model.requests().len(), 2);
 }

@@ -122,6 +122,9 @@ pub enum AgentUpdate {
     Compacting(u64),
     Compacted(usize),
     CompactFailed(String),
+    /// The request was too large: the outputs of this many old tool calls
+    /// were removed.
+    Pruned(usize),
     /// The final text of the model was cut at its token limit.
     Truncated,
 }
@@ -158,6 +161,7 @@ impl AgentUpdate {
             AgentEvent::Compacting { context_tokens } => Self::Compacting(context_tokens),
             AgentEvent::Compacted { before, .. } => Self::Compacted(before),
             AgentEvent::CompactFailed(err) => Self::CompactFailed(err.to_owned()),
+            AgentEvent::Pruned(count) => Self::Pruned(count),
         })
     }
 }
@@ -734,6 +738,9 @@ impl App {
             }
             AgentUpdate::CompactFailed(err) => {
                 self.push_notice(format!("[auto-compact failed: {err}]"), self.theme.error);
+            }
+            AgentUpdate::Pruned(count) => {
+                self.push_notice(pruned_notice(count), self.theme.muted);
             }
             AgentUpdate::Truncated => {
                 self.push_notice(TRUNCATED_NOTICE.to_owned(), self.theme.error);
@@ -1900,6 +1907,12 @@ pub const TRUNCATED_NOTICE: &str = "[reply cut at the token limit of the model]"
 /// The line telling the user a failed model request is retried.
 pub fn retry_notice(attempt: u32, delay: Duration, reason: &str) -> String {
     format!("[{reason} · retry {attempt} in {delay:.0?}]")
+}
+
+/// The line telling the user old tool outputs were dropped to fit the
+/// context window.
+pub fn pruned_notice(count: usize) -> String {
+    format!("[request too large: removed {count} old tool outputs]")
 }
 
 /// First line of `text`, cut to [`SUMMARY_LEN`] characters.
