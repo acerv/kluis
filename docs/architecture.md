@@ -25,7 +25,8 @@ persistence out of the core loop.
 - Linux only, sandboxed by default.
 - Tool results are bounded JSON, so one noisy command cannot flood the model
   context.
-- Sessions are append-only JSONL files, one workspace folder per directory.
+- Sessions are JSONL files, one workspace folder per directory, appended to
+  and rewritten on compaction.
 - The TUI state machine is decoupled from terminal I/O and tested directly.
 - Credentials are never passed into the sandbox, and `~/.kluis` is hidden from
   sandboxed tools.

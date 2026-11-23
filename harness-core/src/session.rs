@@ -293,7 +293,8 @@ impl SessionStore {
     }
 }
 
-/// Append-only writer for a single `.jsonl` session file.
+/// Writer for a single `.jsonl` session file, which only grows but on
+/// compaction.
 #[derive(Debug)]
 pub struct SessionWriter {
     id: String,
@@ -329,14 +330,19 @@ impl SessionWriter {
     }
 
     /// Record a conversation compaction, replacing prior messages when the
-    /// session is loaded while keeping the file append-only.
+    /// session is loaded.
+    ///
+    /// The file is rewritten without the messages it replaces, but the first
+    /// one, which names the session in the list, so that long sessions stay
+    /// small enough to load.
     pub fn append_compact(&mut self, messages: &[ChatMessage]) -> io::Result<()> {
         if messages.is_empty() {
             return Ok(());
         }
-        let writer = self.writer()?;
-        write_entry(writer, &SessionEntryRef::Compact { messages })?;
-        writer.flush()
+        // The header, and the end of a file cut by a crash repaired.
+        self.writer()?.flush()?;
+        self.file = None;
+        rewrite_compacted(&self.path, messages)
     }
 
     /// Record the token usage of a prompt and the tokens its last request
@@ -599,6 +605,59 @@ fn prompt_preview(text: &str) -> String {
         }
     }
     out
+}
+
+/// The `type` of a session file line.
+#[derive(Deserialize)]
+struct EntryKind {
+    #[serde(rename = "type")]
+    kind: String,
+}
+
+/// Rewrite the session file at `path` with what loading it still needs, its
+/// header, first message, model changes and token usage, then `messages`
+/// replacing the conversation. The new file replaces the old one only once
+/// complete.
+fn rewrite_compacted(path: &Path, messages: &[ChatMessage]) -> io::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    let res = write_compacted(path, &tmp, messages).and_then(|()| fs::rename(&tmp, path));
+    if res.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    res
+}
+
+fn write_compacted(path: &Path, tmp: &Path, messages: &[ChatMessage]) -> io::Result<()> {
+    let old = BufReader::new(File::open(path)?);
+    let mut out = BufWriter::new(
+        OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(tmp)?,
+    );
+    let mut first_message = true;
+    for line in old.split(b'\n') {
+        let line = line?;
+        // Corrupt lines, as one cut by a crash, are left out.
+        let keep = match serde_json::from_slice::<EntryKind>(&line) {
+            Ok(entry) => match entry.kind.as_str() {
+                "message" => std::mem::take(&mut first_message),
+                "compact" => false,
+                _ => true,
+            },
+            Err(_) => false,
+        };
+        if keep {
+            out.write_all(&line)?;
+            out.write_all(b"\n")?;
+        }
+    }
+    write_entry(&mut out, &SessionEntryRef::Compact { messages })?;
+    out.into_inner()?.sync_all()
 }
 
 /// `message` with its images replaced by a note: they would soon make the

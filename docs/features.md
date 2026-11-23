@@ -11,8 +11,9 @@
   which could point at files the sandbox hides.
 - Live model discovery across configured providers, with a per-provider
   timeout.
-- Sessions are persisted as append-only JSONL per workspace. Continue the
-  latest or resume any session by ID.
+- Sessions are persisted as JSONL per workspace, appended to as they go and
+  rewritten without the replaced messages on compaction, so long ones stay
+  small enough to resume. Continue the latest or resume any session by ID.
 - Automatic conversation compaction when prompt tokens reach the configured
   threshold (default 100K), plus manual `/compact [focus]`.
 - When the provider refuses a request as larger than the context window, the
