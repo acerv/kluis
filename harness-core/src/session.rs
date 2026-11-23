@@ -329,14 +329,14 @@ impl SessionWriter {
         writer.flush()
     }
 
-    /// Record a conversation compaction, replacing prior messages when the
-    /// session is loaded.
+    /// Record that `messages` replace the conversation, as after a
+    /// compaction or when a prompt is sent again.
     ///
-    /// The file is rewritten without the messages it replaces, but the first
-    /// one, which names the session in the list, so that long sessions stay
-    /// small enough to load.
+    /// The file is rewritten without the messages they replace, but the
+    /// first one, which names the session in the list, so that long sessions
+    /// stay small enough to load.
     pub fn append_compact(&mut self, messages: &[ChatMessage]) -> io::Result<()> {
-        if messages.is_empty() {
+        if messages.is_empty() && !self.initialized {
             return Ok(());
         }
         // The header, and the end of a file cut by a crash repaired.
