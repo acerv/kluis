@@ -42,6 +42,9 @@
 - Spinner with elapsed time and live `bash` output preview.
 - Persistent input history, model and session pickers, and `/copy` of the last
   reply.
+- Messages typed while the agent works join the conversation after the
+  running tool calls; one sent as the model answers starts the next turn.
+  Cancelling puts the ones left back in the editor.
 - `/output` shows the whole output of the last tool call.
 - Slash commands: `/model`, `/thinking`, `/resume`, `/copy`, `/output`,
   `/compact`, `/status`, `/new`, `/help`, `/quit`.

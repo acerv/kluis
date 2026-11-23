@@ -28,7 +28,7 @@ use genai::chat::ChatMessage;
 use harness_core::tools::{is_read_only, Question};
 use harness_core::{
     Agent, Error, Event, ModelInfo, ModelList, SessionData, SessionStore, SessionSummary,
-    SessionWriter, Thinking, TokenUsage,
+    SessionWriter, Steering, Thinking, TokenUsage,
 };
 use harness_sandbox::GitGuard;
 use tokio::sync::mpsc;
@@ -373,7 +373,7 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
                 agent.set_thinking(level);
                 draw(&mut term, &mut app)?;
             }
-            Action::Submit(prompt) => {
+            Action::Submit(mut prompt) => loop {
                 if let Some(ref mut h) = history {
                     let _ = h.record(&prompt);
                 }
@@ -405,7 +405,19 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
                     notices.iter().for_each(|notice| app.push_info(notice));
                     draw(&mut term, &mut app)?;
                 }
-            }
+                // Messages queued as the prompt ended make the next one,
+                // unless it was cancelled.
+                let queued = agent.steering().take().join("\n\n");
+                if queued.is_empty() {
+                    break;
+                }
+                if turn.cancelled {
+                    app.restore_queued(&queued);
+                    draw(&mut term, &mut app)?;
+                    break;
+                }
+                prompt = queued;
+            },
         }
     }
     Ok(())
@@ -674,6 +686,7 @@ struct DriveResult {
 
 struct TurnOutcome {
     quit: bool,
+    cancelled: bool,
     changed_files: bool,
 }
 
@@ -685,6 +698,7 @@ async fn drive_agent(
     events: &mut EventReader,
     questions: &mut mpsc::UnboundedReceiver<Question>,
     mut rx: mpsc::UnboundedReceiver<AgentUpdate>,
+    steering: Steering,
     fut: impl std::future::Future<Output = Result<String, Error>>,
 ) -> Result<DriveResult, Error> {
     let mut cancelled = false;
@@ -717,8 +731,11 @@ async fn drive_agent(
                                 break;
                             }
                             Action::Redraw => draw(term, app)?,
+                            Action::Submit(text) => {
+                                steering.push(text);
+                                draw(term, app)?;
+                            }
                             Action::None
-                            | Action::Submit(_)
                             | Action::Slash(_)
                             | Action::ResumeSession(_)
                             | Action::SelectModel(_)
@@ -787,12 +804,14 @@ async fn run_turn(
 ) -> Result<TurnOutcome, Error> {
     let mut saver = PromptSaver::new(session, agent.history());
     let (tx, rx) = mpsc::unbounded_channel::<AgentUpdate>();
+    let steering = agent.steering();
     let res = drive_agent(
         term,
         app,
         events,
         questions,
         rx,
+        steering,
         agent.prompt(prompt, |event| {
             saver.on_event(&event);
             forward_event(&tx, event);
@@ -801,19 +820,18 @@ async fn run_turn(
     .await?;
 
     let changed_files = res.stats.changed_files;
+    let cancelled = res.cancelled;
     if let Err(err) = saver.finish(agent.history(), res.stats.usage, app.context()) {
         app.push_info(format!("[session save error: {err}]"));
     }
 
-    if finish_activity(app, res) {
-        return Ok(TurnOutcome {
-            quit: true,
-            changed_files,
-        });
+    let quit = finish_activity(app, res);
+    if !quit {
+        draw(term, app)?;
     }
-    draw(term, app)?;
     Ok(TurnOutcome {
-        quit: false,
+        quit,
+        cancelled,
         changed_files,
     })
 }
@@ -835,12 +853,14 @@ async fn run_compact(
     draw(term, app)?;
 
     let (tx, rx) = mpsc::unbounded_channel::<AgentUpdate>();
+    let steering = agent.steering();
     let res = drive_agent(
         term,
         app,
         events,
         questions,
         rx,
+        steering,
         agent.compact(focus, |event| forward_event(&tx, event)),
     )
     .await?;
@@ -849,6 +869,11 @@ async fn run_compact(
     let usage = res.stats.usage;
     if finish_activity(app, res) {
         return Ok(true);
+    }
+    // Messages typed meanwhile wait in the editor.
+    let queued = agent.steering().take().join("\n\n");
+    if !queued.is_empty() {
+        app.restore_queued(&queued);
     }
     if compacted {
         app.set_context(0);

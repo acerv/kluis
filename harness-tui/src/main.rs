@@ -668,6 +668,7 @@ fn print_event(event: Event<'_>) {
         // Already printed piece by piece: end its line.
         Event::Text(_) => println!(),
         Event::Messages(_)
+        | Event::Steered(_)
         | Event::TurnStart
         | Event::ReasoningDelta(_)
         | Event::ToolOutput(_)

@@ -185,6 +185,7 @@ async fn tool_call_round_trip() {
                 Event::Compacted { before, .. } => format!("compacted {before}"),
                 Event::CompactFailed(err) => format!("compact_failed {err}"),
                 Event::Pruned(count) => format!("pruned {count}"),
+                Event::Steered(text) => format!("steered {text}"),
             })
         })
         .await
@@ -1419,7 +1420,77 @@ async fn oversized_request_fails_when_nothing_is_left_to_drop() {
 
     let err = prompt(&mut agent, "go").await.unwrap_err();
 
-    assert!(err.to_string().contains("start a new conversation"), "{err}");
+    assert!(
+        err.to_string().contains("start a new conversation"),
+        "{err}"
+    );
     // The only tool output belongs to the last turn: nothing was dropped.
     assert_eq!(model.requests().len(), 2);
+}
+
+#[tokio::test]
+async fn steering_message_joins_after_the_running_tool_calls() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = MockModel::start(vec![
+        tool_calls(&[("c1", "bash", json!({ "command": "echo hi" }))]),
+        text("done"),
+    ])
+    .await;
+    let mut agent = agent(&model, dir.path());
+    let steering = agent.steering();
+
+    let mut steered = Vec::new();
+    let answer = agent
+        .prompt("go", |event| match event {
+            Event::ToolCall(_) => steering.push("use tabs"),
+            Event::Steered(text) => steered.push(text.to_owned()),
+            _ => {}
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(answer, "done");
+    assert_eq!(steered, ["use tabs"]);
+    assert_eq!(
+        roles(&agent),
+        [
+            ChatRole::User,
+            ChatRole::Assistant,
+            ChatRole::Tool,
+            ChatRole::User,
+            ChatRole::Assistant,
+        ]
+    );
+    let users = sent(&model.requests()[1], "user");
+    assert_eq!(users[1]["content"], "use tabs");
+}
+
+#[tokio::test]
+async fn steering_message_queued_during_the_answer_continues_the_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = MockModel::start(vec![text("first"), text("second")]).await;
+    let mut agent = agent(&model, dir.path());
+    let steering = agent.steering();
+
+    let answer = agent
+        .prompt("go", |event| {
+            if matches!(event, Event::Text("first")) {
+                steering.push("and more");
+            }
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(answer, "second");
+    assert!(steering.take().is_empty());
+    assert_eq!(model.requests().len(), 2);
+    assert_eq!(
+        roles(&agent),
+        [
+            ChatRole::User,
+            ChatRole::Assistant,
+            ChatRole::User,
+            ChatRole::Assistant,
+        ]
+    );
 }
