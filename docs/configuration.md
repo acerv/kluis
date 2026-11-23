@@ -24,6 +24,10 @@ env = ["CC", "CFLAGS"]
 
 Paths may start with `~`. Sizes take a `K`, `M` or `G` suffix.
 
+Commands see an empty `$HOME` showing only the current folder and the
+`read` and `write` paths below it: list the toolchains they need, such as
+`~/.cargo` and `~/.rustup`. See [Home folder](sandbox.md#home-folder).
+
 Lists add up with the matching command-line options. Switches turn on when
 either the file or the CLI enables them.
 
@@ -35,8 +39,8 @@ either the file or the CLI enables them.
 | `generic.thinking`      | Thinking effort: `default`, `off`, `low`, `medium`, `high` | `default`           |
 | `generic.code_theme`          | Colors of code blocks, see [Code theme](#code-theme)            | `base16-ocean-dark` |
 | `generic.auto_compact_tokens` | Auto-compact context at this many prompt tokens (`0` disables) | `100000`            |
-| `sandbox.read`          | Extra folders the model can read                     | none                |
-| `sandbox.write`         | Extra folders the model can change                   | none                |
+| `sandbox.read`          | Extra folders the model can read, also in `$HOME`    | none                |
+| `sandbox.write`         | Extra folders the model can change, also in `$HOME`  | none                |
 | `sandbox.deny`          | Paths to hide, on top of the built-in credentials    | none                |
 | `sandbox.connect`       | TCP ports the model can connect to                   | none                |
 | `sandbox.network`       | Allow any network                                    | `false`             |

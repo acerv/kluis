@@ -71,7 +71,7 @@ thinking = "medium"               # default, low, medium or high
 code_theme = "solarized-dark"     # colors of code blocks
 
 [sandbox]
-read = ["/etc/ssl"]               # extra folders the model can read
+read = ["~/.cargo", "~/.rustup"]  # extra folders the model can read; $HOME is empty otherwise
 write = ["~/scratch"]             # extra folders the model can change
 deny = ["~/work/secrets"]         # folders to hide
 connect = [5432]                  # TCP ports commands can reach, e.g. a local PostgreSQL
