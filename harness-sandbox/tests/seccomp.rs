@@ -429,3 +429,25 @@ fn fast_open_stays_with_any_network() {
         assert_eq!(send_errors(libc::MSG_FASTOPEN), [Some(libc::EBADF); 3]);
     });
 }
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn x32_system_calls_kill() {
+    use std::os::unix::process::ExitStatusExt;
+
+    const NAME: &str = "x32_system_calls_kill";
+    // The x32 ABI shares the architecture value of x86_64: its system calls
+    // could get around the filter.
+    if std::env::var(CHILD).is_ok() {
+        restrict_syscalls(NetworkAccess::None).unwrap();
+        // SAFETY: getpid, through the x32 ABI, takes no argument.
+        unsafe { libc::syscall(libc::SYS_getpid | 0x4000_0000) };
+        return;
+    }
+    let status = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", NAME, "--nocapture"])
+        .env(CHILD, "none")
+        .status()
+        .unwrap();
+    assert_eq!(status.signal(), Some(libc::SIGSYS));
+}
