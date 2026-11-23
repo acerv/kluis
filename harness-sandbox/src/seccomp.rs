@@ -79,8 +79,12 @@ impl FromStr for NetworkAccess {
 /// sockets of the host below the folders it shows, such as the ones of an
 /// editor or a chat app, and the programs behind them can reach the
 /// network. With [`NetworkAccess::Ports`], UDP ones are refused too, as
-/// Landlock only limits TCP. `socketpair` keeps working: its sockets only
-/// reach each other.
+/// Landlock only limits TCP.
+///
+/// A socket pair, also refused with `EACCES` unless Unix, is a datagram one
+/// only with [`NetworkAccess::Any`]: given an address, such a socket sends
+/// to any other. Stream and sequenced packet ones only reach each other, so
+/// programs keep talking to the ones they start.
 ///
 /// It cannot be undone, and applies to every thread of the process.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -114,6 +118,7 @@ pub fn restrict_syscalls(network: NetworkAccess) -> io::Result<()> {
     if network == NetworkAccess::Any {
         families.push((libc::AF_UNIX, &[]));
     }
+    program.extend(socket_pair_rules(network == NetworkAccess::Any));
     program.extend(socket_rules(&families, network != NetworkAccess::Ports));
     let filter = sock_fprog {
         len: program.len() as u16,
@@ -163,6 +168,32 @@ const INET6_PROTOCOLS: &[libc::c_int] = &[
     libc::IPPROTO_UDP,
     libc::IPPROTO_ICMPV6,
 ];
+
+/// Instructions refusing socket pairs other than Unix ones with `EACCES`,
+/// and datagram ones unless `datagrams`.
+fn socket_pair_rules(datagrams: bool) -> Vec<sock_filter> {
+    let unix = libc::AF_UNIX as u32;
+    let mut rules = vec![load(NR)];
+    if datagrams {
+        rules.extend([
+            jump_eq(libc::SYS_socketpair as u32, 0, 3),
+            load(ARG0),
+            jump_eq(unix, 1, 0),
+        ]);
+    } else {
+        rules.extend([
+            jump_eq(libc::SYS_socketpair as u32, 0, 6),
+            load(ARG0),
+            jump_eq(unix, 0, 3),
+            // The type, without flags such as SOCK_CLOEXEC.
+            load(ARG1),
+            and(0xf),
+            jump_eq(libc::SOCK_DGRAM as u32, 0, 1),
+        ]);
+    }
+    rules.push(ret(EACCES));
+    rules
+}
 
 /// An instruction of [`socket_rules`], whose jump, when taken, may lead to
 /// the final approval instead of the next instruction.

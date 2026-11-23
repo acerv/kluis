@@ -70,6 +70,61 @@ fn socket_pairs_still_work() {
     });
 }
 
+/// The error of creating a socket pair of `family` and `kind`, if any.
+fn pair_error(family: libc::c_int, kind: libc::c_int) -> Option<i32> {
+    let mut fds = [0; 2];
+    // SAFETY: plain system calls on an array that outlives them.
+    unsafe {
+        if libc::socketpair(family, kind, 0, fds.as_mut_ptr()) != 0 {
+            return std::io::Error::last_os_error().raw_os_error();
+        }
+        libc::close(fds[0]);
+        libc::close(fds[1]);
+    }
+    None
+}
+
+#[test]
+fn datagram_socket_pairs_are_refused() {
+    // Given an address, they send to any datagram socket of the host.
+    blocked("datagram_socket_pairs_are_refused", check_pairs);
+}
+
+#[test]
+fn datagram_socket_pairs_are_refused_with_only_ports() {
+    restricted(
+        "datagram_socket_pairs_are_refused_with_only_ports",
+        "ports",
+        check_pairs,
+    );
+}
+
+fn check_pairs() {
+    let flags = libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK;
+    for kind in [libc::SOCK_DGRAM, libc::SOCK_DGRAM | flags] {
+        assert_eq!(pair_error(libc::AF_UNIX, kind), Some(libc::EACCES));
+    }
+    assert_eq!(pair_error(libc::AF_UNIX, libc::SOCK_SEQPACKET), None);
+    assert_eq!(pair_error(libc::AF_UNIX, libc::SOCK_STREAM | flags), None);
+}
+
+#[test]
+fn datagram_socket_pairs_stay_with_any_network() {
+    restricted("datagram_socket_pairs_stay_with_any_network", "any", || {
+        assert_eq!(pair_error(libc::AF_UNIX, libc::SOCK_DGRAM), None);
+    });
+}
+
+#[test]
+fn socket_pairs_are_unix_only() {
+    // The kernel would look for a module for others, such as TIPC's.
+    restricted("socket_pairs_are_unix_only", "any", || {
+        for family in [libc::AF_INET, libc::AF_TIPC] {
+            assert_eq!(pair_error(family, libc::SOCK_STREAM), Some(libc::EACCES));
+        }
+    });
+}
+
 #[test]
 fn other_sockets_still_work() {
     // The network namespace, not this filter, takes the network away.
