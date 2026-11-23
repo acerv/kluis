@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
-//! The seccomp filter of the sandbox: no user namespaces, and no Unix
-//! sockets, which lead to programs of the host that can reach the network.
+//! The seccomp filter of the sandbox: no user namespaces, no mount
+//! changes, and no Unix sockets, which lead to programs of the host that
+//! can reach the network.
 
 use std::io::ErrorKind;
 use std::net::TcpListener;
@@ -29,7 +30,17 @@ fn restricted(name: &str, network: &str, body: fn()) {
         body();
         return;
     }
-    let status = Command::new(std::env::current_exe().unwrap())
+    run_child(
+        Command::new(std::env::current_exe().unwrap()),
+        name,
+        network,
+    );
+}
+
+/// Run test `name` with `cmd`, a copy of this test process or a program
+/// starting one, restricted for `network` access.
+fn run_child(mut cmd: Command, name: &str, network: &str) {
+    let status = cmd
         .args(["--exact", name, "--nocapture"])
         .env(CHILD, network)
         .status()
@@ -199,6 +210,56 @@ fn user_namespaces_are_refused() {
             assert_eq!(errno(res), Some(libc::ENOSYS));
         }
     });
+}
+
+#[test]
+fn mounts_stay_even_as_root() {
+    const NAME: &str = "mounts_stay_even_as_root";
+    if std::env::var_os(CHILD).is_none() {
+        // Root of a user namespace with a mount namespace of its own, which
+        // needs no privilege.
+        let mut cmd = Command::new("unshare");
+        cmd.args(["--map-root-user", "--mount"])
+            .arg(std::env::current_exe().unwrap());
+        run_child(cmd, NAME, "none");
+        return;
+    }
+    let tmp = c"/tmp";
+    let tmpfs = c"tmpfs";
+    // SAFETY: plain system calls on C strings that outlive them.
+    let mount_tmpfs = || unsafe {
+        libc::mount(
+            tmpfs.as_ptr(),
+            tmp.as_ptr(),
+            tmpfs.as_ptr(),
+            0,
+            std::ptr::null(),
+        )
+    };
+    // Over the /tmp of this mount namespace only.
+    let res = mount_tmpfs();
+    assert_eq!(res, 0, "{}", std::io::Error::last_os_error());
+    restrict_syscalls(NetworkAccess::None).unwrap();
+    assert_eq!(errno(mount_tmpfs().into()), Some(libc::EPERM));
+    // SAFETY: as above.
+    unsafe {
+        let res = libc::umount2(tmp.as_ptr(), libc::MNT_DETACH);
+        assert_eq!(errno(res.into()), Some(libc::EPERM));
+        let flags = libc::MS_REMOUNT | libc::MS_BIND;
+        let res = libc::mount(
+            std::ptr::null(),
+            tmp.as_ptr(),
+            std::ptr::null(),
+            flags,
+            std::ptr::null(),
+        );
+        assert_eq!(errno(res.into()), Some(libc::EPERM));
+        // A copy of the mount without the ones over it: OPEN_TREE_CLONE.
+        let res = libc::syscall(libc::SYS_open_tree, libc::AT_FDCWD, tmp.as_ptr(), 1);
+        assert_eq!(errno(res), Some(libc::EPERM));
+        let res = libc::syscall(libc::SYS_fsopen, tmpfs.as_ptr(), 0);
+        assert_eq!(errno(res), Some(libc::EPERM));
+    }
 }
 
 #[test]
