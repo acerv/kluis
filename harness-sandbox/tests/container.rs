@@ -1015,3 +1015,88 @@ fn socket_pairs_do_not_reach_host_sockets() {
         }
     }
 }
+
+/// Open a TCP session to `port` with a Fast Open send, without `connect`.
+fn send_fast_open(port: u16) -> libc::c_long {
+    let addr = libc::sockaddr_in {
+        sin_family: libc::AF_INET as libc::sa_family_t,
+        sin_port: port.to_be(),
+        sin_addr: libc::in_addr {
+            s_addr: u32::from(Ipv4Addr::LOCALHOST).to_be(),
+        },
+        sin_zero: [0; 8],
+    };
+    // SAFETY: plain system calls on a buffer and an address that outlive
+    // them.
+    unsafe {
+        let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0);
+        if fd < 0 {
+            return -1;
+        }
+        libc::sendto(
+            fd,
+            b"x".as_ptr().cast(),
+            1,
+            libc::MSG_FASTOPEN,
+            (&addr as *const libc::sockaddr_in).cast(),
+            std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+        ) as libc::c_long
+    }
+}
+
+/// Like [`send_fast_open`], with `connect` deferring to the first write.
+fn connect_fast_open(port: u16) -> libc::c_long {
+    let addr = libc::sockaddr_in {
+        sin_family: libc::AF_INET as libc::sa_family_t,
+        sin_port: port.to_be(),
+        sin_addr: libc::in_addr {
+            s_addr: u32::from(Ipv4Addr::LOCALHOST).to_be(),
+        },
+        sin_zero: [0; 8],
+    };
+    let on: libc::c_int = 1;
+    // SAFETY: plain system calls on values that outlive them.
+    unsafe {
+        let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0);
+        if fd < 0 {
+            return -1;
+        }
+        if libc::setsockopt(
+            fd,
+            libc::IPPROTO_TCP,
+            libc::TCP_FASTOPEN_CONNECT,
+            (&on as *const libc::c_int).cast(),
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        ) != 0
+        {
+            return -1;
+        }
+        if libc::connect(
+            fd,
+            (&addr as *const libc::sockaddr_in).cast(),
+            std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+        ) != 0
+        {
+            return -1;
+        }
+        libc::write(fd, b"x".as_ptr().cast(), 1) as libc::c_long
+    }
+}
+
+#[test]
+fn fast_open_keeps_to_allowed_ports() {
+    let (blocked, port) = server();
+    blocked.set_nonblocking(true).unwrap();
+    let sandbox = system().allow_connect(free_port());
+
+    // Landlock only checks `connect`: the send must fail as when the host
+    // does not use Fast Open, so that programs connect instead.
+    let err = call_error(&sandbox, NetworkAccess::Ports, move || send_fast_open(port));
+    assert_eq!(err, libc::EOPNOTSUPP);
+    // A deferred connect still goes through `connect`.
+    let err = call_error(&sandbox, NetworkAccess::Ports, move || {
+        connect_fast_open(port)
+    });
+    assert_eq!(err, libc::EACCES);
+    assert!(blocked.accept().is_err(), "reached a blocked port");
+}
