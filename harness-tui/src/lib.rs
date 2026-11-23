@@ -341,7 +341,14 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
 
     // A prompt to send next, without waiting for the user.
     let mut next_prompt = None;
+    // The model whose thinking levels were last checked.
+    let mut checked_model = String::new();
     loop {
+        if checked_model != agent.model() {
+            checked_model = agent.model().to_owned();
+            check_thinking(&mut agent, &mut app).await;
+            draw(&mut term, &mut app)?;
+        }
         let action = match next_prompt.take() {
             Some(prompt) => Action::Submit(prompt),
             None => {
@@ -611,15 +618,28 @@ async fn handle_slash(
             return open_model_picker(term, agent, app, events, models).await;
         }
         SlashCommand::Thinking(Some(arg)) => match arg.parse::<Thinking>() {
-            Ok(level) => {
-                agent.set_thinking(level);
-                app.set_thinking(level);
-                app.push_info(format!("thinking: {level}"));
-            }
+            Ok(level) => match app.thinking_levels().filter(|l| !l.contains(&level)) {
+                Some(levels) => {
+                    let takes = level_list(levels);
+                    app.push_info(format!(
+                        "[{} does not take thinking {level}; it takes {takes}]",
+                        agent.model()
+                    ));
+                }
+                None => {
+                    agent.set_thinking(level);
+                    app.set_thinking(level);
+                    app.push_info(format!("thinking: {level}"));
+                }
+            },
             Err(err) => app.push_info(err),
         },
         SlashCommand::Thinking(None) => {
-            app.push_info(format!("thinking: {}", agent.thinking()));
+            let takes = app
+                .thinking_levels()
+                .map(|l| format!(" (this model takes {})", level_list(l)))
+                .unwrap_or_default();
+            app.push_info(format!("thinking: {}{takes}", agent.thinking()));
         }
         SlashCommand::Resume(Some(id)) => {
             resume_session(&id, None, agent, app, session);
@@ -643,6 +663,31 @@ async fn handle_slash(
         }
     }
     Ok(false)
+}
+
+/// Ask which thinking levels the model takes, and fall back to the
+/// default level when it does not take the current one.
+async fn check_thinking(agent: &mut Agent, app: &mut App) {
+    let levels = agent.thinking_levels().await;
+    let thinking = agent.thinking();
+    if levels.as_ref().is_some_and(|l| !l.contains(&thinking)) {
+        app.push_info(format!(
+            "[{} does not take thinking {thinking}; using default]",
+            agent.model()
+        ));
+        agent.set_thinking(Thinking::Default);
+        app.set_thinking(Thinking::Default);
+    }
+    app.set_thinking_levels(levels);
+}
+
+/// `levels` as a comma-separated list.
+fn level_list(levels: &[Thinking]) -> String {
+    levels
+        .iter()
+        .map(|level| level.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn switch_model(name: &str, agent: &mut Agent, app: &mut App, session: Option<&mut Session>) {

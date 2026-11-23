@@ -353,6 +353,16 @@ impl App {
         self.thinking = thinking;
     }
 
+    /// Thinking levels the model takes, when its provider says.
+    pub fn thinking_levels(&self) -> Option<&[Thinking]> {
+        self.completion.thinking_levels()
+    }
+
+    /// Set the thinking levels the model takes, `None` when unknown.
+    pub fn set_thinking_levels(&mut self, levels: Option<Vec<Thinking>>) {
+        self.completion.set_thinking_levels(levels);
+    }
+
     /// Seed the editor's prompt history (oldest first).
     pub fn set_history(&mut self, entries: Vec<String>) {
         self.input.set_history(entries);

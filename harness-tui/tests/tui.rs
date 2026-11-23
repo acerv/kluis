@@ -4,7 +4,7 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use genai::chat::{ChatMessage, ChatRole, ContentPart, MessageContent, ToolCall, ToolResponse};
 use harness_core::tools::{Diff, DiffHunk, DiffLine};
-use harness_core::{Event as AgentEvent, SessionStore, TokenUsage, ToolDetails};
+use harness_core::{Event as AgentEvent, SessionStore, Thinking, TokenUsage, ToolDetails};
 use harness_tui::{
     code_theme, flush_scrollback, last_assistant_text, osc52_sequence, Action, AgentUpdate, App,
     BannerLine, PromptSaver, Session, SlashCommand, Status, Theme, TRUNCATED_NOTICE,
@@ -718,8 +718,6 @@ fn persistent_history_round_trip_multiline_dedup_and_compaction() {
 
 #[test]
 fn thinking_effort_slash_and_footer() {
-    use harness_core::Thinking;
-
     let mut term = inline_terminal(80, 14);
     let mut app = App::new("claude-sonnet-4-5", status(), Theme::new(false));
 
@@ -761,6 +759,32 @@ fn thinking_effort_slash_and_footer() {
         assert_eq!(buf[(0, footer_y)].symbol(), "d");
         assert_eq!(buf[(0, footer_y)].fg, expected_fg, "level: {level}");
     }
+}
+
+#[test]
+fn thinking_completion_offers_the_model_levels() {
+    // The levels `/thinking ` offers when the model takes `levels`.
+    let offered = |levels: Option<Vec<Thinking>>| {
+        let mut app = App::new("claude-opus-4-6", status(), Theme::new(false));
+        app.set_thinking_levels(levels.clone());
+        assert_eq!(app.thinking_levels(), levels.as_deref());
+        for ch in "/thinking ".chars() {
+            app.handle_event(key(KeyCode::Char(ch)));
+        }
+        let mut term = inline_terminal_with(80, 24, app.viewport_height(80));
+        term.draw(|f| app.render(f)).unwrap();
+        let screen = render_text(&term);
+        Thinking::ALL
+            .into_iter()
+            .filter(|level| screen.contains(&format!("/thinking {level} ")))
+            .collect::<Vec<_>>()
+    };
+
+    // Unknown levels: every level is offered.
+    assert_eq!(offered(None), Thinking::ALL);
+    use Thinking::*;
+    let levels = vec![Default, Low, High, Max];
+    assert_eq!(offered(Some(levels.clone())), levels);
 }
 
 #[test]
