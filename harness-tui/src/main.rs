@@ -455,6 +455,7 @@ async fn run(args: Args, config_model: Option<String>) -> Result<(), Error> {
             status,
             RunOptions {
                 session,
+                model: args.model,
                 history,
                 picker_entries,
                 adapters,

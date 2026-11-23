@@ -10,7 +10,9 @@ use std::os::fd::OwnedFd;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use common::{openpty, resize, spawn_tui};
+use common::{openpty, resize, spawn_tui, spawn_tui_with};
+use genai::chat::ChatMessage;
+use harness_core::SessionStore;
 
 /// Cursor position query sent by crossterm.
 const DSR: &[u8] = b"\x1b[6n";
@@ -158,6 +160,34 @@ fn banner_shows_startup_info() {
     ] {
         assert!(screen.contains(text), "{text:?} missing:\n{screen}");
     }
+
+    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+    child.wait().unwrap();
+}
+
+#[test]
+fn session_picked_at_startup_takes_the_model_asked_for() {
+    let home = tempfile::tempdir().unwrap();
+    let cwd = std::env::current_dir().unwrap();
+    let store = SessionStore::new(home.path().join(".kluis/sessions"), &cwd);
+    let mut writer = store.create("first-model");
+    writer
+        .append_messages(&[ChatMessage::user("an old question")])
+        .unwrap();
+
+    let (master, slave) = openpty(24, 100);
+    let args = ["--resume", "--model", "asked-model"];
+    let mut child = spawn_tui_with(home.path(), &slave, &args);
+    let mut term = Emulator::new(&master, 24, 100);
+
+    term.wait_for("an old question");
+    term.type_text("\r");
+    term.wait_for("[resumed session");
+    let screen = term.rows().join("\n");
+    assert!(screen.contains("asked-model"), "{screen}");
+    assert!(!screen.contains("first-model"), "{screen}");
+    // As `--resume <id> --model` does, for good.
+    assert_eq!(store.latest().unwrap().unwrap().meta.model, "asked-model");
 
     unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
     child.wait().unwrap();

@@ -170,6 +170,9 @@ impl Session {
 #[derive(Default)]
 pub struct RunOptions {
     pub session: Option<Session>,
+    /// The model the user asked for, which the session picked at startup
+    /// switches to: it keeps its own model otherwise.
+    pub model: Option<String>,
     pub history: Option<History>,
     pub picker_entries: Vec<SessionSummary>,
     pub adapters: Vec<AdapterKind>,
@@ -232,6 +235,7 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
     let mut agent = agent.with_asker(asker);
     let RunOptions {
         mut session,
+        model: mut startup_model,
         mut history,
         picker_entries,
         adapters,
@@ -271,7 +275,13 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
         let Some(next) = events.next().await else {
             break;
         };
-        match handle_event_batch(next?, &mut events, &mut app)? {
+        let action = handle_event_batch(next?, &mut events, &mut app)?;
+        // Only for the picker shown at startup, until anything else is done.
+        let model = match action {
+            Action::None | Action::Redraw => None,
+            _ => startup_model.take(),
+        };
+        match action {
             Action::None | Action::Cancel | Action::Answer(_) => {}
             Action::Redraw => draw(&mut term, &mut app)?,
             Action::Quit => break,
@@ -293,7 +303,7 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
                 draw(&mut term, &mut app)?;
             }
             Action::ResumeSession(id) => {
-                resume_session(&id, &mut agent, &mut app, session.as_mut());
+                resume_session(&id, model, &mut agent, &mut app, session.as_mut());
                 draw(&mut term, &mut app)?;
             }
             Action::SelectModel(name) => {
@@ -423,7 +433,7 @@ async fn handle_slash(
             app.push_info(format!("thinking: {}", agent.thinking()));
         }
         SlashCommand::Resume(Some(id)) => {
-            resume_session(&id, agent, app, session);
+            resume_session(&id, None, agent, app, session);
         }
         SlashCommand::Resume(None) => match session {
             None => app.push_info("[sessions disabled (--no-session)]"),
@@ -547,7 +557,14 @@ async fn fetch_models(
     }
 }
 
-fn resume_session(id: &str, agent: &mut Agent, app: &mut App, session: Option<&mut Session>) {
+/// Switch to the session `id`, with its own model unless `model` is given.
+fn resume_session(
+    id: &str,
+    model: Option<String>,
+    agent: &mut Agent,
+    app: &mut App,
+    session: Option<&mut Session>,
+) {
     let Some(session) = session else {
         app.push_info("[sessions disabled (--no-session)]");
         return;
@@ -564,8 +581,14 @@ fn resume_session(id: &str, agent: &mut Agent, app: &mut App, session: Option<&m
         return;
     }
     session.activate(&data);
-    agent.set_model(&data.meta.model);
-    app.set_model(&data.meta.model);
+    let model = model.unwrap_or_else(|| data.meta.model.clone());
+    if model != data.meta.model {
+        if let Err(err) = session.record_model(&model) {
+            app.push_info(format!("[session save error: {err}]"));
+        }
+    }
+    agent.set_model(&model);
+    app.set_model(&model);
     agent.set_history(data.messages);
     let short = short_id(&data.meta.id);
     app.push_info(format!(
