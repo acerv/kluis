@@ -36,7 +36,7 @@ either the file or the CLI enables them.
 | Key                     | What it does                                         | Default             |
 | ----------------------- | ---------------------------------------------------- | ------------------- |
 | `generic.model`         | Model to use                                         | `deepseek-chat`     |
-| `generic.thinking`      | Thinking effort: `default`, `off`, `low`, `medium`, `high` | `default`           |
+| `generic.thinking`      | Thinking effort: `default`, `off`, `low`, `medium`, `high`, `xhigh`, `max` | `default`           |
 | `generic.code_theme`          | Colors of code blocks, see [Code theme](#code-theme)            | `base16-ocean-dark` |
 | `generic.auto_compact_tokens` | Auto-compact context at this many prompt tokens (`0` disables) | `100000`            |
 | `sandbox.read`          | Extra folders the model can read, also in `$HOME`    | none                |

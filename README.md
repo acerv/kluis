@@ -70,7 +70,7 @@ Settings live in `~/.kluis/config.toml`:
 ```toml
 [generic]
 model = "ollama::qwen2.5-coder"   # a local model, no API key needed
-thinking = "medium"               # default, low, medium or high
+thinking = "medium"               # default, off, low, medium, high, xhigh or max
 code_theme = "solarized-dark"     # colors of code blocks
 
 [sandbox]

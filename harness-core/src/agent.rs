@@ -56,18 +56,25 @@ pub enum Thinking {
     Low,
     Medium,
     High,
+    /// Extra-high effort, for models that take it.
+    XHigh,
+    /// Maximum effort, for models that take it.
+    Max,
 }
 
 impl Thinking {
-    const ALL: [Self; 5] = [
+    /// Every level, in increasing effort after `Default`.
+    pub const ALL: [Self; 7] = [
         Self::Default,
         Self::Off,
         Self::Low,
         Self::Medium,
         Self::High,
+        Self::XHigh,
+        Self::Max,
     ];
 
-    /// Lowercase effort name (`"default"`, `"off"`, `"low"`, `"medium"`, `"high"`).
+    /// Lowercase effort name (`"default"`, `"off"`, `"low"`, ... `"max"`).
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Default => "default",
@@ -75,6 +82,8 @@ impl Thinking {
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
         }
     }
 
@@ -85,6 +94,8 @@ impl Thinking {
             Self::Low => Some(ReasoningEffort::Low),
             Self::Medium => Some(ReasoningEffort::Medium),
             Self::High => Some(ReasoningEffort::High),
+            Self::XHigh => Some(ReasoningEffort::XHigh),
+            Self::Max => Some(ReasoningEffort::Max),
         }
     }
 }
@@ -105,7 +116,7 @@ impl FromStr for Thinking {
             .find(|level| level.as_str().eq_ignore_ascii_case(trimmed))
             .ok_or_else(|| {
                 format!(
-                    "invalid thinking effort '{s}' (expected default, off, low, medium, or high)"
+                    "invalid thinking effort '{s}' (expected default, off, low, medium, high, xhigh, or max)"
                 )
             })
     }

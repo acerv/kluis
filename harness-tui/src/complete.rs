@@ -42,7 +42,7 @@ const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "/thinking",
         arg: Some("[level]"),
-        description: "set thinking effort (default, low, medium, high)",
+        description: "set thinking effort (default, off, low ... max)",
     },
     CommandSpec {
         name: "/resume",
@@ -113,6 +113,8 @@ const THINKING_LEVELS: &[(&str, &str)] = &[
     ("low", "light reasoning effort"),
     ("medium", "balanced reasoning effort"),
     ("high", "deep reasoning effort"),
+    ("xhigh", "extra-deep reasoning effort"),
+    ("max", "maximum reasoning effort"),
 ];
 
 /// Build the multi-line `/help` text from [`COMMANDS`] so help and

@@ -142,6 +142,8 @@ async fn thinking_effort_is_sent_in_requests() {
     assert_eq!("OFF".parse::<Thinking>(), Ok(Thinking::Off));
     assert_eq!("MEDIUM".parse::<Thinking>(), Ok(Thinking::Medium));
     assert_eq!("default".parse::<Thinking>(), Ok(Thinking::Default));
+    assert_eq!("xhigh".parse::<Thinking>(), Ok(Thinking::XHigh));
+    assert_eq!("Max".parse::<Thinking>(), Ok(Thinking::Max));
     assert!("turbo".parse::<Thinking>().is_err());
 }
 
