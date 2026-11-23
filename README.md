@@ -14,8 +14,9 @@
   <a href="https://www.kernel.org/"><img alt="Platform: Linux" src="https://img.shields.io/badge/platform-Linux-9cf"></a>
 </p>
 
-K-Luis is the project, `kl` is the command you run. The Cargo crates and
-`HARNESS_*` environment variables use the internal name, `harness`.
+> **Note:** K-Luis is an experimental project, born from the idea of studying
+> AI integration inside projects and building something useful for my daily
+> routine job.
 
 ## Why K-Luis
 
