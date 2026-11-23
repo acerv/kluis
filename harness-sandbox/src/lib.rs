@@ -766,7 +766,14 @@ fn resolve_read_only(
     for (mount, canon, writable) in canon_mounts {
         if *writable {
             if let Ok(rest) = canonical.strip_prefix(canon) {
-                ro_paths.insert(mount.join(rest));
+                // Not `join` for the mount itself: it adds a trailing slash,
+                // which a file does not take.
+                let path = if rest.as_os_str().is_empty() {
+                    mount.clone()
+                } else {
+                    mount.join(rest)
+                };
+                ro_paths.insert(path);
             }
         }
     }
