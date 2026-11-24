@@ -35,8 +35,8 @@ use harness_core::tools::{
     run_worker, Engine, Executor, OutputFiles, Searcher, ToolContext, WebClient,
 };
 use harness_core::{
-    provider_name, Agent, AuthConfig, Command, CredentialSource, Error, Event, SessionData,
-    SessionStore, SessionSummary, Skill, Skills, Thinking, TokenUsage,
+    provider_name, Agent, AuthConfig, Command, CredentialSource, Error, Event, Installed,
+    SessionData, SessionStore, SessionSummary, Skill, Skills, Thinking, TokenUsage,
 };
 use harness_sandbox::{GitGuard, NetworkAccess};
 use harness_tui::{
@@ -175,6 +175,11 @@ pub struct Args {
     #[arg(long, conflicts_with_all = ["login", "logout", "prompt"])]
     apparmor_profile: bool,
 
+    /// Install the skills that come with kl in ~/.kluis/skills, or update
+    /// the ones you did not change, then exit.
+    #[arg(long, conflicts_with_all = ["login", "logout", "apparmor_profile", "prompt"])]
+    install_skills: bool,
+
     /// Internal mode: run the NDJSON tool worker inside the sandbox container.
     #[arg(long, hide = true)]
     tool_executor: bool,
@@ -225,6 +230,9 @@ fn launch(mut args: Args) -> Result<ExitCode, Error> {
         print!("{}", sandbox::apparmor_profile()?);
         return Ok(ExitCode::SUCCESS);
     }
+    if args.install_skills {
+        return install_skills();
+    }
     let mut below_init = false;
     if args.tool_executor {
         // When memory runs out, the kernel kills commands before the
@@ -260,6 +268,30 @@ fn launch(mut args: Args) -> Result<ExitCode, Error> {
         return run_until_signal(runtime, args, config_model);
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Install the bundled skills and tell what was done with each one.
+fn install_skills() -> Result<ExitCode, Error> {
+    let dir = config::skills_path().ok_or("cannot install skills: HOME is not set")?;
+    let mut code = ExitCode::SUCCESS;
+    for (name, res) in harness_core::install_skills(&dir)? {
+        match res {
+            Ok(Installed::Added) => println!("Added {name}."),
+            Ok(Installed::Updated) => println!("Updated {name}."),
+            Ok(Installed::Current) => println!("{name} is up to date."),
+            Ok(Installed::Kept) => eprintln!(
+                "warning: kept {name}, which you changed; the new version is in {}",
+                dir.join(name)
+                    .join(format!("{}.new", harness_core::SKILL_FILE))
+                    .display()
+            ),
+            Err(err) => {
+                eprintln!("error: {name}: {}", printable(&err.to_string()));
+                code = ExitCode::FAILURE;
+            }
+        }
+    }
+    Ok(code)
 }
 
 fn oauth_store() -> Result<OAuthStore, Error> {
