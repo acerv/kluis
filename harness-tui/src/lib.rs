@@ -1131,7 +1131,7 @@ fn drain_updates(
 
 fn apply_and_track(update: AgentUpdate, app: &mut App, stats: &mut DriveStats) {
     match &update {
-        AgentUpdate::TurnEnd(usage) => stats.usage += *usage,
+        AgentUpdate::TurnEnd(usage) | AgentUpdate::TaskUsage(usage) => stats.usage += *usage,
         AgentUpdate::ToolCall { name, .. } if !is_read_only(name) => stats.changed_files = true,
         _ => {}
     }

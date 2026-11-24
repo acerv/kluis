@@ -43,11 +43,15 @@ pub enum Event<'a> {
     /// The model finished its turn, with the tokens it used when the
     /// provider reports them. Not sent for a turn cut short.
     TurnEnd(Option<&'a Usage>),
+    /// The tokens a turn of a subagent used, while a `task` call runs.
+    /// They add to the tokens of the prompt, not to its context.
+    TaskUsage(&'a Usage),
     /// The final text of the model was cut at its token limit.
     Truncated,
     /// A tool call the model made, before it runs.
     ToolCall(&'a ToolCall),
-    /// A cleaned chunk of live output from a running tool (e.g. `bash`).
+    /// A cleaned chunk of live output from a running tool (e.g. `bash`),
+    /// or a line for each tool call the subagent of a `task` call makes.
     ToolOutput(&'a str),
     /// The result of a tool call, as sent back to the model, with optional
     /// UI-only details (such as a diff for `edit`).

@@ -725,6 +725,7 @@ async fn prompt_and_persist(
                 Event::TurnEnd(None) | Event::CompactFailed(_) => {
                     in_compact = false;
                 }
+                Event::TaskUsage(u) => usage += TokenUsage::from_genai(u),
                 Event::Compacting { .. } => {
                     in_compact = true;
                 }
@@ -908,7 +909,8 @@ fn print_event(event: Event<'_>) {
         | Event::TurnStart
         | Event::ReasoningDelta(_)
         | Event::ToolOutput(_)
-        | Event::TurnEnd(_) => {}
+        | Event::TurnEnd(_)
+        | Event::TaskUsage(_) => {}
         Event::Truncated => eprintln!("{TRUNCATED_NOTICE}"),
         Event::ToolCall(call) => println!(
             "→ {} {}",

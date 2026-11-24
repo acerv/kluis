@@ -115,6 +115,8 @@ pub enum AgentUpdate {
     TextDelta(String),
     Text(String),
     TurnEnd(TokenUsage),
+    /// A turn of a subagent ended: its tokens count, not its context.
+    TaskUsage(TokenUsage),
     /// The turn failed for a passing reason and will be asked again.
     Retry {
         attempt: u32,
@@ -153,6 +155,7 @@ impl AgentUpdate {
             AgentEvent::TextDelta(text) => Self::TextDelta(text.to_owned()),
             AgentEvent::Text(text) => Self::Text(text.to_owned()),
             AgentEvent::TurnEnd(usage) => Self::TurnEnd(TokenUsage::from_genai(usage?)),
+            AgentEvent::TaskUsage(usage) => Self::TaskUsage(TokenUsage::from_genai(usage)),
             AgentEvent::Retry {
                 attempt,
                 delay,
@@ -796,6 +799,7 @@ impl App {
                 self.usage += usage;
                 self.context = usage.prompt();
             }
+            AgentUpdate::TaskUsage(usage) => self.usage += usage,
             AgentUpdate::Retry {
                 attempt,
                 delay,
