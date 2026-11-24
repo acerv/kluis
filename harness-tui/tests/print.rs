@@ -10,8 +10,9 @@ use std::net::TcpListener;
 use std::process::{Output, Stdio};
 use std::thread::{self, JoinHandle};
 
-use common::{delta, kill, kl, read_request, tempdir, write_sse};
+use common::{delta, kill, kl, read_request, stderr, tempdir, write_sse};
 use serde_json::{json, Value};
+use tempfile::TempDir;
 
 /// Start a server that answers one request with `status`, and with a
 /// streamed "done" when it is 200. It returns the user message it got.
@@ -59,8 +60,17 @@ fn start_mock_llm(status: u16) -> (u16, JoinHandle<String>) {
 /// the user message sent. Joined only after checking the output, so that a
 /// `kl` that never connects fails the test instead of hanging it.
 fn run_kl(args: &[&str], stdin: &str, status: u16) -> (Output, JoinHandle<String>) {
+    run_kl_in(&tempdir(), args, stdin, status)
+}
+
+/// [`run_kl`] with `home` as `$HOME`.
+fn run_kl_in(
+    home: &TempDir,
+    args: &[&str],
+    stdin: &str,
+    status: u16,
+) -> (Output, JoinHandle<String>) {
     let (port, server) = start_mock_llm(status);
-    let home = tempdir();
     let cwd = tempdir();
     let mut child = kl(home.path())
         .args(["--model", "genai_1::test-model", "--no-session"])
@@ -113,6 +123,24 @@ fn json_reports_a_failure_with_its_exit_code() {
     assert!(
         result["error"].as_str().unwrap().contains("401"),
         "{result}"
+    );
+}
+
+#[test]
+fn hints_at_newer_bundled_skills() {
+    let home = tempdir();
+    let skills = home.path().join(".kluis/skills");
+    let install = kl(home.path()).arg("--install-skills").output().unwrap();
+    assert!(install.status.success(), "{install:?}");
+    let (out, _) = run_kl_in(&home, &["-p", "hello"], "", 200);
+    assert!(!stderr(&out).contains("--install-skills"), "{out:?}");
+
+    // As if the skills came from an older kl.
+    std::fs::write(skills.join(".bundled"), "").unwrap();
+    let (out, _) = run_kl_in(&home, &["-p", "hello"], "", 200);
+    assert!(
+        stderr(&out).contains("newer versions of the skills mentor, study come with kl"),
+        "{out:?}"
     );
 }
 
