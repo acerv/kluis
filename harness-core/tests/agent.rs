@@ -12,7 +12,7 @@ use common::{
 };
 use genai::adapter::AdapterKind;
 use genai::chat::{ChatMessage, ChatRole};
-use harness_core::tools::ToolContext;
+use harness_core::tools::{Image, ToolContext};
 use harness_core::{
     find_agents_files, system_prompt, Agent, Event, RetryPolicy, Thinking, ToolDetails,
     AGENTS_FILE, DEFAULT_AUTO_COMPACT_TOKENS, DEFAULT_MAX_TURNS, MAX_AGENTS_BYTES,
@@ -1573,11 +1573,14 @@ async fn last_prompt_is_taken_with_what_followed_it() {
     assert_eq!(agent.take_last_prompt(), None);
 }
 
+/// The first bytes of a PNG file.
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+
 #[tokio::test]
 async fn files_named_with_at_are_attached_to_the_prompt() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), "alpha\n").unwrap();
-    std::fs::write(dir.path().join("b.png"), b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR").unwrap();
+    std::fs::write(dir.path().join("b.png"), PNG).unwrap();
     let model = MockModel::start(vec![text("seen")]).await;
     let mut agent = agent(&model, dir.path());
 
@@ -1600,6 +1603,50 @@ async fn files_named_with_at_are_attached_to_the_prompt() {
 
     // Sent again, the files are read again, not twice.
     assert_eq!(agent.take_last_prompt().as_deref(), Some(prompt_text));
+}
+
+#[tokio::test]
+async fn attached_images_follow_the_prompt_and_come_back_on_retry() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("b.png"), PNG).unwrap();
+    let model = MockModel::start(vec![text("seen"), text("seen again"), text("plain")]).await;
+    let mut agent = agent(&model, dir.path());
+    let image = Image::from_bytes(PNG).unwrap();
+
+    agent.attach_image("[Image #1]", image);
+    let prompt_text = "what is wrong in [Image #1] and @b.png?";
+    prompt(&mut agent, prompt_text).await.unwrap();
+
+    // The attached images follow the files the prompt names.
+    let texts = |request: &Value| -> Vec<String> {
+        let user = &sent(request, "user")[0];
+        let parts = user["content"].as_array().unwrap();
+        parts
+            .iter()
+            .map(|p| match p["text"].as_str() {
+                Some(text) => text.to_owned(),
+                None => "<image>".to_owned(),
+            })
+            .collect()
+    };
+    let expected = [
+        prompt_text,
+        "Image b.png:",
+        "<image>",
+        "[Image #1]:",
+        "<image>",
+    ];
+    assert_eq!(texts(&model.requests()[0]), expected);
+
+    // Sent again, the attached image comes with it, once.
+    let again = agent.take_last_prompt().unwrap();
+    prompt(&mut agent, &again).await.unwrap();
+    assert_eq!(texts(&model.requests()[1]), expected);
+
+    // It goes with that prompt only.
+    prompt(&mut agent, "next").await.unwrap();
+    let last = sent(&model.requests()[2], "user").pop().unwrap();
+    assert_eq!(last["content"], "next");
 }
 
 #[tokio::test]

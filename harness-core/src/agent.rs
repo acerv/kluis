@@ -75,6 +75,8 @@ pub struct Agent {
     planned: bool,
     /// A subagent: it starts none itself.
     sub: bool,
+    /// The images the user attached to the next prompt, named.
+    attached: Vec<Binary>,
 }
 
 /// Messages of the user waiting to join a running prompt, shared with the
@@ -130,6 +132,7 @@ impl Agent {
             plan: false,
             planned: false,
             sub: false,
+            attached: Vec::new(),
         }
     }
 
@@ -166,6 +169,7 @@ impl Agent {
             plan: self.plan,
             planned: false,
             sub: true,
+            attached: Vec::new(),
         }
     }
 
@@ -378,6 +382,7 @@ impl Agent {
     /// tool context.
     pub fn clear(&mut self) {
         self.req.messages = Vec::new();
+        self.attached = Vec::new();
         self.cache_key = Uuid::new_v4();
     }
 
@@ -394,15 +399,36 @@ impl Agent {
         self
     }
 
+    /// Attach `image` to the next prompt: the model sees it after the
+    /// prompt, under `name`, the words the prompt names it with.
+    pub fn attach_image(&mut self, name: impl Into<String>, image: Image) {
+        let Image { mime, data } = image;
+        self.attached
+            .push(Binary::from_base64(mime, data, Some(name.into())));
+    }
+
     /// Remove the last message the user sent, and all after it, from the
-    /// history, returning its text to send it again.
+    /// history, returning its text to send it again. The images attached
+    /// to it are attached to the next prompt again.
     pub fn take_last_prompt(&mut self) -> Option<String> {
         // Its text comes first, before the files it names.
         let idx = self.req.messages.iter().rposition(|m| {
             m.role == ChatRole::User
                 && matches!(m.content.parts().first(), Some(ContentPart::Text(text)) if text != IMAGES)
         })?;
-        let text = self.req.messages[idx].content.first_text()?.to_owned();
+        let message = &self.req.messages[idx];
+        let text = message.content.first_text()?.to_owned();
+        // Only attached images are named: the files it names are read
+        // again.
+        self.attached = message
+            .content
+            .parts()
+            .iter()
+            .filter_map(|part| match part {
+                ContentPart::Binary(image) if image.name.is_some() => Some(image.clone()),
+                _ => None,
+            })
+            .collect();
         self.req.messages.truncate(idx);
         Some(text)
     }
@@ -430,9 +456,10 @@ impl Agent {
     }
 
     /// The message of the user saying `text`, with the files it names with
-    /// `@path` attached as the `read` tool reads them for the model. A name
-    /// that is no file it can read stays a word of the text.
-    async fn user_message(&self, text: &str) -> ChatMessage {
+    /// `@path` attached as the `read` tool reads them for the model, then
+    /// the `attached` images. A name that is no file it can read stays a
+    /// word of the text.
+    async fn user_message(&self, text: &str, attached: Vec<Binary>) -> ChatMessage {
         let mut parts = vec![ContentPart::Text(text.to_owned())];
         for path in mentions(text) {
             let call = user_call(tools::READ_TOOL, json!({ "path": path }));
@@ -455,6 +482,11 @@ impl Agent {
             file.push_str("</file>");
             parts.push(ContentPart::Text(file));
         }
+        for image in attached {
+            let name = image.name.as_deref().unwrap_or_default();
+            parts.push(ContentPart::Text(format!("{name}:")));
+            parts.push(ContentPart::Binary(image));
+        }
         if self.plan {
             parts.push(ContentPart::Text(PLAN_ON.to_owned()));
         } else if self.planned {
@@ -474,7 +506,8 @@ impl Agent {
     /// the model's final answer.
     ///
     /// Files the message names with `@path` are attached to it, read as the
-    /// `read` tool reads them: text up to its limits, or an image.
+    /// `read` tool reads them: text up to its limits, or an image. The
+    /// images given to [`Self::attach_image`] follow them.
     ///
     /// `on_event` is called as the work progresses.
     ///
@@ -492,7 +525,8 @@ impl Agent {
     ) -> Result<String, Error> {
         // Where the messages not yet reported with `Event::Messages` start.
         let mut saved = self.req.messages.len();
-        let message = self.user_message(text).await;
+        let attached = std::mem::take(&mut self.attached);
+        let message = self.user_message(text, attached).await;
         self.req.messages.push(message);
         self.planned = self.plan;
 
