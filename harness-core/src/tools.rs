@@ -4,16 +4,15 @@
 //! The tools offered to the model and the dispatch of its calls.
 
 pub use harness_exec::{
-    count_lines, definitions, diff_lines, execute, execute_streaming, is_read_only, run, run_with,
-    run_worker, BashContext, BashTool, Diff, DiffHunk, DiffLine, ExecError, Executor, Image,
-    OutputFiles, PreExec, ReadOutput, SandboxConfig, SandboxExecutor, Todo, TodoOutput, TodoStatus,
-    TodoTool, ToolContext, ToolDetails, ToolError, BASH_TOOL, EDIT_TOOL, FIND_TOOL, GREP_TOOL,
-    LS_TOOL, READ_TOOL, TODO_TOOL, WRITE_TOOL,
+    count_lines, definitions, diff_lines, error_json, execute, execute_streaming, is_read_only,
+    run, run_with, run_worker, BashContext, BashTool, Diff, DiffHunk, DiffLine, ExecError,
+    Executor, Image, OutputFiles, PreExec, ReadOutput, SandboxConfig, SandboxExecutor, Todo,
+    TodoOutput, TodoStatus, TodoTool, ToolContext, ToolDetails, ToolError, BASH_TOOL, EDIT_TOOL,
+    FIND_TOOL, GREP_TOOL, LS_TOOL, READ_TOOL, TODO_TOOL, WRITE_TOOL,
 };
 
 use genai::chat::{ToolCall, ToolResponse};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 use crate::skills::Skill;
 
@@ -66,7 +65,7 @@ impl HostTools {
 
 /// A tool response carrying `message` as `{"error": "..."}`.
 pub(crate) fn error_response(call: &ToolCall, message: &str) -> ToolResponse {
-    ToolResponse::from_tool_call(call, json!({ "error": message }).to_string())
+    ToolResponse::from_tool_call(call, error_json(message))
 }
 
 fn parse<'a, T: Deserialize<'a>>(args: &'a serde_json::Value) -> Result<T, ToolError> {

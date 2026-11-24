@@ -22,3 +22,9 @@ impl ToolError {
         Self::new(format!("{path}: {err}"))
     }
 }
+
+/// What a tool that failed with `message` answers: `{"error": "..."}`, so
+/// the model can recover.
+pub fn error_json(message: impl std::fmt::Display) -> String {
+    serde_json::json!({ "error": message.to_string() }).to_string()
+}
