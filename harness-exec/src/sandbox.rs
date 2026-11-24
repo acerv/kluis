@@ -4,7 +4,7 @@
 //! Host-side client for running tool calls inside a sandboxed worker container.
 
 use std::collections::HashMap;
-use std::io::{self, BufReader, PipeWriter};
+use std::io::{self, BufRead, BufReader, PipeWriter};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -20,7 +20,7 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 
 use crate::protocol::{read_line_bounded, write_line, Request, Response};
-use crate::{error_json, ToolDetails};
+use crate::{error_json, lock, ToolDetails};
 
 /// Configuration for spawning the sandboxed tool worker container.
 #[derive(Debug, Clone)]
@@ -134,15 +134,11 @@ impl SandboxExecutor {
         // If the caller drops this future (e.g. Esc), cancel only this call on
         // the worker that owns it so the worker and its `/tmp` stay alive.
         let cancel_guard = scopeguard::guard((), |()| {
-            if let Ok(mut map) = pending.lock() {
-                map.remove(&id);
-            }
-            if let Ok(mut guard) = self.worker.lock() {
-                if let Some(worker) = guard.as_mut() {
-                    if Arc::ptr_eq(&worker.pending, &pending) {
-                        if let Some(stdin) = worker.stdin.as_mut() {
-                            let _ = write_line(stdin, &Request::Cancel { id });
-                        }
+            lock(&pending).remove(&id);
+            if let Some(worker) = lock(&self.worker).as_mut() {
+                if Arc::ptr_eq(&worker.pending, &pending) {
+                    if let Some(stdin) = worker.stdin.as_mut() {
+                        let _ = write_line(stdin, &Request::Cancel { id });
                     }
                 }
             }
@@ -178,11 +174,9 @@ impl SandboxExecutor {
     /// with `SIGSTOP`, is killed with its container: the next call starts
     /// a new one.
     pub async fn stop_background(&self, keep_jobs: bool) -> bool {
-        let alive = self.worker.lock().is_ok_and(|guard| {
-            guard
-                .as_ref()
-                .is_some_and(|w| w.alive.load(Ordering::Acquire))
-        });
+        let alive = lock(&self.worker)
+            .as_ref()
+            .is_some_and(|w| w.alive.load(Ordering::Acquire));
         // A dead worker took its container down with it.
         if !alive {
             return true;
@@ -206,9 +200,7 @@ impl SandboxExecutor {
         match tokio::time::timeout(STOP_TIMEOUT, stopped).await {
             Ok(jobs) => jobs,
             Err(_) => {
-                if let Ok(mut guard) = self.worker.lock() {
-                    guard.take();
-                }
+                lock(&self.worker).take();
                 true
             }
         }
@@ -219,10 +211,7 @@ impl SandboxExecutor {
         id: u64,
         req: &Request,
     ) -> Result<(PendingMap, mpsc::UnboundedReceiver<Response>), ExecError> {
-        let mut guard = self
-            .worker
-            .lock()
-            .map_err(|_| ExecError::Startup("executor lock poisoned".into()))?;
+        let mut guard = lock(&self.worker);
 
         for attempt in 0..2 {
             let needs_spawn = guard
@@ -235,9 +224,7 @@ impl SandboxExecutor {
             }
             let worker = guard.as_mut().expect("worker just spawned");
             let (tx, rx) = mpsc::unbounded_channel();
-            if let Ok(mut map) = worker.pending.lock() {
-                map.insert(id, tx);
-            }
+            lock(&worker.pending).insert(id, tx);
             let write_res = worker
                 .stdin
                 .as_mut()
@@ -245,18 +232,13 @@ impl SandboxExecutor {
                 .and_then(|stdin| write_line(stdin, req));
             match write_res {
                 Ok(()) => return Ok((worker.pending.clone(), rx)),
-                Err(err) if attempt == 0 => {
-                    if let Ok(mut map) = worker.pending.lock() {
-                        map.remove(&id);
-                    }
-                    worker.alive.store(false, Ordering::Release);
-                    let _ = err;
-                }
                 Err(err) => {
-                    if let Ok(mut map) = worker.pending.lock() {
-                        map.remove(&id);
+                    lock(&worker.pending).remove(&id);
+                    if attempt > 0 {
+                        return Err(ExecError::Io(err));
                     }
-                    return Err(ExecError::Io(err));
+                    // The worker died: start another one.
+                    worker.alive.store(false, Ordering::Release);
                 }
             }
         }
@@ -282,21 +264,7 @@ fn spawn_worker(config: &SandboxConfig, expected: FileId) -> Result<Worker, Exec
             config.program.display()
         )));
     }
-    let program = config
-        .program
-        .to_str()
-        .ok_or_else(|| ExecError::Startup("worker path is not UTF-8".into()))?;
-    let container = config.sandbox.container()?;
-    let dev_null = std::fs::OpenOptions::new().write(true).open("/dev/null")?;
-    let mut cmd = container.command(program);
-    cmd.args(&config.args)
-        .envs(config.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-        .current_dir(&config.cwd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::from(dev_null));
-
-    let child = cmd.spawn().map_err(|e| ExecError::Startup(e.to_string()))?;
+    let child = start(config)?;
     // Ensure `child` is killed and reaped on any early error before `Worker`
     // takes ownership.
     let mut child = scopeguard::guard(child, |mut c| {
@@ -323,64 +291,14 @@ fn spawn_worker(config: &SandboxConfig, expected: FileId) -> Result<Worker, Exec
     if !matches!(ready, Some(Response::Ready)) {
         drop(stdin);
         drop(stdout_reader);
-        let mut child = ScopeGuard::into_inner(child);
-        // When stdout already hit EOF, the worker is exiting on its own: wait
-        // without SIGKILL so we preserve its actual exit code / hakoniwa reason.
-        if !eof {
-            let _ = child.kill();
-        }
-        let detail = match child.wait() {
-            Ok(status) if !status.reason.is_empty() => status.reason,
-            Ok(status) => format!("worker exited during startup (code {})", status.code),
-            Err(err) => err.to_string(),
-        };
-        return Err(ExecError::Startup(detail));
+        return Err(startup_failure(ScopeGuard::into_inner(child), eof));
     }
     let child = ScopeGuard::into_inner(child);
 
     let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
     let alive = Arc::new(AtomicBool::new(true));
-    let pending_bg = pending.clone();
-    let alive_bg = alive.clone();
-
-    let reader = thread::spawn(move || {
-        let _done = scopeguard::guard((), |()| {
-            alive_bg.store(false, Ordering::Release);
-            if let Ok(mut map) = pending_bg.lock() {
-                map.clear();
-            }
-        });
-        let mut buf = Vec::new();
-        while let Ok(n) = read_line_bounded(&mut stdout_reader, &mut buf) {
-            if n == 0 {
-                break;
-            }
-            let trimmed = buf.trim_ascii();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let Ok(resp) = serde_json::from_slice::<Response>(trimmed) else {
-                continue;
-            };
-            match &resp {
-                Response::Output { id, .. } => {
-                    if let Ok(map) = pending_bg.lock() {
-                        if let Some(tx) = map.get(id) {
-                            let _ = tx.send(resp);
-                        }
-                    }
-                }
-                Response::Result { id, .. } => {
-                    if let Ok(mut map) = pending_bg.lock() {
-                        if let Some(tx) = map.remove(id) {
-                            let _ = tx.send(resp);
-                        }
-                    }
-                }
-                Response::Ready => {}
-            }
-        }
-    });
+    let (pending_bg, alive_bg) = (pending.clone(), alive.clone());
+    let reader = thread::spawn(move || read_responses(stdout_reader, &pending_bg, &alive_bg));
 
     Ok(Worker {
         child,
@@ -389,4 +307,66 @@ fn spawn_worker(config: &SandboxConfig, expected: FileId) -> Result<Worker, Exec
         alive,
         reader: Some(reader),
     })
+}
+
+/// Start the worker program in its container, with pipes to talk to it.
+fn start(config: &SandboxConfig) -> Result<Child, ExecError> {
+    let program = config
+        .program
+        .to_str()
+        .ok_or_else(|| ExecError::Startup("worker path is not UTF-8".into()))?;
+    let container = config.sandbox.container()?;
+    let dev_null = std::fs::OpenOptions::new().write(true).open("/dev/null")?;
+    let mut cmd = container.command(program);
+    cmd.args(&config.args)
+        .envs(config.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .current_dir(&config.cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::from(dev_null));
+    cmd.spawn().map_err(|e| ExecError::Startup(e.to_string()))
+}
+
+/// Why the worker `child` did not say it was ready, reaping it. `eof`
+/// tells that its output ended.
+fn startup_failure(mut child: Child, eof: bool) -> ExecError {
+    // When stdout already hit EOF, the worker is exiting on its own: wait
+    // without SIGKILL so we preserve its actual exit code / hakoniwa reason.
+    if !eof {
+        let _ = child.kill();
+    }
+    ExecError::Startup(match child.wait() {
+        Ok(status) if !status.reason.is_empty() => status.reason,
+        Ok(status) => format!("worker exited during startup (code {})", status.code),
+        Err(err) => err.to_string(),
+    })
+}
+
+/// Hand each response the worker writes to the call waiting for it, until
+/// its output ends: the worker is then dead, and the calls left get no
+/// answer.
+fn read_responses(mut stdout: impl BufRead, pending: &PendingMap, alive: &AtomicBool) {
+    let _done = scopeguard::guard((), |()| {
+        alive.store(false, Ordering::Release);
+        lock(pending).clear();
+    });
+    let mut buf = Vec::new();
+    while let Ok(1..) = read_line_bounded(&mut stdout, &mut buf) {
+        let Ok(resp) = serde_json::from_slice::<Response>(buf.trim_ascii()) else {
+            continue;
+        };
+        let (id, last) = match &resp {
+            Response::Output { id, .. } => (*id, false),
+            Response::Result { id, .. } => (*id, true),
+            Response::Ready => continue,
+        };
+        let mut map = lock(pending);
+        if let Some(tx) = map.get(&id) {
+            let _ = tx.send(resp);
+        }
+        // The result of a call is the last it gets.
+        if last {
+            map.remove(&id);
+        }
+    }
 }
