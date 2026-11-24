@@ -58,6 +58,11 @@ const COMMANDS: &[CommandSpec] = &[
         description: "show the full output of the last tool",
     },
     CommandSpec {
+        name: "/diff",
+        arg: None,
+        description: "show or hide the files the session changed",
+    },
+    CommandSpec {
         name: "/copy",
         arg: None,
         description: "copy last assistant reply to clipboard",
@@ -153,6 +158,8 @@ pub(crate) fn help_text() -> String {
          \x20 Shift+Tab          switch plan mode on or off\n\
          \x20 Up/Down            browse prompt history\n\
          \x20 Ctrl-O             toggle thinking visibility\n\
+         \x20 Alt+Up/Down        select a file in /diff (also Ctrl)\n\
+         \x20 PgUp/PgDn          scroll its diff\n\
          \x20 Esc / Ctrl-C       cancel turn or clear input\n\
          \x20 Ctrl-D             quit",
     );
