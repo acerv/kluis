@@ -75,6 +75,8 @@ pub struct Agent {
     planned: bool,
     /// A subagent: it starts none itself.
     sub: bool,
+    /// A read-only subagent: it only has the tools that change nothing.
+    read_only: bool,
 }
 
 /// Messages of the user waiting to join a running prompt, shared with the
@@ -130,6 +132,7 @@ impl Agent {
             plan: false,
             planned: false,
             sub: false,
+            read_only: false,
         }
     }
 
@@ -166,18 +169,30 @@ impl Agent {
             plan: self.plan,
             planned: false,
             sub: true,
+            read_only: false,
         }
     }
 
-    /// Answer a call of the `task` tool as its subagent, starting from an
-    /// empty conversation: the answer to its prompt is the result.
-    /// `on_event` gets what the UI shows of the work: the tool calls as
-    /// output of the call, the token usage and the retries.
+    /// Keep only the tools that change nothing, and refuse the others.
+    fn into_read_only(mut self) -> Self {
+        if let Some(tools) = &mut self.req.tools {
+            tools.retain(|tool| allowed_in_plan(tool.name.as_ref()));
+        }
+        self.read_only = true;
+        self
+    }
+
+    /// Answer a call of the `task` tool with a new subagent made from
+    /// this one, which is a subagent too, starting from an empty
+    /// conversation: the answer to its prompt is the result. `on_event`
+    /// gets what the UI shows of the work: the tool calls as output of the
+    /// call, after `tag`, the token usage and the retries.
     ///
     /// The future is boxed, as it runs in the loop of another agent.
     fn run_task<'a>(
-        &'a mut self,
+        &'a self,
         call: &'a ToolCall,
+        tag: &'a str,
         on_event: &'a mut (dyn FnMut(Event<'_>) + Send),
     ) -> Pin<Box<dyn Future<Output = ToolResponse> + Send + 'a>> {
         Box::pin(async move {
@@ -186,10 +201,13 @@ impl Agent {
                 Ok(_) => return error_response(call, "prompt must not be empty"),
                 Err(err) => return error_response(call, &err.to_string()),
             };
-            self.clear();
-            let run = self.prompt(&task.prompt, |event| match event {
+            let mut agent = self.subagent();
+            if task.read_only {
+                agent = agent.into_read_only();
+            }
+            let run = agent.prompt(&task.prompt, |event| match event {
                 Event::ToolCall(call) => {
-                    let line: String = format!("{} {}", call.fn_name, call.fn_arguments)
+                    let line: String = format!("{tag}{} {}", call.fn_name, call.fn_arguments)
                         .chars()
                         .filter(|c| !c.is_control())
                         .take(MAX_TASK_LINE)
@@ -608,13 +626,15 @@ impl Agent {
         // A copy, so results can join the history while calls run.
         let content = &self.req.messages[turn].content;
         let calls: Vec<ToolCall> = content.tool_calls().into_iter().cloned().collect();
-        let plan = self.plan;
+        let (plan, read_only) = (self.plan, self.read_only);
         // Why the call at `idx` must not run, if so.
         let refusal = |idx: usize, call: &ToolCall| {
             if refused.truncated {
                 Some(TRUNCATED)
             } else if plan && !allowed_in_plan(&call.fn_name) {
                 Some(PLAN_REFUSAL)
+            } else if read_only && !allowed_in_plan(&call.fn_name) {
+                Some(READ_ONLY_REFUSAL)
             } else if refused.invalid.contains(&call.call_id) {
                 Some(INVALID_ARGUMENTS)
             } else if refused.repeated || is_within_turn_repeat(&calls[..idx], call) {
@@ -623,9 +643,11 @@ impl Agent {
                 None
             }
         };
-        // Made before the history is borrowed for the results.
-        let mut sub = (!self.sub && calls.iter().any(|c| c.fn_name == tools::TASK_TOOL))
+        // Made before the history is borrowed for the results: the
+        // subagents of the tasks are made from it.
+        let sub = (!self.sub && calls.iter().any(|c| c.fn_name == tools::TASK_TOOL))
             .then(|| self.subagent());
+        let sub = sub.as_ref();
         let (host, executor) = (&self.host, &*self.executor);
         let mut pending = Pending {
             messages: &mut self.req.messages,
@@ -644,11 +666,16 @@ impl Agent {
                 .count();
             if together > 1 {
                 let batch = &calls[idx..idx + together];
-                let results = join_all(batch.iter().enumerate().map(|(off, call)| {
-                    let refusal = refusal(idx + off, call);
-                    async move { answer(host, executor, call, refusal, None, &mut |_| {}).await }
-                }))
-                .await;
+                let results =
+                    join_all(
+                        batch.iter().enumerate().map(|(off, call)| {
+                            let refusal = refusal(idx + off, call);
+                            async move {
+                                answer(host, executor, call, refusal, None, "", &mut |_| {}).await
+                            }
+                        }),
+                    )
+                    .await;
                 for (call, result) in batch.iter().zip(results) {
                     on_event(Event::ToolCall(call));
                     pending.answer(result, on_event);
@@ -658,7 +685,7 @@ impl Agent {
                 let call = &calls[idx];
                 on_event(Event::ToolCall(call));
                 let refusal = refusal(idx, call);
-                let result = answer(host, executor, call, refusal, sub.as_mut(), on_event).await;
+                let result = answer(host, executor, call, refusal, sub, "", on_event).await;
                 pending.answer(result, on_event);
                 idx += 1;
             }
@@ -689,6 +716,9 @@ approves the plan first.]";
 
 /// Told to the model with the first prompt after plan mode.
 const PLAN_OFF: &str = "[Plan mode is off: you may now change files and run commands.]";
+
+/// Result of a tool call of a read-only subagent that would change something.
+const READ_ONLY_REFUSAL: &str = "read-only task: only tools that change nothing may run";
 
 /// Result of a tool call that would change something in plan mode.
 const PLAN_REFUSAL: &str =
@@ -728,22 +758,23 @@ fn user_call(name: &str, args: serde_json::Value) -> ToolCall {
     }
 }
 
-/// The result of `call`: `refusal` when it must not run, else what the
-/// subagent `sub`, a host tool or the executor answers. `on_event` gets
-/// what it reports meanwhile.
+/// The result of `call`: `refusal` when it must not run, else what a
+/// subagent made from `sub` (with `tag` before its lines), a host tool or
+/// the executor answers. `on_event` gets what it reports meanwhile.
 async fn answer(
     host: &HostTools,
     executor: &Executor,
     call: &ToolCall,
     refusal: Option<&'static str>,
-    sub: Option<&mut Agent>,
+    sub: Option<&Agent>,
+    tag: &str,
     on_event: &mut (dyn FnMut(Event<'_>) + Send),
 ) -> (ToolResponse, Option<ToolDetails>) {
     if let Some(why) = refusal {
         return (error_response(call, why), None);
     }
     if let (tools::TASK_TOOL, Some(sub)) = (call.fn_name.as_str(), sub) {
-        return (sub.run_task(call, on_event).await, None);
+        return (sub.run_task(call, tag, on_event).await, None);
     }
     if let Some(resp) = host.run(call).await {
         return (resp, None);

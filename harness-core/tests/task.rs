@@ -38,6 +38,11 @@ fn task(id: &'static str, prompt: &str) -> (&'static str, &'static str, Value) {
     (id, "task", json!({ "prompt": prompt }))
 }
 
+/// A call of the `task` tool for a read-only subagent.
+fn read_only_task(id: &'static str, prompt: &str) -> (&'static str, &'static str, Value) {
+    (id, "task", json!({ "prompt": prompt, "read_only": true }))
+}
+
 /// The messages of a request sent to the model with `role`.
 fn sent(request: &Value, role: &str) -> Vec<Value> {
     let messages = request["messages"].as_array().unwrap();
@@ -262,4 +267,23 @@ async fn cancel_stops_the_subagent_and_answers_the_task() {
     let request = &model.requests()[2];
     assert_eq!(sent(request, "tool").len(), 1);
     assert!(!request.to_string().contains("sleep 30"));
+}
+
+#[tokio::test]
+async fn read_only_task_changes_nothing() {
+    let model = MockModel::start(vec![
+        tool_calls(&[read_only_task("t1", "write new.txt")]),
+        tool_calls(&[("w1", "write", json!({ "path": "new.txt", "content": "x" }))]),
+        text("not allowed"),
+        text("done"),
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = agent(&model, dir.path());
+
+    prompt(&mut agent, "go").await;
+
+    assert!(!dir.path().join("new.txt").exists());
+    let refused = result(&model.requests()[2]);
+    assert!(refused.contains("read-only task"), "{refused}");
 }
