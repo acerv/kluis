@@ -5,11 +5,12 @@
 //! state, such as API keys, OAuth tokens or sessions, and the ones read
 //! up to a size.
 
+use std::ffi::OsString;
 use std::fmt;
-use std::fs::{DirBuilder, File, OpenOptions};
+use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, ErrorKind, Read};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rustix::fs::OFlags;
 
@@ -19,6 +20,39 @@ use crate::Error;
 /// only (`0700`).
 pub fn create_dir(path: &Path) -> io::Result<()> {
     DirBuilder::new().recursive(true).mode(0o700).create(path)
+}
+
+/// `path` with `suffix` appended to its file name.
+pub(crate) fn sibling(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = OsString::from(path.as_os_str());
+    name.push(suffix);
+    name.into()
+}
+
+/// Replace the file at `path` with what `write` writes, for the user only
+/// (`0600`). It is written next to `path` and takes its place only once
+/// complete and on disk, so a failure leaves `path` as it was.
+pub(crate) fn replace(
+    path: &Path,
+    write: impl FnOnce(&mut File) -> io::Result<()>,
+) -> io::Result<()> {
+    let tmp = sibling(path, ".tmp");
+    // One left by a crash.
+    let _ = fs::remove_file(&tmp);
+    let res = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)
+        .and_then(|mut file| {
+            write(&mut file)?;
+            file.sync_all()
+        })
+        .and_then(|()| fs::rename(&tmp, path));
+    if res.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    res
 }
 
 /// Read the private file at `path`, at most `max_bytes` long.
