@@ -26,7 +26,7 @@ use crate::retry::{is_too_large, EndedEarly, RetryPolicy};
 use crate::session::TokenUsage;
 use crate::tools::{
     self, error_response, AskTool, Asker, Executor, FetchTool, HostTools, Image, ReadOutput,
-    ToolContext, ToolDetails,
+    SearchTool, Searcher, ToolContext, ToolDetails,
 };
 use crate::Event;
 
@@ -253,6 +253,15 @@ impl Agent {
             self.req = self.req.append_tool(FetchTool::definition());
         }
         Ok(self)
+    }
+
+    /// Offer the `web_search` tool, which reaches the network from the host
+    /// through `searcher`.
+    pub fn with_web_search(mut self, searcher: Searcher) -> Self {
+        if self.host.searcher.replace(searcher).is_none() {
+            self.req = self.req.append_tool(SearchTool::definition());
+        }
+        self
     }
 
     /// Set when failed model requests are retried.
@@ -1000,7 +1009,8 @@ const PLAN_REFUSAL: &str =
 
 /// Whether the tool `name` may run in plan mode: it changes nothing.
 fn allowed_in_plan(name: &str) -> bool {
-    tools::is_read_only(name) || name == tools::TODO_TOOL || name == tools::FETCH_TOOL
+    tools::is_read_only(name)
+        || [tools::TODO_TOOL, tools::FETCH_TOOL, tools::SEARCH_TOOL].contains(&name)
 }
 
 /// Result of a tool call whose arguments could not be read.
