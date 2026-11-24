@@ -55,6 +55,11 @@ fn reap(child: Pid) -> ! {
 /// background, and wait until they are gone. Only below the init of
 /// [`start_init`].
 pub fn stop_others(keep: &[u32]) {
+    // At once, so no process forks past it: only the sessions to keep
+    // need the passes below.
+    if keep.is_empty() {
+        let _ = kill(Pid::from_raw(-1), Signal::SIGKILL);
+    }
     let start = std::time::Instant::now();
     // Each pass kills what the last one missed, such as a process forked
     // while it ran.
