@@ -457,44 +457,38 @@ fn write_skill(root: &Path, name: &str) -> std::path::PathBuf {
 #[test]
 fn global_skills_listed_and_read_only_in_sandbox() {
     let home = tempdir();
-    let shared = write_skill(&home.path().join(".agents/skills"), "review");
-    let own = write_skill(&home.path().join(".kluis/skills"), "deploy");
-    // The rest of the home folder and of `~/.kluis` stays hidden.
+    let file = write_skill(&home.path().join(".kluis/skills"), "deploy");
+    // The rest of the home folder and of `~/.kluis` stays hidden, and so
+    // do skills of other agents.
     std::fs::write(home.path().join("secret"), "hidden").unwrap();
     std::fs::write(home.path().join(".kluis/history"), "hidden").unwrap();
+    write_skill(&home.path().join(".agents/skills"), "review");
 
     let cwd = tempdir();
     let result = run_bash_in(cwd.path(), home.path(), &[], &[], |_| {
         format!(
-            "cat {0} {1}; echo WRITE=$( (echo evil >> {0}; echo evil >> {1}) 2>&1 || true ); \
+            "cat {0}; echo WRITE=$( (echo evil >> {0}) 2>&1 || true ); \
              echo HOME=$(ls -A ~) KLUIS=$(ls -A ~/.kluis)",
-            shared.display(),
-            own.display()
+            file.display()
         )
     });
 
-    for (file, name) in [(&shared, "review"), (&own, "deploy")] {
-        let listed = format!("- {name}: about {name} ({})", file.display());
-        assert!(result.system.contains(&listed), "{}", result.system);
-        assert!(
-            result.output.contains(&format!("{name}-body")),
-            "{}",
-            result.output
-        );
-    }
+    let listed = format!("- deploy: about deploy ({})", file.display());
+    assert!(result.system.contains(&listed), "{}", result.system);
+    assert!(!result.system.contains("review"), "{}", result.system);
     let output = &result.output;
+    assert!(output.contains("deploy-body"), "{output}");
     let write = output.lines().find(|l| l.starts_with("WRITE=")).unwrap();
-    assert_eq!(write.matches("Read-only file system").count(), 2, "{write}");
+    assert!(write.contains("Read-only file system"), "{write}");
     let listed = output.lines().find(|l| l.starts_with("HOME=")).unwrap();
-    assert_eq!(listed, "HOME=.agents .kluis KLUIS=skills", "{output}");
+    assert_eq!(listed, "HOME=.kluis KLUIS=skills", "{output}");
 }
 
 #[test]
-fn kluis_skills_left_out_when_a_shown_folder_holds_kluis_dir() {
+fn global_skills_left_out_when_a_shown_folder_holds_kluis_dir() {
     // Files created later in `~/.kluis` would show: it stays hidden whole.
     let home = tempdir();
-    let own = write_skill(&home.path().join(".kluis/skills"), "deploy");
-    write_skill(&home.path().join(".agents/skills"), "review");
+    let file = write_skill(&home.path().join(".kluis/skills"), "deploy");
     let cwd = tempdir();
     let home_arg = home.path().to_str().unwrap();
     let result = run_bash_in(
@@ -502,11 +496,10 @@ fn kluis_skills_left_out_when_a_shown_folder_holds_kluis_dir() {
         home.path(),
         &["--allow-read", home_arg],
         &[],
-        |_| format!("cat {}; ls -A ~/.kluis", own.display()),
+        |_| format!("cat {}", file.display()),
     );
 
     assert!(!result.system.contains("deploy"), "{}", result.system);
-    assert!(result.system.contains("- review:"), "{}", result.system);
     assert!(!result.output.contains("deploy-body"), "{}", result.output);
     assert!(
         result
