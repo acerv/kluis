@@ -10,7 +10,7 @@ use std::os::fd::OwnedFd;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use common::{openpty, resize, spawn_tui, spawn_tui_with};
+use common::{openpty, resize, spawn_tui, spawn_tui_in, spawn_tui_with};
 use genai::chat::ChatMessage;
 use harness_core::SessionStore;
 
@@ -260,6 +260,65 @@ fn thinking_falls_back_to_a_level_the_model_takes() {
     term.wait_for("it takes default, off]");
     term.type_text("/thinking\r");
     term.wait_for("thinking: default (this model takes default, off)");
+
+    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+    child.wait().unwrap();
+}
+
+#[test]
+fn diff_panel_shows_changes_and_keeps_the_output() {
+    const PROMPT: &str = "Type a message";
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let file = project.path().join("a.txt");
+    std::fs::write(&file, "one\n").unwrap();
+    let (master, slave) = openpty(24, 100);
+    let mut child = spawn_tui_in(home.path(), project.path(), &slave);
+    let mut term = Emulator::new(&master, 24, 100);
+
+    term.wait_for(PROMPT);
+    term.type_text("/thinking\r");
+    term.wait_for("thinking: default");
+    term.type_text("/diff\r");
+    term.wait_for("No changes since the session started");
+    term.type_text("/diff\r");
+    term.wait_for(PROMPT);
+    std::fs::write(&file, "one\ntwo\n").unwrap();
+    term.type_text("/diff\r");
+    term.wait_for("+1 -0");
+    // Output while the panel is open shows on the left.
+    term.type_text("/status\r");
+    term.wait_for("session: ");
+    let screen = term.rows().join("\n");
+    let row = term.row_of("M a.txt").unwrap();
+    assert!(term.rows()[row].find("M a.txt").unwrap() > 50, "{screen}");
+    assert!(term.rows()[term.row_of("session: ").unwrap()].starts_with("session: "));
+    assert!(screen.contains("+two"), "{screen}");
+
+    // Printed above the prompt once the panel closes, then at the new
+    // width after a resize.
+    let check_output = |term: &mut Emulator| {
+        std::thread::sleep(Duration::from_millis(200));
+        term.wait_for(PROMPT);
+        let screen = term.rows().join("\n");
+        assert!(!screen.contains("M a.txt"), "{screen}");
+        assert_eq!(screen.matches("thinking: default").count(), 1, "{screen}");
+        assert_eq!(screen.matches("session: ").count(), 1, "{screen}");
+        let status = term.row_of("session: ").unwrap();
+        assert!(
+            term.row_of("thinking: default").unwrap() < status,
+            "{screen}"
+        );
+        assert!(status < term.row_of(PROMPT).unwrap(), "{screen}");
+    };
+    term.type_text("/diff\r");
+    check_output(&mut term);
+    term.type_text("/diff\r");
+    term.wait_for("M a.txt");
+    term.resize(&master, 24, 80);
+    term.wait_for("M a.txt");
+    term.type_text("/diff\r");
+    check_output(&mut term);
 
     unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
     child.wait().unwrap();

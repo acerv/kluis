@@ -52,6 +52,18 @@ pub fn spawn_tui(home: &Path, slave: &OwnedFd) -> Child {
 
 /// Like [`spawn_tui`], with more arguments.
 pub fn spawn_tui_with(home: &Path, slave: &OwnedFd, args: &[&str]) -> Child {
+    tui_command(home, slave, args).spawn().unwrap()
+}
+
+/// Like [`spawn_tui`], in the folder `cwd`.
+pub fn spawn_tui_in(home: &Path, cwd: &Path, slave: &OwnedFd) -> Child {
+    tui_command(home, slave, &[])
+        .current_dir(cwd)
+        .spawn()
+        .unwrap()
+}
+
+fn tui_command(home: &Path, slave: &OwnedFd, args: &[&str]) -> Command {
     let stdio = || Stdio::from(slave.try_clone().unwrap());
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_kl"));
     cmd.arg("--no-sandbox")
@@ -70,5 +82,5 @@ pub fn spawn_tui_with(home: &Path, slave: &OwnedFd, args: &[&str]) -> Child {
             Ok(())
         });
     }
-    cmd.spawn().unwrap()
+    cmd
 }
