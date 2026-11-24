@@ -50,23 +50,50 @@ fn reap(child: Pid) -> ! {
     }
 }
 
-/// Kill every process of the namespace but the init and the caller, such
-/// as programs commands left running in the background, and wait until
-/// they are gone. Only below the init of [`start_init`].
-pub fn stop_others() {
-    let _ = kill(Pid::from_raw(-1), Signal::SIGKILL);
+/// Kill every process of the namespace but the init, the caller and the
+/// sessions in `keep`, such as programs commands left running in the
+/// background, and wait until they are gone. Only below the init of
+/// [`start_init`].
+pub fn stop_others(keep: &[u32]) {
     let start = std::time::Instant::now();
-    while others_left() && start.elapsed() < STOP_TIMEOUT {
+    // Each pass kills what the last one missed, such as a process forked
+    // while it ran.
+    while kill_others(keep) && start.elapsed() < STOP_TIMEOUT {
         std::thread::sleep(Duration::from_millis(5));
     }
 }
 
-/// Whether `/proc` still lists a process but the init and the caller.
-fn others_left() -> bool {
+/// Kill every process but the init, the caller and the sessions in `keep`,
+/// and return whether `/proc` listed any.
+fn kill_others(keep: &[u32]) -> bool {
     let me = getpid().as_raw();
     let Ok(dir) = std::fs::read_dir("/proc") else {
         return false;
     };
-    dir.filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<i32>().ok())
-        .any(|pid| pid != 1 && pid != me)
+    let mut found = false;
+    for pid in dir.filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<i32>().ok()) {
+        if pid == 1 || pid == me {
+            continue;
+        }
+        // A zombie is already gone, only not reaped yet.
+        match stat(pid) {
+            Some((state, sid)) if state == 'Z' || keep.contains(&sid) => continue,
+            _ => {}
+        }
+        found = true;
+        let _ = kill(Pid::from_raw(pid), Signal::SIGKILL);
+    }
+    found
+}
+
+/// The state and the session of process `pid`.
+fn stat(pid: i32) -> Option<(char, u32)> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // After the command name, which may hold anything: state, parent,
+    // group, session.
+    let (_, rest) = stat.rsplit_once(')')?;
+    let mut fields = rest.split_whitespace();
+    let state = fields.next()?.chars().next()?;
+    let sid = fields.nth(2)?.parse().ok()?;
+    Some((state, sid))
 }

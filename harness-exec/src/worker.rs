@@ -146,8 +146,10 @@ where
                         tokio::spawn(async move {
                             let _done = done_token;
                             if below_init {
-                                let _ =
-                                    tokio::task::spawn_blocking(harness_sandbox::stop_others).await;
+                                let _ = tokio::task::spawn_blocking(|| {
+                                    harness_sandbox::stop_others(&[])
+                                })
+                                .await;
                             }
                             let _ = out_tx_task.send(Response::Result {
                                 id,
