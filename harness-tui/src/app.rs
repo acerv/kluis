@@ -29,10 +29,16 @@ use crate::input::Input;
 use crate::markdown::{render_markdown, MarkdownStream, MarkdownStyle};
 use crate::picker::{Picker, PickerKind, PickerOutcome};
 use crate::style::Theme;
-use crate::terminal::{char_width, wrap_lines, wrapped_line_count};
+use crate::terminal::{char_width, truncate_width, wrap_lines, wrapped_line_count};
 use crate::Status;
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// The terminal title when idle, and the start of it when busy.
+const TITLE: &str = "kl";
+
+/// Maximum width of the activity in the terminal title.
+const MAX_TITLE_WIDTH: usize = 40;
 
 /// Maximum characters shown in a single-line summary.
 const SUMMARY_LEN: usize = 120;
@@ -327,6 +333,25 @@ impl App {
 
     pub fn is_busy(&self) -> bool {
         self.busy
+    }
+
+    /// The terminal title: what the harness is doing, from the same state
+    /// as the spinner.
+    pub fn title(&self) -> String {
+        let activity = if self.picker.as_ref().map(|p| p.kind()) == Some(PickerKind::Answer) {
+            "Question".to_owned()
+        } else if !self.busy {
+            return TITLE.to_owned();
+        } else if let Some(tool) = &self.active_tool {
+            // The model names the tool: keep only printable characters.
+            let name: String = tool.name.chars().filter(|c| !c.is_control()).collect();
+            truncate_width(&format!("Running {name}"), MAX_TITLE_WIDTH)
+        } else if self.is_thinking {
+            "Thinking".to_owned()
+        } else {
+            "Working".to_owned()
+        };
+        format!("{TITLE}: {activity}")
     }
 
     pub fn show_thinking(&self) -> bool {

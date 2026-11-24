@@ -56,6 +56,8 @@
 - Inline terminal UI that keeps native scrollback.
 - Live streaming Markdown and reasoning. `Ctrl-O` toggles thinking display.
 - Spinner with elapsed time and live `bash` output preview.
+- The terminal title shows what kl is doing (`kl: Running bash`, `kl:
+  Thinking`, `kl: Question`), and goes back to the old one on exit.
 - Persistent input history, model and session pickers, and `/copy` of the last
   reply.
 - Messages typed while the agent works join the conversation after the
