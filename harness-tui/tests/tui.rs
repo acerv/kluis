@@ -2290,3 +2290,40 @@ fn terminal_title_follows_the_activity() {
     app.finish_prompt(Ok(()));
     assert_eq!(app.title(), "kl");
 }
+
+#[test]
+fn bell_rings_when_a_long_prompt_needs_the_user() {
+    use std::time::Duration;
+
+    let mut app = App::new("model", status(), Theme::new(false));
+    let long = Duration::from_secs(10);
+
+    // Off unless asked for.
+    app.start_prompt("go");
+    app.set_elapsed(long);
+    app.finish_prompt(Ok(()));
+    assert!(!app.take_bell());
+
+    app.set_notify(true);
+    // A short prompt does not ring.
+    app.start_prompt("go");
+    app.finish_prompt(Ok(()));
+    assert!(!app.take_bell());
+
+    // A long one does, once, also when it fails.
+    app.start_prompt("go");
+    app.set_elapsed(long);
+    app.finish_prompt(Err("boom".into()));
+    assert!(app.take_bell());
+    assert!(!app.take_bell());
+
+    // So does a question in a long prompt.
+    app.start_prompt("go");
+    app.set_elapsed(long);
+    app.ask("Proceed?", &[]);
+    assert!(app.take_bell());
+
+    // Cancelling does not: the user is there.
+    app.cancel_prompt();
+    assert!(!app.take_bell());
+}

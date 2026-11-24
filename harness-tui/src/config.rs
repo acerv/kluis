@@ -18,6 +18,9 @@
 //! code_theme = "solarized-dark"
 //! # Search the web with this SearXNG instance instead of DuckDuckGo.
 //! searxng_url = "https://searx.example.org"
+//! # Ring the terminal bell when a prompt that ran for 10 seconds or more
+//! # ends or asks a question.
+//! notify = false
 //!
 //! [sandbox]
 //! # Also allow reading, or changing, these paths; `~` is $HOME. $HOME
@@ -87,6 +90,7 @@ impl Default for Config {
                 code_theme: None,
                 auto_compact_tokens: None,
                 searxng_url: None,
+                notify: false,
             },
             sandbox: SandboxConfig::default(),
         }
@@ -113,6 +117,8 @@ pub struct GenericConfig {
     /// SearXNG instance for web searches, like `--searxng-url`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub searxng_url: Option<String>,
+    /// Ring the bell at the end of long prompts, like `--notify`.
+    pub notify: bool,
 }
 
 /// The `[sandbox]` section.

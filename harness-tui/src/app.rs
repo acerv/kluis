@@ -40,6 +40,9 @@ const TITLE: &str = "kl";
 /// Maximum width of the activity in the terminal title.
 const MAX_TITLE_WIDTH: usize = 40;
 
+/// How long a prompt must run for its end, or a question, to ring the bell.
+const LONG_PROMPT: Duration = Duration::from_secs(10);
+
 /// Maximum characters shown in a single-line summary.
 const SUMMARY_LEN: usize = 120;
 
@@ -232,6 +235,12 @@ pub struct App {
     is_thinking: bool,
     spinner: usize,
     activity_started: Option<Instant>,
+    /// When the running prompt started.
+    prompt_started: Option<Instant>,
+    /// Ring the bell when a long prompt ends or asks a question.
+    notify: bool,
+    /// The bell is due at the next draw.
+    bell: bool,
     active_tool: Option<ToolCall>,
     /// The last finished tool call, shown whole by `/output`.
     last_tool: Option<ToolRun>,
@@ -277,6 +286,9 @@ impl App {
             is_thinking: false,
             spinner: 0,
             activity_started: None,
+            prompt_started: None,
+            notify: false,
+            bell: false,
             active_tool: None,
             last_tool: None,
             tool_preview: ToolPreview::default(),
@@ -321,6 +333,26 @@ impl App {
             }
         }
         self.picker = Some(Picker::answers(options));
+        self.ring_if_long();
+    }
+
+    /// Ring the bell when a long prompt ends or asks a question.
+    pub fn set_notify(&mut self, notify: bool) {
+        self.notify = notify;
+    }
+
+    /// Whether the bell is due, clearing it.
+    pub fn take_bell(&mut self) -> bool {
+        std::mem::take(&mut self.bell)
+    }
+
+    /// Make the bell due if the user may have stopped watching a prompt
+    /// that has run for long.
+    fn ring_if_long(&mut self) {
+        self.bell |= self.notify
+            && self
+                .prompt_started
+                .is_some_and(|t| t.elapsed() >= LONG_PROMPT);
     }
 
     pub fn is_picker_open(&self) -> bool {
@@ -680,9 +712,11 @@ impl App {
         }
     }
 
-    /// Override the elapsed activity timer (useful for deterministic rendering tests).
+    /// Override the elapsed time of the activity and of the prompt (useful
+    /// for deterministic tests).
     pub fn set_elapsed(&mut self, elapsed: Duration) {
         self.activity_started = Instant::now().checked_sub(elapsed);
+        self.prompt_started = self.activity_started;
     }
 
     /// Record a submitted user prompt and enter the busy state.
@@ -700,6 +734,7 @@ impl App {
         self.busy = true;
         self.spinner = 0;
         self.activity_started = Some(Instant::now());
+        self.prompt_started = self.activity_started;
         self.active_tool = None;
         self.clear_live();
         self.completion.clear();
@@ -843,9 +878,11 @@ impl App {
     pub fn finish_prompt(&mut self, outcome: Result<(), String>) {
         self.flush_reasoning();
         self.flush_text();
+        self.ring_if_long();
         self.busy = false;
         self.queued = 0;
         self.activity_started = None;
+        self.prompt_started = None;
         self.active_tool = None;
         self.clear_live();
         self.drop_finished_plan();
@@ -876,6 +913,7 @@ impl App {
         self.busy = false;
         self.queued = 0;
         self.activity_started = None;
+        self.prompt_started = None;
         self.active_tool = None;
         self.clear_live();
         // The work was dropped; the model sends the plan again to go on.

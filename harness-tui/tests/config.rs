@@ -50,6 +50,7 @@ fn missing_default_file_is_created_with_defaults() {
         "{text}"
     );
     assert!(text.contains("deny = []"), "{text}");
+    assert!(text.contains("notify = false"), "{text}");
     assert!(!text.contains(".pi"), "{text}");
 
     // Existing file is not overwritten on the next run.

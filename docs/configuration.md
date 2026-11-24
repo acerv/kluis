@@ -10,6 +10,7 @@ thinking = "medium"
 code_theme = "solarized-dark"
 auto_compact_tokens = 100000
 searxng_url = "https://searx.example.org"
+notify = true
 
 [sandbox]
 read = ["/etc/ssl"]
@@ -44,6 +45,7 @@ either the file or the CLI enables them.
 | `generic.code_theme`          | Colors of code blocks, see [Code theme](#code-theme)            | `base16-ocean-dark` |
 | `generic.auto_compact_tokens` | Auto-compact context at this many prompt tokens (`0` disables) | `100000`            |
 | `generic.searxng_url`   | SearXNG instance for `web_search`, with its JSON format on | DuckDuckGo          |
+| `generic.notify`        | Ring the terminal bell when a prompt that ran for 10 seconds or more ends or asks a question | `false` |
 | `sandbox.read`          | Extra folders the model can read, also in `$HOME`    | none                |
 | `sandbox.write`         | Extra folders the model can change, also in `$HOME`  | none                |
 | `sandbox.deny`          | Paths to hide, on top of the built-in credentials    | none                |
