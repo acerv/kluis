@@ -138,10 +138,15 @@ fn hints_at_newer_bundled_skills() {
     // As if the skills came from an older kl.
     std::fs::write(skills.join(".bundled"), "").unwrap();
     let (out, _) = run_kl_in(&home, &["-p", "hello"], "", 200);
-    assert!(
-        stderr(&out).contains("newer versions of the skills mentor, study come with kl"),
-        "{out:?}"
+    let names: Vec<_> = harness_core::BUNDLED_SKILLS
+        .iter()
+        .map(|&(name, _)| name)
+        .collect();
+    let hint = format!(
+        "newer versions of the skills {} come with kl",
+        names.join(", ")
     );
+    assert!(stderr(&out).contains(&hint), "{out:?}");
 }
 
 #[test]

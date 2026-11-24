@@ -17,11 +17,10 @@ use fnv::FnvHasher;
 use crate::private_file::{create_dir, read_capped, replace, sibling};
 use crate::skills::{MAX_SKILL_BYTES, SKILL_FILE};
 
-/// The bundled skills: their names and `SKILL.md`.
-pub const BUNDLED_SKILLS: &[(&str, &str)] = &[
-    ("mentor", include_str!("../../skills/mentor/SKILL.md")),
-    ("study", include_str!("../../skills/study/SKILL.md")),
-];
+/// The bundled skills, sorted by name: the name of each folder of `skills/`
+/// in the repository and its `SKILL.md` (see `build.rs`).
+pub const BUNDLED_SKILLS: &[(&str, &str)] =
+    include!(concat!(env!("OUT_DIR"), "/bundled_skills.rs"));
 
 /// The manifest, in the skills folder. A file, so not taken for a skill.
 const MANIFEST: &str = ".bundled";
