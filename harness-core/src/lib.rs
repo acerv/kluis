@@ -13,6 +13,7 @@ mod auth;
 mod commands;
 mod error;
 mod event;
+pub mod export;
 mod fetch;
 mod front_matter;
 mod mention;
