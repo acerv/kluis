@@ -8,6 +8,7 @@
 //! kl "fix the typo in README.md"   # single prompt
 //! git diff | kl -p "review this"    # single prompt, stdin appended
 //! kl --json "list the TODOs"        # single prompt, JSON result
+//! kl --json-stream "fix the tests"  # single prompt, one JSON line per event
 //! kl --login anthropic         # use a Claude Pro/Max subscription
 //! ```
 //!
@@ -18,6 +19,7 @@
 //! is given. Settings may also come from a config file (see `config.rs`).
 
 mod config;
+mod json_lines;
 mod sandbox;
 
 use std::io::{self, IsTerminal, Write};
@@ -187,6 +189,12 @@ pub struct Args {
     #[arg(long)]
     json: bool,
 
+    /// Like --json, and write one JSON line per event as the prompt runs:
+    /// text, tool calls and results, usage, retries. The last line is the
+    /// `result` or the `error`.
+    #[arg(long, conflicts_with = "json")]
+    json_stream: bool,
+
     /// Prompt to run once; starts an interactive chat when absent.
     prompt: Vec<String>,
 }
@@ -345,7 +353,7 @@ fn apply_config(args: &mut Args) -> Result<Option<String>, Error> {
 
 async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, Error> {
     let cwd = std::env::current_dir()?;
-    let once = args.print || args.json;
+    let once = args.print || args.json || args.json_stream;
     if once {
         let mut text = args.prompt.join(" ");
         if !io::stdin().is_terminal() {
@@ -540,30 +548,35 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
     if !args.prompt.is_empty() {
         let text = args.prompt.join(" ");
         let text = harness_core::expand_command(&commands.commands, &text).unwrap_or(text);
+        let output = if args.json_stream {
+            json_lines::print_event
+        } else {
+            print_event
+        };
+        let json = args.json || args.json_stream;
         let res = prompt_and_persist(
             &mut agent,
             session.as_mut(),
             git_guard.as_mut(),
             &text,
-            (!args.json).then_some(print_event),
+            (!args.json).then_some(output),
             false,
         )
         .await;
-        if !args.json {
+        if !json {
             return res.map(|_| ExitCode::SUCCESS);
         }
         let failed = res.is_err();
         let mut out = match res {
             Ok(done) => serde_json::json!({
                 "result": done.text,
-                "usage": {
-                    "input": done.usage.input,
-                    "output": done.usage.output,
-                    "cached": done.usage.cached,
-                },
+                "usage": json_lines::usage_json(done.usage),
             }),
             Err(err) => serde_json::json!({ "error": err.to_string() }),
         };
+        if args.json_stream {
+            out["type"] = if failed { "error" } else { "result" }.into();
+        }
         out["session"] = session.as_ref().map(Session::current_id).into();
         println!("{out}");
         return Ok(if failed {
