@@ -19,12 +19,17 @@ pub use crate::ask::{AskOutput, AskTool, Asker, Question, ASK_TOOL, MAX_ASK_OPTI
 pub use crate::fetch::{
     FetchOutput, FetchTool, FETCH_TIMEOUT, FETCH_TOOL, MAX_FETCH_BODY_BYTES, MAX_FETCH_BYTES,
 };
+pub use crate::search::{
+    Engine, SearchOutput, SearchResult, SearchTool, Searcher, DUCKDUCKGO_URL, MAX_SEARCH_RESULTS,
+    SEARCH_TOOL,
+};
 
 /// What the tools the agent runs itself, not the executor, need.
 #[derive(Debug, Default)]
 pub(crate) struct HostTools {
     pub asker: Option<Asker>,
     pub fetcher: Option<Client>,
+    pub searcher: Option<Searcher>,
 }
 
 impl HostTools {
@@ -37,6 +42,9 @@ impl HostTools {
             }
             FETCH_TOOL => {
                 output(async { parse::<FetchTool>(args)?.run(self.fetcher.as_ref()).await }.await)
+            }
+            SEARCH_TOOL => {
+                output(async { parse::<SearchTool>(args)?.run(self.searcher.as_ref()).await }.await)
             }
             _ => return None,
         };

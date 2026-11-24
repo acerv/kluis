@@ -19,6 +19,7 @@ pub mod oauth;
 mod private_file;
 mod prompt;
 mod retry;
+mod search;
 mod session;
 pub mod tools;
 
