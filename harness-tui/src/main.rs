@@ -579,6 +579,16 @@ fn find_skills(args: &Args, cwd: &Path) -> Skills {
         Some(dir) if hidden_skills.is_none() => harness_core::find_skills(dir),
         _ => Skills::default(),
     };
+    let outdated = skills_dir
+        .as_deref()
+        .map(harness_core::outdated_skills)
+        .unwrap_or_default();
+    if !outdated.is_empty() {
+        skills.warnings.push(format!(
+            "newer versions of the skills {} come with kl: run kl --install-skills",
+            outdated.join(", ")
+        ));
+    }
     if let Some(dir) = hidden_skills {
         skills.warnings.push(format!(
             "the skills in {} are not used: a folder shown to commands holds {}, \
