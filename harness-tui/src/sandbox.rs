@@ -4,9 +4,10 @@
 //! Sandboxed tool executor for `kl`: spawns `kl --tool-executor` inside a
 //! `hakoniwa` container with the current folder writable (or read-only with
 //! `--strict`), an empty private `$HOME` showing only the allowed paths,
-//! `~/.kluis` hidden, `~/.agents/skills` read-only, zero API keys in the environment, and no
-//! network unless `--network` or `--allow-connect` is given. Commands
-//! cannot create user namespaces, nor Unix sockets without `--network`.
+//! `~/.kluis` hidden but for its skills, the skills read-only, zero API
+//! keys in the environment, and no network unless `--network` or
+//! `--allow-connect` is given. Commands cannot create user namespaces, nor
+//! Unix sockets without `--network`.
 
 use std::path::{Path, PathBuf};
 
@@ -91,15 +92,29 @@ pub fn executor(args: &Args, cwd: &Path) -> Result<(Executor, GitGuard), Error> 
         write.push(cwd.to_path_buf());
     }
 
-    // The global skills, which the model reads when it uses one.
-    read.extend(crate::config::skills_dir().filter(|dir| dir.is_dir()));
-
     // Hide all harness state (`~/.kluis`: config, auth, sessions, history,
-    // global AGENTS.md) from sandboxed tools.
+    // global AGENTS.md) from sandboxed tools, but the skills the model reads
+    // when it uses one.
     let kluis_dir = crate::config::kluis_dir();
     if let Some(dir) = &kluis_dir {
-        deny.push(dir.clone());
+        let entries = std::fs::read_dir(dir)
+            .ok()
+            .filter(|_| !hides_skills(args, cwd));
+        match crate::config::skills_dir()
+            .filter(|s| s.is_dir())
+            .zip(entries)
+        {
+            // Nothing shown holds `~/.kluis`, so only paths allowed below it
+            // could show its files: hide each but the skills. One created
+            // later is not below such a path.
+            Some((skills, entries)) => {
+                deny.extend(entries.flatten().map(|e| e.path()).filter(|p| *p != skills));
+                read.push(skills);
+            }
+            None => deny.push(dir.clone()),
+        }
     }
+    read.extend(crate::config::shared_skills_dir().filter(|dir| dir.is_dir()));
 
     // If `--config` lives inside a writable folder (outside `~/.kluis`), keep
     // it read-only so commands cannot tamper with it.
@@ -168,6 +183,21 @@ pub fn executor(args: &Args, cwd: &Path) -> Result<(Executor, GitGuard), Error> 
         env,
     })?;
     Ok((executor, git_guard))
+}
+
+/// Whether a folder shown to commands holds `~/.kluis`, which then stays
+/// hidden whole, `~/.kluis/skills` included: its files created later would
+/// show otherwise.
+pub fn hides_skills(args: &Args, cwd: &Path) -> bool {
+    let Some(dir) = crate::config::kluis_dir().and_then(|d| std::fs::canonicalize(d).ok()) else {
+        return false;
+    };
+    args.allow_read
+        .iter()
+        .chain(&args.allow_write)
+        .chain([&cwd.to_path_buf()])
+        .filter_map(|path| std::fs::canonicalize(path).ok())
+        .any(|path| dir.starts_with(path))
 }
 
 /// Warning about the credentials below the paths `args` show in `cwd`: they
