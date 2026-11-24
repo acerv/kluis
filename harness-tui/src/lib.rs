@@ -568,6 +568,8 @@ async fn run_shell(
         return Ok(true);
     }
     restore_queued(agent, app);
+    // The command may end before its result was drawn.
+    draw(term, app)?;
     Ok(false)
 }
 
