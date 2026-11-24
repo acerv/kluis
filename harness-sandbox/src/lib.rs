@@ -85,6 +85,23 @@ enum MountKind {
     MaskFile,
 }
 
+/// A folder or file the container shows.
+#[derive(Debug, Clone)]
+struct Mount {
+    /// Where it is, as it was allowed.
+    path: PathBuf,
+    /// The same without symlinks.
+    canon: PathBuf,
+    writable: bool,
+}
+
+/// A path the container hides, masked as the folder or the file it is.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct Hidden {
+    pub path: PathBuf,
+    pub is_dir: bool,
+}
+
 impl Default for Network {
     fn default() -> Self {
         Network::Ports(Vec::new())
@@ -332,13 +349,17 @@ impl Sandbox {
         for (mount, writable) in all.iter().filter(|m| !covered(m)) {
             if canon_mounts
                 .iter()
-                .any(|(m, _, w)| m == mount && w == writable)
+                .any(|m: &Mount| m.path == *mount && m.writable == *writable)
             {
                 continue;
             }
             let canon = std::fs::canonicalize(mount).map_err(|e| SandboxError::at(mount, e))?;
             if !path_or_canon_denied(mount, &canon, &denied_targets) {
-                canon_mounts.push((mount.clone(), canon, *writable));
+                canon_mounts.push(Mount {
+                    path: mount.clone(),
+                    canon,
+                    writable: *writable,
+                });
             }
         }
         let all_writable: Vec<_> = all.iter().filter(|(_, w)| *w).map(|(p, _)| p).collect();
@@ -350,8 +371,8 @@ impl Sandbox {
         // of their reach.
         let writable_roots: Vec<_> = canon_mounts
             .iter()
-            .filter(|(_, _, w)| *w)
-            .map(|(root, canon, _)| (root.as_path(), canon.as_path()))
+            .filter(|m| m.writable)
+            .map(|m| (m.path.as_path(), m.canon.as_path()))
             .collect();
         let remote = remote_points(&writable_roots, &allowed, &mountinfo);
         let mut scan = GitScan::default();
@@ -375,24 +396,24 @@ impl Sandbox {
         ro_paths.retain(|p| !covered_by_denied(p, &denied_targets));
 
         // A path kept read-only also overrides writable mounts at or below it.
-        canon_mounts.retain(|(path, canon, writable)| {
-            !*writable
+        canon_mounts.retain(|m| {
+            !m.writable
                 || !ro_paths
                     .iter()
-                    .any(|ro| path.starts_with(ro) || canon.starts_with(ro))
+                    .any(|ro| m.path.starts_with(ro) || m.canon.starts_with(ro))
         });
 
         let mut mask_paths = map_denied(&canon_mounts, &denied_targets);
-        ro_paths.retain(|ro| !mask_paths.iter().any(|(d, _)| ro.starts_with(d)));
+        ro_paths.retain(|ro| !mask_paths.iter().any(|m| ro.starts_with(&m.path)));
 
         let mut effective: Vec<_> = canon_mounts
             .iter()
-            .map(|(m, _, w)| (m.clone(), *w))
+            .map(|m| (m.path.clone(), m.writable))
             .collect();
         for path in &ro_paths {
             effective.push((path.clone(), false));
         }
-        for (path, _) in &mask_paths {
+        for Hidden { path, .. } in &mask_paths {
             effective.push((path.clone(), false));
         }
 
@@ -402,16 +423,19 @@ impl Sandbox {
         // network, e.g. a cloud drive: hide those, like denied paths,
         // unless allowed themselves.
         let remote = remote_mounts(&canon_mounts, &allowed, &mask_paths, &mountinfo)?;
-        for (path, is_dir) in remote {
-            mask_paths.push((path.clone(), is_dir));
-            effective.push((path, false));
+        for hidden in remote {
+            effective.push((hidden.path.clone(), false));
+            mask_paths.push(hidden);
         }
 
         let mut mounts: IndexSet<_> = canon_mounts
             .into_iter()
-            .map(|(path, _, writable)| (path, MountKind::Bind { writable }))
+            .map(|m| {
+                let writable = m.writable;
+                (m.path, MountKind::Bind { writable })
+            })
             .collect();
-        for path in ro_paths.iter().chain(mask_paths.iter().map(|(p, _)| p)) {
+        for path in ro_paths.iter().chain(mask_paths.iter().map(|m| &m.path)) {
             // The folders on the way from a writable mount become mount
             // points, which cannot be moved away to free the path.
             if let Some((root, true)) = closest_ancestor(&effective, path) {
@@ -428,7 +452,7 @@ impl Sandbox {
                 mounts.insert((path, MountKind::Bind { writable: false }));
             }
         }
-        for (path, is_dir) in mask_paths {
+        for Hidden { path, is_dir } in mask_paths {
             let kind = if is_dir {
                 MountKind::MaskDir
             } else {
@@ -450,7 +474,7 @@ impl Sandbox {
 }
 
 /// Canonical paths and whether they are directories for existing `deny` entries.
-pub(crate) fn resolve_denied(deny: &[PathBuf]) -> Result<Vec<(PathBuf, bool)>, SandboxError> {
+pub(crate) fn resolve_denied(deny: &[PathBuf]) -> Result<Vec<Hidden>, SandboxError> {
     let mut out = IndexSet::new();
     for raw in deny {
         let error = |e: &dyn fmt::Display| SandboxError::at(raw, e);
@@ -474,27 +498,30 @@ pub(crate) fn resolve_denied(deny: &[PathBuf]) -> Result<Vec<(PathBuf, bool)>, S
         if canon.to_str().is_none() {
             return Err(error(&"not UTF-8"));
         }
-        out.insert((canon, meta.is_dir()));
+        out.insert(Hidden {
+            path: canon,
+            is_dir: meta.is_dir(),
+        });
     }
     Ok(out.into_iter().collect())
 }
 
 /// Whether `path` or its canonical target `canon` is at or below any denied target.
-fn path_or_canon_denied(path: &Path, canon: &Path, denied: &[(PathBuf, bool)]) -> bool {
+fn path_or_canon_denied(path: &Path, canon: &Path, denied: &[Hidden]) -> bool {
     denied
         .iter()
-        .any(|(d, _)| path.starts_with(d) || canon.starts_with(d))
+        .any(|d| path.starts_with(&d.path) || canon.starts_with(&d.path))
 }
 
 /// Whether `path` (or its canonical target) is at or below any denied target.
-fn covered_by_denied(path: &Path, denied: &[(PathBuf, bool)]) -> bool {
+fn covered_by_denied(path: &Path, denied: &[Hidden]) -> bool {
     if denied.is_empty() {
         return false;
     }
     let canon = std::fs::canonicalize(path).ok();
-    denied
-        .iter()
-        .any(|(d, _)| path.starts_with(d) || canon.as_deref().is_some_and(|c| c.starts_with(d)))
+    denied.iter().any(|d| {
+        path.starts_with(&d.path) || canon.as_deref().is_some_and(|c| c.starts_with(&d.path))
+    })
 }
 
 /// The mount points of `mountinfo` on a filesystem that could reach the
@@ -542,22 +569,25 @@ pub(crate) fn remote_points(
 /// mounts this user cannot reach, whose program is gone or which deny
 /// access: the sandbox, running as the same user, cannot reach them either.
 fn remote_mounts(
-    roots: &[(PathBuf, PathBuf, bool)],
+    roots: &[Mount],
     allowed: &[&Path],
-    hidden: &[(PathBuf, bool)],
+    hidden: &[Hidden],
     mountinfo: &str,
-) -> Result<Vec<(PathBuf, bool)>, SandboxError> {
+) -> Result<Vec<Hidden>, SandboxError> {
     let roots: Vec<_> = roots
         .iter()
-        .map(|(mount, canon, _)| (mount.as_path(), canon.as_path()))
+        .map(|m| (m.path.as_path(), m.canon.as_path()))
         .collect();
     let mut out = Vec::new();
     for path in remote_points(&roots, allowed, mountinfo) {
-        if hidden.iter().any(|(hidden, _)| path.starts_with(hidden)) {
+        if hidden.iter().any(|hidden| path.starts_with(&hidden.path)) {
             continue;
         }
         match std::fs::metadata(&path) {
-            Ok(meta) => out.push((path, meta.is_dir())),
+            Ok(meta) => out.push(Hidden {
+                path,
+                is_dir: meta.is_dir(),
+            }),
             Err(e)
                 if matches!(
                     e.raw_os_error(),
@@ -650,26 +680,30 @@ pub(crate) fn read_mountinfo() -> Result<String, SandboxError> {
 
 /// Denied targets mapped into every surviving mount that strictly contains
 /// them, without entries already inside a denied directory.
-fn map_denied(
-    canon_mounts: &[(PathBuf, PathBuf, bool)],
-    denied: &[(PathBuf, bool)],
-) -> Vec<(PathBuf, bool)> {
+fn map_denied(canon_mounts: &[Mount], denied: &[Hidden]) -> Vec<Hidden> {
     let mut mapped = IndexSet::new();
-    for (target, is_dir) in denied {
-        for (mount, canon, _) in canon_mounts {
-            if target != canon {
-                if let Ok(rest) = target.strip_prefix(canon) {
-                    mapped.insert((mount.join(rest), *is_dir));
+    for Hidden {
+        path: target,
+        is_dir,
+    } in denied
+    {
+        for mount in canon_mounts {
+            if *target != mount.canon {
+                if let Ok(rest) = target.strip_prefix(&mount.canon) {
+                    mapped.insert(Hidden {
+                        path: mount.path.join(rest),
+                        is_dir: *is_dir,
+                    });
                 }
             }
         }
     }
     mapped
         .iter()
-        .filter(|(path, _)| {
-            !mapped
-                .iter()
-                .any(|(other, is_dir)| *is_dir && other != path && path.starts_with(other))
+        .filter(|hidden| {
+            !mapped.iter().any(|other| {
+                other.is_dir && other != *hidden && hidden.path.starts_with(&other.path)
+            })
         })
         .cloned()
         .collect()
@@ -706,7 +740,7 @@ pub(crate) fn collect_git(
     root: &Path,
     canon_root: &Path,
     writable: &[&PathBuf],
-    denied: &[(PathBuf, bool)],
+    denied: &[Hidden],
     hidden: &[PathBuf],
     scan: &mut GitScan,
 ) {
@@ -778,7 +812,7 @@ fn writable_by_commands(path: &Path) -> bool {
 /// or when `expose_target` is true) and the parents of any symlinks inside
 /// writable folders (other than the writable roots themselves) into `ro_paths`.
 fn resolve_read_only(
-    canon_mounts: &[(PathBuf, PathBuf, bool)],
+    canon_mounts: &[Mount],
     raw: &Path,
     expose_target: bool,
     ro_paths: &mut IndexSet<PathBuf>,
@@ -788,18 +822,16 @@ fn resolve_read_only(
     let canonical = checked(&canonical)?;
     // Protect the path inside every writable mount covering it (mapping back
     // through symlinked mount roots without exposing unmounted host paths).
-    for (mount, canon, writable) in canon_mounts {
-        if *writable {
-            if let Ok(rest) = canonical.strip_prefix(canon) {
-                // Not `join` for the mount itself: it adds a trailing slash,
-                // which a file does not take.
-                let path = if rest.as_os_str().is_empty() {
-                    mount.clone()
-                } else {
-                    mount.join(rest)
-                };
-                ro_paths.insert(path);
-            }
+    for mount in canon_mounts.iter().filter(|m| m.writable) {
+        if let Ok(rest) = canonical.strip_prefix(&mount.canon) {
+            // Not `join` for the mount itself: it adds a trailing slash,
+            // which a file does not take.
+            let path = if rest.as_os_str().is_empty() {
+                mount.path.clone()
+            } else {
+                mount.path.join(rest)
+            };
+            ro_paths.insert(path);
         }
     }
     if expose_target {
@@ -832,7 +864,7 @@ fn push_steps(queue: &mut VecDeque<Step>, path: &Path) {
 /// Walk `abs` component by component, following symlinks and recording the
 /// writable parent directory of any symlink strictly below a writable root.
 fn walk_symlinks(
-    canon_mounts: &[(PathBuf, PathBuf, bool)],
+    canon_mounts: &[Mount],
     abs: &Path,
     ro_paths: &mut IndexSet<PathBuf>,
 ) -> Result<PathBuf, SandboxError> {
@@ -874,22 +906,19 @@ fn walk_symlinks(
 
 /// If `dir` is strictly inside a writable mount, return its path relative
 /// to that mount so it can be kept read-only.
-fn writable_symlink_parent(
-    canon_mounts: &[(PathBuf, PathBuf, bool)],
-    dir: &Path,
-) -> Option<PathBuf> {
-    let (mount, canon, _) = canon_mounts
+fn writable_symlink_parent(canon_mounts: &[Mount], dir: &Path) -> Option<PathBuf> {
+    let mount = canon_mounts
         .iter()
-        .filter(|(_, canon, _)| dir.starts_with(canon))
-        .max_by_key(|(_, canon, _)| canon.components().count())
-        .filter(|(_, _, writable)| *writable)?;
-    let rest = dir.strip_prefix(canon).ok()?;
+        .filter(|m| dir.starts_with(&m.canon))
+        .max_by_key(|m| m.canon.components().count())
+        .filter(|m| m.writable)?;
+    let rest = dir.strip_prefix(&mount.canon).ok()?;
     if rest.as_os_str().is_empty() {
         // The symlink sits directly inside a writable root; making the
         // whole root read-only would break `allow_write`.
         return None;
     }
-    Some(mount.join(rest))
+    Some(mount.path.join(rest))
 }
 
 /// Limit the virtual memory of the calling process and its children to
