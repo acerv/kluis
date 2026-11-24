@@ -366,7 +366,7 @@ fn streaming_lines_thinking_and_tool_diff() {
     let mut app = App::new("model", status(), Theme::new(true));
 
     app.start_prompt("fix it");
-    flush_scrollback(&mut term, app.take_scrollback()).unwrap();
+    flush_scrollback(&mut term, &app.take_scrollback()).unwrap();
 
     // Thinking streams line-by-line into scrollback.
     app.apply_update(AgentUpdate::TurnStart);
@@ -375,7 +375,7 @@ fn streaming_lines_thinking_and_tool_diff() {
     assert!(thought_lines
         .iter()
         .any(|l| l.to_string().contains("checking file")));
-    flush_scrollback(&mut term, thought_lines).unwrap();
+    flush_scrollback(&mut term, &thought_lines).unwrap();
 
     // Tool call shows clean pi-style header + colored edit diff.
     app.apply_update(AgentUpdate::ToolCall {
@@ -409,11 +409,11 @@ fn streaming_lines_thinking_and_tool_diff() {
     assert!(joined.contains("edit src/main.rs"), "{joined}");
     assert!(joined.contains("1 -old"), "{joined}");
     assert!(joined.contains("1 +new"), "{joined}");
-    flush_scrollback(&mut term, tool_lines).unwrap();
+    flush_scrollback(&mut term, &tool_lines).unwrap();
 
     // Text streams line-by-line above the editor, with partial line live.
     app.apply_update(AgentUpdate::TextDelta("Line one\nLine tw".into()));
-    flush_scrollback(&mut term, app.take_scrollback()).unwrap();
+    flush_scrollback(&mut term, &app.take_scrollback()).unwrap();
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
     assert!(screen.contains("Line one"), "{screen}");
@@ -422,7 +422,7 @@ fn streaming_lines_thinking_and_tool_diff() {
     app.apply_update(AgentUpdate::TextDelta("o".into()));
     app.apply_update(AgentUpdate::Text("Line one\nLine two".into()));
     app.finish_prompt(Ok(()));
-    flush_scrollback(&mut term, app.take_scrollback()).unwrap();
+    flush_scrollback(&mut term, &app.take_scrollback()).unwrap();
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
     assert!(screen.contains("Line two"), "{screen}");
@@ -437,7 +437,7 @@ fn resize_and_no_color() {
 
     app.start_prompt("hello");
     app.finish_prompt(Err("boom".into()));
-    flush_scrollback(&mut term, app.take_scrollback()).unwrap();
+    flush_scrollback(&mut term, &app.take_scrollback()).unwrap();
     term.draw(|f| app.render(f)).unwrap();
 
     // Every cell must have default colors and no modifiers when NO_COLOR is active.
