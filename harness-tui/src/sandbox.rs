@@ -4,7 +4,7 @@
 //! Sandboxed tool executor for `kl`: spawns `kl --tool-executor` inside a
 //! `hakoniwa` container with the current folder writable (or read-only with
 //! `--strict`), an empty private `$HOME` showing only the allowed paths,
-//! `~/.kluis` hidden but for its skills, the skills read-only, zero API
+//! `~/.kluis` hidden but for its skills, shown read-only, zero API
 //! keys in the environment, and no network unless `--network` or
 //! `--allow-connect` is given. Commands cannot create user namespaces, nor
 //! Unix sockets without `--network`.
@@ -114,7 +114,6 @@ pub fn executor(args: &Args, cwd: &Path) -> Result<(Executor, GitGuard), Error> 
             None => deny.push(dir.clone()),
         }
     }
-    read.extend(crate::config::shared_skills_dir().filter(|dir| dir.is_dir()));
 
     // If `--config` lives inside a writable folder (outside `~/.kluis`), keep
     // it read-only so commands cannot tamper with it.

@@ -385,22 +385,18 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
     let agents = harness_core::find_agents_files(&cwd, config::agents_path().as_deref());
     // Commands cannot read `~/.kluis/skills` when a folder shown holds
     // `~/.kluis`: leave those skills out.
-    let own_skills = config::skills_dir().filter(|dir| dir.is_dir());
-    let hidden_skills = own_skills
+    let skills_dir = config::skills_dir().filter(|dir| dir.is_dir());
+    let hidden_skills = skills_dir
         .as_ref()
         .filter(|_| !args.no_sandbox && sandbox::hides_skills(&args, &cwd));
-    let global: Vec<_> = config::shared_skills_dir()
-        .into_iter()
-        .chain(own_skills.clone().filter(|_| hidden_skills.is_none()))
-        .collect();
-    let mut skills = harness_core::find_skills(&cwd, &global);
+    let global = skills_dir.as_deref().filter(|_| hidden_skills.is_none());
+    let mut skills = harness_core::find_skills(&cwd, global);
     if let Some(dir) = hidden_skills {
         skills.warnings.push(format!(
             "the skills in {} are not used: a folder shown to commands holds {}, \
-             which stays hidden. Move them to ~/{}",
+             which stays hidden. Show narrower folders instead",
             tilde(dir),
             tilde(dir.parent().unwrap_or(dir)),
-            harness_core::SKILLS_DIR
         ));
     }
     let system = harness_core::system_prompt(&cwd, &agents, &skills.skills);

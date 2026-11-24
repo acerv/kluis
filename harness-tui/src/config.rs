@@ -183,13 +183,7 @@ pub fn agents_path() -> Option<PathBuf> {
     Some(kluis_dir()?.join(harness_core::AGENTS_FILE))
 }
 
-/// Where skills shared with other agents are looked for:
-/// `~/.agents/skills`.
-pub fn shared_skills_dir() -> Option<PathBuf> {
-    Some(home()?.join(harness_core::SKILLS_DIR))
-}
-
-/// Where skills of kl only are looked for: `~/.kluis/skills`.
+/// Where global skills are looked for: `~/.kluis/skills`.
 pub fn skills_dir() -> Option<PathBuf> {
     Some(kluis_dir()?.join("skills"))
 }
