@@ -11,7 +11,8 @@ use crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyM
 use genai::chat::{ChatMessage, ChatRole, ContentPart};
 use harness_core::tools::{Diff, DiffLine, Todo, TodoStatus, TodoTool, TODO_TOOL};
 use harness_core::{
-    Event as AgentEvent, ModelInfo, SessionSummary, Skill, Thinking, TokenUsage, ToolDetails,
+    Command, Event as AgentEvent, ModelInfo, SessionSummary, Skill, Thinking, TokenUsage,
+    ToolDetails,
 };
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
@@ -462,13 +463,17 @@ impl App {
         self.context = tokens;
     }
 
-    /// Let `/<name>` ask for each of `skills`.
-    pub fn set_skills(&mut self, skills: &[Skill]) {
+    /// Let `/<name>` run each of `commands` and ask for each of `skills`.
+    pub fn set_custom(&mut self, commands: &[Command], skills: &[Skill]) {
+        let commands = commands
+            .iter()
+            .map(|c| (c.name.clone(), c.description.clone()))
+            .collect();
         let skills = skills
             .iter()
             .map(|s| (s.name.clone(), s.description.clone()))
             .collect();
-        self.completion.set_skills(skills);
+        self.completion.set_custom(commands, skills);
     }
 
     /// Offer the files of `root` when completing `@` in the editor.
@@ -1020,8 +1025,9 @@ impl App {
             }
             match parse_slash(trimmed) {
                 Some(Ok(cmd)) => return Action::Slash(cmd),
-                // A skill: the model reads the message as it is.
-                Some(Err(unknown)) if self.completion.is_skill(&unknown[1..]) => {}
+                // A custom command, sent once expanded, or a skill, which
+                // the model reads as it is.
+                Some(Err(unknown)) if self.completion.is_custom(&unknown[1..]) => {}
                 Some(Err(unknown)) => {
                     self.push_info(format!("unknown command: {unknown} (try /help)"));
                     return Action::Redraw;

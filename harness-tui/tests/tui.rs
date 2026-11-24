@@ -4,7 +4,9 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use genai::chat::{ChatMessage, ChatRole, ContentPart, MessageContent, ToolCall, ToolResponse};
 use harness_core::tools::{Diff, DiffHunk, DiffLine};
-use harness_core::{Event as AgentEvent, SessionStore, Skill, Thinking, TokenUsage, ToolDetails};
+use harness_core::{
+    Command, Event as AgentEvent, SessionStore, Skill, Thinking, TokenUsage, ToolDetails,
+};
 use harness_tui::{
     code_theme, flush_scrollback, last_assistant_text, osc52_sequence, Action, AgentUpdate, App,
     BannerLine, PromptSaver, Session, SlashCommand, Status, Theme, TRUNCATED_NOTICE,
@@ -770,7 +772,10 @@ fn skills_are_completed_and_sent_to_the_model() {
     };
     let mut app = App::new("m", status(), Theme::new(false));
     // A skill cannot replace a command.
-    app.set_skills(&[skill("review", "Review a patch"), skill("model", "hidden")]);
+    app.set_custom(
+        &[],
+        &[skill("review", "Review a patch"), skill("model", "hidden")],
+    );
 
     type_str(&mut app, "/re");
     let mut term = inline_terminal_with(80, 24, app.viewport_height(80));
@@ -790,6 +795,49 @@ fn skills_are_completed_and_sent_to_the_model() {
     assert_eq!(
         app.handle_event(key(KeyCode::Enter)),
         Action::Slash(SlashCommand::Model(None))
+    );
+}
+
+#[test]
+fn custom_commands_are_completed_and_hide_skills() {
+    let command = |name: &str, description: &str| Command {
+        name: name.to_owned(),
+        description: description.to_owned(),
+        template: "Review $ARGUMENTS".to_owned(),
+    };
+    let skill = Skill {
+        name: "review".to_owned(),
+        description: "the skill".to_owned(),
+        path: "/skills/review/SKILL.md".into(),
+    };
+    let mut app = App::new("m", status(), Theme::new(false));
+    // A command of kl wins over a custom command, which wins over a skill.
+    app.set_custom(
+        &[
+            command("review", "Review a patch"),
+            command("help", "hidden"),
+        ],
+        &[skill],
+    );
+
+    type_str(&mut app, "/re");
+    let mut term = inline_terminal_with(80, 24, app.viewport_height(80));
+    term.draw(|f| app.render(f)).unwrap();
+    let screen = render_text(&term);
+    assert!(screen.contains("/review [args]"), "{screen}");
+    assert!(screen.contains("Review a patch"), "{screen}");
+    assert!(!screen.contains("the skill"), "{screen}");
+
+    // Sent as typed, to be expanded when the prompt starts.
+    app.handle_event(Event::Paste("view a.rs".into()));
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Submit("/review a.rs".into())
+    );
+    app.handle_event(Event::Paste("/help".into()));
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Slash(SlashCommand::Help)
     );
 }
 

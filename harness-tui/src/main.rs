@@ -34,8 +34,8 @@ use harness_core::tools::{
     is_read_only, run_worker, Engine, Executor, OutputFiles, Searcher, ToolContext,
 };
 use harness_core::{
-    provider_name, Agent, AuthConfig, CredentialSource, Error, Event, SessionData, SessionStore,
-    Skill, Skills, Thinking, TokenUsage,
+    provider_name, Agent, AuthConfig, Command, CredentialSource, Error, Event, SessionData,
+    SessionStore, Skill, Skills, Thinking, TokenUsage,
 };
 use harness_sandbox::{GitGuard, NetworkAccess};
 use harness_tui::{
@@ -401,6 +401,12 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
             tilde(dir.parent().unwrap_or(dir)),
         ));
     }
+    let mut commands = config::commands_dir()
+        .map(|dir| harness_core::find_commands(&dir))
+        .unwrap_or_default();
+    commands
+        .warnings
+        .extend(clash_warnings(&mut commands.commands, &skills.skills));
     let system = harness_core::system_prompt(&cwd, &agents, &skills.skills);
     let store = (!args.no_session)
         .then(config::sessions_dir)
@@ -506,6 +512,7 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
         Vec::new()
     };
     warnings.extend(skills.warnings);
+    warnings.extend(commands.warnings);
     if !args.no_sandbox {
         warnings.extend(sandbox::secrets_warning(&args, &cwd));
         warnings.extend(sandbox::remote_warnings(&args, &cwd));
@@ -520,6 +527,7 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
 
     if !args.prompt.is_empty() {
         let text = args.prompt.join(" ");
+        let text = harness_core::expand_command(&commands.commands, &text).unwrap_or(text);
         let res = prompt_and_persist(
             &mut agent,
             session.as_mut(),
@@ -563,7 +571,7 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
             BannerLine::new(format!("kluis v{}", env!("CARGO_PKG_VERSION"))),
             auth_line(&model, credential),
             BannerLine::new(sandbox_details(&args, &cwd)),
-            BannerLine::new(context_line(&agents, &skills.skills)),
+            BannerLine::new(context_line(&agents, &commands.commands, &skills.skills)),
             BannerLine::new(session_line(session.as_ref(), agent.history().len())),
         ];
         banner.extend(warnings.into_iter().map(BannerLine::warning));
@@ -580,6 +588,7 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
                 banner,
                 git_guard,
                 code_theme,
+                commands: commands.commands,
                 skills: skills.skills,
             },
         )
@@ -614,6 +623,8 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
         if line.is_empty() {
             continue;
         }
+        let expanded = harness_core::expand_command(&commands.commands, line);
+        let line = expanded.as_deref().unwrap_or(line);
 
         // Keep the session alive on failures such as network errors.
         let res = prompt_and_persist(
@@ -774,19 +785,49 @@ fn auth_line(model: &str, credential: Option<(AdapterKind, CredentialSource)>) -
     }
 }
 
-fn context_line(agents: &[PathBuf], skills: &[Skill]) -> String {
+fn context_line(agents: &[PathBuf], commands: &[Command], skills: &[Skill]) -> String {
     let mut line = if agents.is_empty() {
         format!("context: no {}", harness_core::AGENTS_FILE)
     } else {
         let paths: Vec<_> = agents.iter().map(|p| tilde(p)).collect();
         format!("context: {}", paths.join(", "))
     };
-    match skills.len() {
-        0 => {}
-        1 => line.push_str(" · 1 skill"),
-        n => line.push_str(&format!(" · {n} skills")),
+    for (count, what) in [(commands.len(), "command"), (skills.len(), "skill")] {
+        match count {
+            0 => {}
+            1 => line.push_str(&format!(" · 1 {what}")),
+            n => line.push_str(&format!(" · {n} {what}s")),
+        }
     }
     line
+}
+
+/// Drop the custom commands a command of kl hides, returning warnings
+/// about them and about the skills a command hides.
+fn clash_warnings(commands: &mut Vec<Command>, skills: &[Skill]) -> Vec<String> {
+    let mut warnings = Vec::new();
+    commands.retain(|Command { name, .. }| {
+        let builtin = harness_tui::is_builtin(name);
+        if builtin {
+            warnings.push(format!(
+                "the command {name} is not used: /{name} is a command of kl"
+            ));
+        }
+        !builtin
+    });
+    for skill in skills {
+        let name = &skill.name;
+        if harness_tui::is_builtin(name) {
+            warnings.push(format!(
+                "/{name} runs the command of kl, not the skill {name}"
+            ));
+        } else if commands.iter().any(|command| command.name == *name) {
+            warnings.push(format!(
+                "/{name} runs the custom command {name}, not the skill {name}"
+            ));
+        }
+    }
+    warnings
 }
 
 fn session_line(session: Option<&Session>, messages: usize) -> String {
