@@ -462,74 +462,131 @@ enum SummaryEntryLight {
     Usage {},
 }
 
-/// Stream a single session file line by line to extract its [`SessionSummary`]
-/// without retaining full message payloads in memory.
-fn summarize_file(path: &Path, modified: SystemTime) -> Option<SessionSummary> {
-    if !path.is_file() {
-        return None;
-    }
-    let file = File::open(path).ok()?;
-    let meta = file.metadata().ok()?;
-    if !meta.is_file() || meta.len() > MAX_SESSION_BYTES as u64 {
-        return None;
+/// The lines of a session file that hold something, read one at a time
+/// up to [`MAX_SESSION_BYTES`].
+struct Lines<'a> {
+    path: &'a Path,
+    reader: BufReader<io::Take<File>>,
+    buf: Vec<u8>,
+    /// Bytes read so far.
+    read: usize,
+    /// Lines given so far.
+    count: usize,
+    /// Whether the last line read, blank or not, ends with a newline. The
+    /// one of a file cut by a crash does not.
+    newline: bool,
+}
+
+impl<'a> Lines<'a> {
+    fn open(path: &'a Path) -> Result<Self, Error> {
+        if !path.is_file() {
+            return Err(format!("{}: not a regular file", path.display()).into());
+        }
+        let file = File::open(path)?;
+        let meta = file.metadata()?;
+        if !meta.is_file() {
+            return Err(format!("{}: not a regular file", path.display()).into());
+        }
+        let lines = Self {
+            path,
+            reader: BufReader::new(file.take(MAX_SESSION_BYTES as u64 + 1)),
+            buf: Vec::new(),
+            read: 0,
+            count: 0,
+            newline: true,
+        };
+        if meta.len() > MAX_SESSION_BYTES as u64 {
+            return Err(lines.too_large());
+        }
+        Ok(lines)
     }
 
-    let mut reader = BufReader::new(file.take(MAX_SESSION_BYTES as u64 + 1));
-    let mut buf = Vec::new();
-    let mut total_read = 0usize;
+    fn too_large(&self) -> Error {
+        format!(
+            "{}: session exceeds {} MiB limit",
+            self.path.display(),
+            MAX_SESSION_BYTES >> 20
+        )
+        .into()
+    }
 
-    let (id, mut model, created_at) = loop {
-        buf.clear();
-        let n = reader.read_until(b'\n', &mut buf).ok()?;
-        if n == 0 {
-            return None;
+    /// The next line that is not blank, and where it ends in the file,
+    /// its newline left out.
+    fn next_line(&mut self) -> Result<Option<(Cow<'_, str>, usize)>, Error> {
+        loop {
+            self.buf.clear();
+            let n = self.reader.read_until(b'\n', &mut self.buf)?;
+            if n == 0 {
+                return Ok(None);
+            }
+            self.read += n;
+            self.newline = self.buf.ends_with(b"\n");
+            if self.read > MAX_SESSION_BYTES {
+                return Err(self.too_large());
+            }
+            if self.buf.iter().any(|b| !b.is_ascii_whitespace()) {
+                break;
+            }
         }
-        total_read += n;
-        if total_read > MAX_SESSION_BYTES {
-            return None;
-        }
-        if !buf.iter().any(|b| !b.is_ascii_whitespace()) {
-            continue;
-        }
-        let line = String::from_utf8_lossy(&buf);
+        self.count += 1;
+        let end = self.read - usize::from(self.newline);
+        Ok(Some((String::from_utf8_lossy(&self.buf), end)))
+    }
+
+    /// The header the file starts with, and where it ends.
+    fn header(&mut self) -> Result<(SessionMeta, usize), Error> {
+        let path = self.path;
+        let Some((line, end)) = self.next_line()? else {
+            return Err(format!("{}: empty session file", path.display()).into());
+        };
         let SessionEntry::Header {
             version,
             id,
+            cwd,
             model,
             created_at,
-            ..
-        } = serde_json::from_str(line.trim()).ok()?
+        } = serde_json::from_str(line.trim())
+            .map_err(|e| format!("{}: invalid session header: {e}", path.display()))?
         else {
-            return None;
+            return Err(format!("{}: missing session header", path.display()).into());
         };
         if version != FORMAT_VERSION {
-            return None;
+            return Err(
+                format!("{}: unsupported session version {version}", path.display()).into(),
+            );
         }
-        break (id, model, created_at);
-    };
+        let meta = SessionMeta {
+            id,
+            path: path.to_path_buf(),
+            cwd,
+            model,
+            created_at,
+        };
+        Ok((meta, end))
+    }
+}
+
+/// Stream a single session file line by line to extract its [`SessionSummary`]
+/// without retaining full message payloads in memory.
+fn summarize_file(path: &Path, modified: SystemTime) -> Option<SessionSummary> {
+    let mut lines = Lines::open(path).ok()?;
+    let (meta, _) = lines.header().ok()?;
+    let SessionMeta {
+        id,
+        mut model,
+        created_at,
+        ..
+    } = meta;
 
     let mut message_count = 0usize;
     let mut first_prompt = None;
     let mut saw_error = false;
 
-    loop {
-        buf.clear();
-        let n = reader.read_until(b'\n', &mut buf).ok()?;
-        if n == 0 {
-            break;
-        }
-        total_read += n;
-        if total_read > MAX_SESSION_BYTES {
-            return None;
-        }
-        if !buf.iter().any(|b| !b.is_ascii_whitespace()) {
-            continue;
-        }
+    while let Some((line, _)) = lines.next_line().ok()? {
         // Only a corrupt final line (crash tail) is recoverable.
         if saw_error {
             return None;
         }
-        let line = String::from_utf8_lossy(&buf);
         let trimmed = line.trim();
         if first_prompt.is_some() {
             match serde_json::from_str::<SummaryEntryLight>(trimmed) {
@@ -664,64 +721,19 @@ fn write_entry(writer: &mut impl Write, entry: &SessionEntryRef<'_>) -> io::Resu
 }
 
 fn load_file(path: &Path) -> Result<SessionData, Error> {
-    if !path.is_file() {
-        return Err(format!("{}: not a regular file", path.display()).into());
-    }
-    let file = File::open(path)?;
-    let meta = file.metadata()?;
-    if !meta.is_file() {
-        return Err(format!("{}: not a regular file", path.display()).into());
-    }
-    if meta.len() > MAX_SESSION_BYTES as u64 {
-        return Err(format!(
-            "{}: session exceeds {} MiB limit",
-            path.display(),
-            MAX_SESSION_BYTES >> 20
-        )
-        .into());
-    }
-
-    let mut raw = Vec::with_capacity(meta.len() as usize);
-    file.take(MAX_SESSION_BYTES as u64 + 1)
-        .read_to_end(&mut raw)?;
-    if raw.len() > MAX_SESSION_BYTES {
-        return Err(format!(
-            "{}: session exceeds {} MiB limit",
-            path.display(),
-            MAX_SESSION_BYTES >> 20
-        )
-        .into());
-    }
-
-    let mut lines = split_byte_lines(&raw).enumerate().peekable();
-    let Some((_, (first_bytes, first_end))) = lines.next() else {
-        return Err(format!("{}: empty session file", path.display()).into());
-    };
-    let first = String::from_utf8_lossy(first_bytes);
-    let SessionEntry::Header {
-        version,
-        id,
-        cwd,
-        mut model,
-        created_at,
-    } = serde_json::from_str(first.trim())
-        .map_err(|e| format!("{}: invalid session header: {e}", path.display()))?
-    else {
-        return Err(format!("{}: missing session header", path.display()).into());
-    };
-    if version != FORMAT_VERSION {
-        return Err(format!("{}: unsupported session version {version}", path.display()).into());
-    }
+    let mut lines = Lines::open(path)?;
+    let (mut meta, mut last_valid_end) = lines.header()?;
 
     let mut messages = Vec::new();
     let mut usage = TokenUsage::default();
     let mut context = 0;
-    let mut last_valid_end = first_end;
-    let mut truncated_tail = false;
+    let mut corrupt = None;
 
-    while let Some((idx, (line_bytes, line_end))) = lines.next() {
-        let is_last = lines.peek().is_none();
-        let line = String::from_utf8_lossy(line_bytes);
+    while let Some((line, line_end)) = lines.next_line()? {
+        // Only a half-written last line, left by a crash, is recovered.
+        if let Some(err) = corrupt {
+            return Err(err);
+        }
         match serde_json::from_str::<SessionEntry>(line.trim()) {
             Ok(SessionEntry::Message { message }) => {
                 messages.push(message);
@@ -751,65 +763,27 @@ fn load_file(path: &Path) -> Result<SessionData, Error> {
                 last_valid_end = line_end;
             }
             Ok(SessionEntry::Model { model: next }) => {
-                model = next;
+                meta.model = next;
                 last_valid_end = line_end;
             }
             Ok(SessionEntry::Header { .. }) => {
                 last_valid_end = line_end;
             }
-            // Recover from a half-written trailing line left by a crash.
-            Err(_) if is_last => {
-                truncated_tail = true;
-                break;
-            }
             Err(e) => {
-                return Err(
-                    format!("{}:{}: corrupt session entry: {e}", path.display(), idx + 1).into(),
-                )
+                let at = format!("{}:{}", path.display(), lines.count);
+                corrupt = Some(format!("{at}: corrupt session entry: {e}").into());
             }
         }
     }
 
-    let missing_newline = !raw.ends_with(b"\n");
-    let repair_len = (truncated_tail || missing_newline).then_some(last_valid_end as u64);
+    let repair_len = (corrupt.is_some() || !lines.newline).then_some(last_valid_end as u64);
 
     Ok(SessionData {
-        meta: SessionMeta {
-            id,
-            path: path.to_path_buf(),
-            cwd,
-            model,
-            created_at,
-        },
+        meta,
         messages,
         usage,
         context,
         repair_len,
-    })
-}
-
-/// Iterate non-empty lines of `raw`, yielding `(line_bytes, end_offset_without_nl)`.
-fn split_byte_lines(raw: &[u8]) -> impl Iterator<Item = (&[u8], usize)> {
-    let mut pos = 0usize;
-    std::iter::from_fn(move || {
-        while pos < raw.len() {
-            let start = pos;
-            let end = match memchr::memchr(b'\n', &raw[pos..]) {
-                Some(rel) => {
-                    pos += rel + 1;
-                    start + rel
-                }
-                None => {
-                    pos = raw.len();
-                    raw.len()
-                }
-            };
-            let slice = &raw[start..end];
-            if slice.iter().any(|b| !b.is_ascii_whitespace()) {
-                return Some((slice, end));
-            }
-        }
-        None
     })
 }
 

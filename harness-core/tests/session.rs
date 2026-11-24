@@ -184,6 +184,29 @@ fn recovers_from_truncated_trailing_line_and_scopes_by_project() {
     );
 }
 
+#[test]
+fn appending_to_a_whole_file_only_adds_the_new_line() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(root.path(), cwd.path());
+
+    let mut writer = store.create("model-a");
+    writer
+        .append_messages(&[ChatMessage::user("first")])
+        .unwrap();
+    let before = std::fs::read_to_string(writer.path()).unwrap();
+
+    let loaded = store.latest().unwrap().expect("session");
+    let mut reopened = store.open(&loaded);
+    reopened
+        .append_messages(&[ChatMessage::user("second")])
+        .unwrap();
+    let after = std::fs::read_to_string(writer.path()).unwrap();
+    let added = after.strip_prefix(&before).expect("the file only grows");
+    assert_eq!(added.lines().count(), 1);
+    assert!(added.starts_with('{') && added.ends_with("}\n"));
+}
+
 #[tokio::test]
 async fn agent_with_history_sends_restored_turns_to_model() {
     let root = tempfile::tempdir().unwrap();
