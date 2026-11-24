@@ -133,7 +133,7 @@ impl FetchTool {
 
     async fn fetch(&self, client: &Client) -> Result<FetchOutput, String> {
         let url = Url::parse(&self.url).map_err(|e| e.to_string())?;
-        if !matches!(url.scheme(), "http" | "https") {
+        if !is_web(&url) {
             return Err("only http and https URLs are allowed".into());
         }
         let resp = client.get(url).send().await.map_err(|e| chain(&e))?;
@@ -178,6 +178,12 @@ impl FetchTool {
             incomplete,
         })
     }
+}
+
+/// Whether `url` is an http or https URL, the only ones the web tools
+/// follow.
+pub(crate) fn is_web(url: &Url) -> bool {
+    matches!(url.scheme(), "http" | "https")
 }
 
 /// At most `max` bytes of the body of `resp`, and whether more were left

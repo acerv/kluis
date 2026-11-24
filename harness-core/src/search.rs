@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::error::chain;
-use crate::fetch::{read_body, FetchTool};
+use crate::fetch::{is_web, read_body, FetchTool};
 use crate::tools::ToolError;
 
 /// Name of the tool.
@@ -184,7 +184,7 @@ fn parse_searxng(body: &[u8]) -> Result<SearchOutput, String> {
     let results = answer
         .results
         .into_iter()
-        .filter(|item| Url::parse(&item.url).is_ok_and(|u| matches!(u.scheme(), "http" | "https")))
+        .filter(|item| Url::parse(&item.url).is_ok_and(|u| is_web(&u)))
         .take(MAX_SEARCH_RESULTS)
         .map(|item| SearchResult {
             title: clean(&item.title),
@@ -246,7 +246,7 @@ fn target(href: &str, base: &Url) -> Option<String> {
         let (_, inner) = url.query_pairs().find(|(k, _)| k == "uddg")?;
         url = Url::parse(&inner).ok()?;
     }
-    matches!(url.scheme(), "http" | "https").then(|| url.into())
+    is_web(&url).then(|| url.into())
 }
 
 /// Call `f` on `node` and its descendants.
