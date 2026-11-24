@@ -158,3 +158,38 @@ fn line_mode_fails_when_a_prompt_failed() {
 
     assert_eq!(out.status.code(), Some(1), "{out:?}");
 }
+
+fn json_lines(stdout: &[u8]) -> Vec<Value> {
+    stdout
+        .split(|&b| b == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).unwrap())
+        .collect()
+}
+
+#[test]
+fn json_stream_prints_one_line_per_event() {
+    let (out, server) = run_kl(&["--json-stream", "hello"], "", 200);
+
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(server.join().unwrap(), "hello");
+    let lines = json_lines(&out.stdout);
+    let types: Vec<_> = lines.iter().map(|l| l["type"].as_str().unwrap()).collect();
+    assert_eq!(types, ["text", "usage", "result"], "{lines:?}");
+    assert_eq!(lines[0]["text"], "done");
+    assert_eq!(lines[1]["output"], 3);
+    assert_eq!(lines[2]["result"], "done");
+    assert_eq!(lines[2]["usage"]["output"], 3);
+    assert_eq!(lines[2]["session"], Value::Null);
+}
+
+#[test]
+fn json_stream_ends_with_the_error() {
+    let (out, _) = run_kl(&["--json-stream", "hello"], "", 401);
+
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let lines = json_lines(&out.stdout);
+    let last = lines.last().unwrap();
+    assert_eq!(last["type"], "error");
+    assert!(last["error"].as_str().unwrap().contains("401"), "{last}");
+}
