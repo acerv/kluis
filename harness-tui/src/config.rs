@@ -32,6 +32,10 @@
 //! connect = [11434]
 //! # Allow any network, to commands too.
 //! network = false
+//! # Let the model keep commands running in the background across
+//! # prompts; a git repository they create may be used by your git before
+//! # kl disables it.
+//! background_commands = false
 //! # Processes and threads the harness and its commands may run at once.
 //! max_processes = 1024
 //! # Size of the private /tmp in bytes, or with a K, M or G suffix; a
@@ -121,6 +125,8 @@ pub struct SandboxConfig {
     pub connect: Vec<u16>,
     /// Allow any network, like `--network`.
     pub network: bool,
+    /// Background commands, like `--background-commands`.
+    pub background_commands: bool,
     /// Process and thread limit, like `--max-processes`.
     pub max_processes: Option<u64>,
     /// Private `/tmp` size in bytes, like `--tmp-size`.
@@ -141,6 +147,7 @@ impl Default for SandboxConfig {
             deny: Vec::new(),
             connect: Vec::new(),
             network: false,
+            background_commands: false,
             max_processes: Some(1024),
             tmp_size: None,
             max_memory: None,

@@ -143,6 +143,9 @@ pub fn executor(args: &Args, cwd: &Path) -> Result<(Executor, GitGuard), Error> 
         "ports"
     };
     worker_args.extend(["--network-access".to_owned(), access.to_owned()]);
+    if args.background_commands {
+        worker_args.push("--background-commands".to_owned());
+    }
     if let Some(bytes) = args.max_memory {
         worker_args.push("--max-memory".to_owned());
         worker_args.push(bytes.to_string());

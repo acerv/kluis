@@ -54,7 +54,7 @@ pub fn definitions() -> Vec<Tool> {
         LsTool::definition(),
         FindTool::definition(),
         GrepTool::definition(),
-        BashTool::definition(),
+        BashTool::definition(false),
         TodoTool::definition(),
     ]
 }

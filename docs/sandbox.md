@@ -7,8 +7,7 @@ container that shows only the folders you configure.
 
 - The current folder is writable. With `--strict` it is read-only, and
   `--no-sandbox` turns the container off.
-- `.git` stays read-only, and a new `.git` is disabled after each prompt, and
-  once more when background commands stop.
+- `.git` stays read-only, and a new `.git` is disabled after each prompt.
 - There is no network by default. You can allow all of it, or some TCP ports
   (Linux 6.7+). Allowed ports are open on every host, not only locally.
 - `$HOME` is an empty private folder that lives in memory and is gone when
@@ -25,8 +24,8 @@ container that shows only the folders you configure.
 - `kl` refuses to run as root or with sudo, even with `--no-sandbox`: root
   keeps its privileges in the container and could undo it.
 - Processes and `/tmp` are limited. Leftover programs are stopped after each
-  prompt, but the commands the model starts in the background, which are
-  stopped when `kl` exits. On low memory commands are killed first.
+  prompt, unless you allow [background commands](#background-commands). On
+  low memory commands are killed first.
 
 See [Configuration](configuration.md) for the settings that control this.
 
@@ -64,6 +63,19 @@ network: `ask_user`, `web_fetch` and `web_search`. `web_fetch` and
 Running a file of unknown format makes the kernel run `modprobe` for a
 `binfmt-XXXX` module, outside the sandbox. Only a host setting can stop it:
 `kernel.modprobe` or `kernel.modules_disabled`.
+
+## Background commands
+
+`--background-commands`, or `background_commands = true` in `[sandbox]`, lets
+the model start commands that keep running across prompts, such as a dev
+server or a watcher. They stay in the sandbox with its limits and are stopped
+when `kl` exits.
+
+They are off by default because nothing else runs in the sandbox between
+prompts. A background command can create a git repository at any time:
+`kl` disables new ones after every prompt while such commands run, and once
+more when they stop, but your git could find one in between. Set git up as
+below before turning them on.
 
 ## Git safety
 

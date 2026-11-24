@@ -111,6 +111,8 @@ pub struct BashContext {
     /// Removes the files of cut outputs once dropped, when set; they stay
     /// for good otherwise.
     pub output_files: Option<OutputFiles>,
+    /// Whether commands may be started in the background.
+    pub background: bool,
     /// Commands started in the background.
     pub jobs: Jobs,
 }
@@ -141,6 +143,7 @@ impl fmt::Debug for BashContext {
             .field("pre_exec", &self.pre_exec.is_some())
             .field("env", &env)
             .field("output_files", &self.output_files.is_some())
+            .field("background", &self.background)
             .field("jobs", &self.jobs.pids())
             .finish()
     }
@@ -189,29 +192,39 @@ pub struct JobOutput {
 }
 
 impl BashTool {
-    /// JSON Schema of the tool input.
-    pub fn schema() -> Value {
-        json!({
+    /// JSON Schema of the tool input, with `background` when it may be
+    /// set.
+    pub fn schema(background: bool) -> Value {
+        let mut schema = json!({
             "type": "object",
             "properties": {
                 "command": { "type": "string" },
-                "timeout": { "type": "integer", "minimum": 1 },
-                "background": { "type": "boolean" }
+                "timeout": { "type": "integer", "minimum": 1 }
             },
             "required": ["command"]
-        })
+        });
+        if background {
+            schema["properties"]["background"] = json!({ "type": "boolean" });
+        }
+        schema
     }
 
-    /// The `bash` tool, as sent to the model.
-    pub fn definition() -> Tool {
+    /// The `bash` tool, as sent to the model, offering `background` when
+    /// it may be set.
+    pub fn definition(background: bool) -> Tool {
+        let mut description = format!(
+            "Run a bash command and return its exit code and output. \
+             Optionally set timeout in seconds (default {DEFAULT_BASH_TIMEOUT})."
+        );
+        if background {
+            description.push_str(
+                " Set background to keep it running, as a server: you get its \
+                 pid and a file with its output; stop it with `kill -- -PID`.",
+            );
+        }
         Tool::new("bash")
-            .with_description(format!(
-                "Run a bash command and return its exit code and output. \
-                 Optionally set timeout in seconds (default {DEFAULT_BASH_TIMEOUT}). \
-                 Set background to keep it running, as a server: you get its \
-                 pid and a file with its output; stop it with `kill -- -PID`."
-            ))
-            .with_schema(Self::schema())
+            .with_description(description)
+            .with_schema(Self::schema(background))
     }
 
     /// Run the command with `bash -c`.
@@ -314,8 +327,12 @@ impl BashTool {
     /// Start the command in `cwd` and return at once, leaving it running
     /// in its own session, without time limit, until it ends, the host
     /// kills it, or the last clone of `ctx.jobs` is dropped. Its cleaned
-    /// output goes to a file. `timeout` does not apply.
+    /// output goes to a file. `timeout` does not apply. Fails unless
+    /// `ctx.background` allows it.
     pub async fn start_in(self, cwd: &Path, ctx: &BashContext) -> Result<JobOutput, ToolError> {
+        if !ctx.background {
+            return Err(ToolError::new("background commands are not enabled"));
+        }
         check_dir(cwd).await?;
         let file = Builder::new()
             .prefix("harness-job-")

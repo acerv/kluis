@@ -1049,7 +1049,7 @@ fn background_commands_outlive_the_prompt_until_kl_exits() {
         }),
     ]);
     let out = Command::new(env!("CARGO_BIN_EXE_kl"))
-        .args(["--model", "genai_1::test-model"])
+        .args(["--model", "genai_1::test-model", "--background-commands"])
         .current_dir(cwd.path())
         .env("HOME", home.path())
         .env("GENAI_1_ENDPOINT", format!("http://127.0.0.1:{port}/v1/"))

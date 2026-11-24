@@ -35,9 +35,16 @@ fn alive(pid: &str) -> bool {
 
 #[test]
 fn definition() {
-    let tool = BashTool::definition();
+    let tool = BashTool::definition(false);
     assert_eq!(tool.name.as_ref(), "bash");
-    assert_eq!(tool.schema, Some(BashTool::schema()));
+    assert_eq!(tool.schema, Some(BashTool::schema(false)));
+    assert!(!tool.description.unwrap().contains("background"));
+    let schema = BashTool::schema(false);
+    assert!(schema["properties"].get("background").is_none());
+
+    let tool = BashTool::definition(true);
+    assert_eq!(tool.schema, Some(BashTool::schema(true)));
+    assert!(tool.description.unwrap().contains("background"));
 }
 
 #[tokio::test]
@@ -421,6 +428,25 @@ async fn eventually(mut done: impl FnMut() -> bool) -> bool {
     true
 }
 
+/// A context that allows background commands.
+fn jobs_ctx() -> BashContext {
+    BashContext {
+        background: true,
+        ..BashContext::default()
+    }
+}
+
+#[tokio::test]
+async fn background_commands_are_refused_unless_allowed() {
+    let ctx = BashContext::default();
+    let err = job("true")
+        .start_in(Path::new("."), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.message.contains("not enabled"), "{err}");
+    assert!(ctx.jobs.pids().is_empty());
+}
+
 fn group_alive(pid: u32) -> bool {
     std::process::Command::new("kill")
         .args(["-0", "--", &format!("-{pid}")])
@@ -432,7 +458,7 @@ fn group_alive(pid: u32) -> bool {
 
 #[tokio::test]
 async fn background_command_returns_at_once_and_logs_its_output() {
-    let ctx = BashContext::default();
+    let ctx = jobs_ctx();
     let start = Instant::now();
     let out = job("printf '\\033[31mred\\033[0m\\n'; sleep 30")
         .start_in(Path::new("."), &ctx)
@@ -451,7 +477,7 @@ async fn background_command_returns_at_once_and_logs_its_output() {
 
 #[tokio::test]
 async fn background_command_that_ends_leaves_the_jobs() {
-    let ctx = BashContext::default();
+    let ctx = jobs_ctx();
     let out = job("echo done")
         .start_in(Path::new("."), &ctx)
         .await
@@ -466,7 +492,7 @@ async fn background_command_that_ends_leaves_the_jobs() {
 async fn background_commands_stop_with_the_last_context() {
     let ctx = BashContext {
         output_files: Some(OutputFiles::default()),
-        ..BashContext::default()
+        ..jobs_ctx()
     };
     let out = job("sleep 30 & sleep 30")
         .start_in(Path::new("."), &ctx)
@@ -484,7 +510,7 @@ async fn background_commands_stop_with_the_last_context() {
 async fn background_output_file_restarts_when_full() {
     let ctx = BashContext {
         output_files: Some(OutputFiles::default()),
-        ..BashContext::default()
+        ..jobs_ctx()
     };
     let size = MAX_BASH_LOG_BYTES + 100;
     let out = job(&format!(

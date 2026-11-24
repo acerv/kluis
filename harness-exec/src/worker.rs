@@ -19,13 +19,19 @@ type InFlightMap = Arc<Mutex<HashMap<u64, (u64, oneshot::Sender<()>)>>>;
 
 /// Run the NDJSON tool worker on `stdin`/`stdout` in `cwd`.
 ///
-/// `below_init` tells whether it runs below the container's init (see
+/// `background` lets commands be started in the background. `below_init`
+/// tells whether it runs below the container's init (see
 /// [`harness_sandbox::start_init`]), where it can stop what commands leave
 /// running.
 ///
 /// Refuses to run when `stdin` is an interactive terminal so accidentally
 /// invoking the internal worker mode fails immediately instead of hanging.
-pub async fn run_worker(cwd: PathBuf, max_memory: Option<u64>, below_init: bool) -> io::Result<()> {
+pub async fn run_worker(
+    cwd: PathBuf,
+    max_memory: Option<u64>,
+    background: bool,
+    below_init: bool,
+) -> io::Result<()> {
     if io::stdin().is_terminal() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -34,7 +40,10 @@ pub async fn run_worker(cwd: PathBuf, max_memory: Option<u64>, below_init: bool)
     }
     let mut ctx = ToolContext {
         cwd,
-        bash: BashContext::default(),
+        bash: BashContext {
+            background,
+            ..BashContext::default()
+        },
     };
     if let Some(bytes) = max_memory {
         ctx.bash.pre_exec = Some(Arc::new(move || harness_sandbox::limit_memory(bytes)));
