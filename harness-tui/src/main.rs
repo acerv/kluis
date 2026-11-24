@@ -383,7 +383,7 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
     let adapters = auth.configured_adapters();
     let oauth = auth.oauth_logins();
     let agents = harness_core::find_agents_files(&cwd, config::agents_path().as_deref());
-    let system = harness_core::system_prompt(&cwd, &agents);
+    let system = harness_core::system_prompt(&cwd, &agents, &[]);
     let store = (!args.no_session)
         .then(config::sessions_dir)
         .flatten()

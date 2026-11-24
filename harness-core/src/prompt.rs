@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 
 use rustix::fs::OFlags;
 
+use crate::skills::Skill;
+
 /// File name searched for project and global agent instructions.
 pub const AGENTS_FILE: &str = "AGENTS.md";
 
@@ -50,30 +52,30 @@ pub fn find_agents_files(cwd: &Path, global: Option<&Path>) -> Vec<PathBuf> {
         push_if_file(path, &mut seen, &mut out);
     }
 
-    let mut ancestors = Vec::new();
-    let mut found_git = false;
-    for dir in cwd.ancestors() {
-        ancestors.push(dir);
-        if dir.join(".git").exists() {
-            found_git = true;
-            break;
-        }
-    }
-
-    if found_git {
-        for dir in ancestors.into_iter().rev() {
-            push_if_file(dir.join(AGENTS_FILE), &mut seen, &mut out);
-        }
-    } else {
-        push_if_file(cwd.join(AGENTS_FILE), &mut seen, &mut out);
+    for dir in project_dirs(cwd) {
+        push_if_file(dir.join(AGENTS_FILE), &mut seen, &mut out);
     }
 
     out
 }
 
+/// The folders from the enclosing git repository root down to `cwd`
+/// (inclusive), or only `cwd` when it is not inside a git repository.
+pub(crate) fn project_dirs(cwd: &Path) -> Vec<&Path> {
+    let mut dirs = Vec::new();
+    for dir in cwd.ancestors() {
+        dirs.push(dir);
+        if dir.join(".git").exists() {
+            dirs.reverse();
+            return dirs;
+        }
+    }
+    vec![cwd]
+}
+
 /// Build the default system prompt for `cwd`, appending any readable,
-/// non-empty `AGENTS.md` files in `agents_files`.
-pub fn system_prompt(cwd: &Path, agents_files: &[PathBuf]) -> String {
+/// non-empty `AGENTS.md` files in `agents_files` and the list of `skills`.
+pub fn system_prompt(cwd: &Path, agents_files: &[PathBuf], skills: &[Skill]) -> String {
     let mut prompt = format!(
         "You are a coding assistant running in a Linux terminal.\n\
          \n\
@@ -100,7 +102,7 @@ pub fn system_prompt(cwd: &Path, agents_files: &[PathBuf]) -> String {
             break;
         }
         let limit = MAX_AGENTS_BYTES.min(remaining);
-        let Some((bytes, truncated)) = read_agents_bytes(path, limit) else {
+        let Some((bytes, truncated)) = read_capped(path, limit) else {
             continue;
         };
         let text = String::from_utf8_lossy(&bytes);
@@ -119,6 +121,24 @@ pub fn system_prompt(cwd: &Path, agents_files: &[PathBuf]) -> String {
         }
     }
 
+    if !skills.is_empty() {
+        prompt.push_str(
+            "\n\n## Skills\n\n\
+             Skills hold instructions for specific tasks. When a task matches a skill, \
+             read its file first and follow it; paths in it are relative to its folder. \
+             A message starting with `/<name>` asks to use that skill.\n",
+        );
+        for skill in skills {
+            let _ = write!(
+                prompt,
+                "\n- {}: {} ({})",
+                skill.name,
+                skill.description,
+                skill.path.display()
+            );
+        }
+    }
+
     prompt
 }
 
@@ -133,7 +153,9 @@ fn push_if_file(path: PathBuf, seen: &mut HashSet<PathBuf>, out: &mut Vec<PathBu
     }
 }
 
-fn read_agents_bytes(path: &Path, limit: usize) -> Option<(Vec<u8>, bool)> {
+/// Up to `limit` bytes of the regular file `path`, and whether it holds
+/// more.
+pub(crate) fn read_capped(path: &Path, limit: usize) -> Option<(Vec<u8>, bool)> {
     // Never through a symlink, even one swapped in after the file was
     // found; non-blocking, so a FIFO cannot hang the open.
     let file = OpenOptions::new()

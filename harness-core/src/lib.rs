@@ -21,6 +21,7 @@ mod prompt;
 mod retry;
 mod search;
 mod session;
+mod skills;
 pub mod tools;
 
 pub use agent::{Agent, Error, Steering, Thinking, DEFAULT_AUTO_COMPACT_TOKENS, DEFAULT_MAX_TURNS};
@@ -36,4 +37,5 @@ pub use session::{
     SessionData, SessionEntry, SessionMeta, SessionStore, SessionSummary, SessionWriter,
     TokenUsage, MAX_SESSION_BYTES,
 };
+pub use skills::{find_skills, Skill, Skills, MAX_SKILLS, SKILLS_DIR, SKILL_FILE};
 pub use tools::ToolDetails;
