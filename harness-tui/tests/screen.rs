@@ -142,6 +142,33 @@ fn resize_keeps_output_above_prompt() {
 }
 
 #[test]
+fn narrower_terminal_rewraps_output() {
+    const PROMPT: &str = "Type a message";
+    // The end of a `/help` line that a 40 columns terminal cuts.
+    const TAIL: &str = "low ... max)";
+    let home = tempfile::tempdir().unwrap();
+    let (master, slave) = openpty(60, 80);
+    let mut child = spawn_tui(home.path(), &slave);
+    let mut term = Emulator::new(&master, 60, 80);
+
+    term.wait_for(PROMPT);
+    term.type_text("/help\r");
+    term.wait_for("Ctrl-D");
+    term.resize(&master, 60, 40);
+    // The emulator cuts lines instead of rewrapping them: the tail shows only
+    // if the output is printed again at the new width.
+    term.wait_for(TAIL);
+    let screen = term.rows().join("\n");
+    assert_eq!(screen.matches("Ctrl-D").count(), 1, "{screen}");
+    let rule = term.row_of("────").unwrap();
+    assert!(term.row_of("Ctrl-D").unwrap() < rule, "{screen}");
+    assert!(rule < term.row_of(PROMPT).unwrap(), "{screen}");
+
+    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+    child.wait().unwrap();
+}
+
+#[test]
 fn banner_shows_startup_info() {
     let home = tempfile::tempdir().unwrap();
     let (master, slave) = openpty(24, 100);

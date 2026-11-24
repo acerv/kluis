@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
+use std::collections::VecDeque;
 use std::io::{self, Stdout, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Once};
@@ -9,13 +10,13 @@ use std::time::Duration;
 
 use crossterm::cursor::{MoveTo, Show};
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste, Event};
-use crossterm::execute;
-use crossterm::style::Print;
+use crossterm::style::{Print, PrintStyledContent, StyledContent};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, BeginSynchronizedUpdate, Clear, ClearType,
     EndSynchronizedUpdate, SetTitle,
 };
-use ratatui::backend::{Backend, CrosstermBackend};
+use crossterm::{execute, queue};
+use ratatui::backend::{Backend, CrosstermBackend, IntoCrossterm};
 use ratatui::layout::Size;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
@@ -29,6 +30,9 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::app::App;
 
 const EVENT_POLL: Duration = Duration::from_millis(10);
+
+/// Most lines kept to print again when the terminal width changes.
+const MAX_TRANSCRIPT_LINES: usize = 10_000;
 
 /// Save the terminal title on the terminal's stack (xterm), to put it back
 /// on exit; terminals without the stack ignore it.
@@ -110,6 +114,9 @@ pub struct InlineTerminal {
     /// still tells where the viewport is once the terminal resizes.
     cursor_row: u16,
     pending_clear: bool,
+    /// The last lines written above the viewport, unwrapped, to print them
+    /// again at a new terminal width.
+    transcript: VecDeque<Line<'static>>,
     /// The terminal title set last.
     title: String,
     signals: JoinHandle<()>,
@@ -144,6 +151,7 @@ impl InlineTerminal {
                     size,
                     cursor_row: area.y,
                     pending_clear: false,
+                    transcript: VecDeque::new(),
                     title: String::new(),
                     signals,
                 })
@@ -171,10 +179,12 @@ impl InlineTerminal {
     /// pending scrollback lines above it, and redraw `app` inside a single
     /// synchronized terminal update.
     ///
-    /// After a terminal resize the viewport follows the cursor, which the
-    /// terminal moves along with the text, so the output above stays in
-    /// place. Ratatui's own resize instead clears the screen and moves the
-    /// viewport to the top when the terminal gets narrower.
+    /// When the terminal width changes, the screen and scrollback are
+    /// cleared and the transcript is printed again at the new width: a
+    /// terminal that rewraps its text also rewraps the old viewport, in its
+    /// own way, leaving pieces of it behind. When only the height changes,
+    /// the viewport follows the cursor, which the terminal moves along with
+    /// the text, so the output above stays in place.
     pub fn draw_app(&mut self, app: &mut App) -> io::Result<()> {
         execute!(io::stdout(), BeginSynchronizedUpdate)?;
         let sync = scopeguard::guard((), |()| {
@@ -183,18 +193,10 @@ impl InlineTerminal {
         let res = (|| -> io::Result<()> {
             let size = self.terminal.size()?;
             let desired = app.viewport_height(size.width).min(size.height.max(1));
-            if size != self.size {
-                self.size = size;
-                let top = self.follow_cursor(size)?;
-                execute!(
-                    io::stdout(),
-                    MoveTo(0, top),
-                    Clear(ClearType::FromCursorDown)
-                )?;
-                self.recreate_viewport(desired)?;
-                self.pending_clear = false;
-            } else if self.pending_clear {
-                self.pending_clear = false;
+            if self.pending_clear {
+                self.transcript.clear();
+            }
+            if self.pending_clear || size.width != self.size.width {
                 // Purge after clearing the screen: some terminals (kitty,
                 // tmux) move a cleared screen into the scrollback.
                 execute!(
@@ -202,6 +204,15 @@ impl InlineTerminal {
                     Clear(ClearType::All),
                     Clear(ClearType::Purge),
                     MoveTo(0, 0),
+                )?;
+                print_lines(self.transcript.make_contiguous(), size.width)?;
+                self.recreate_viewport(desired)?;
+            } else if size != self.size {
+                let top = self.follow_cursor(size)?;
+                execute!(
+                    io::stdout(),
+                    MoveTo(0, top),
+                    Clear(ClearType::FromCursorDown)
                 )?;
                 self.recreate_viewport(desired)?;
             } else if desired != self.height {
@@ -213,6 +224,8 @@ impl InlineTerminal {
                 )?;
                 self.recreate_viewport(desired)?;
             }
+            self.size = size;
+            self.pending_clear = false;
 
             let title = app.title();
             if title != self.title {
@@ -220,7 +233,10 @@ impl InlineTerminal {
                 self.title = title;
             }
             let lines = app.take_scrollback();
-            flush_scrollback(&mut self.terminal, lines)?;
+            flush_scrollback(&mut self.terminal, &lines)?;
+            self.transcript.extend(lines);
+            let extra = self.transcript.len().saturating_sub(MAX_TRANSCRIPT_LINES);
+            self.transcript.drain(..extra);
             self.terminal.draw(|frame| app.render(frame))?;
             if app.take_bell() {
                 execute!(io::stdout(), Print('\x07'))?;
@@ -273,7 +289,7 @@ impl Drop for InlineTerminal {
 /// viewport, wrapping to the current terminal width.
 pub fn flush_scrollback<B: Backend>(
     terminal: &mut Terminal<B>,
-    lines: Vec<Line<'static>>,
+    lines: &[Line<'static>],
 ) -> Result<(), B::Error> {
     if lines.is_empty() {
         return Ok(());
@@ -282,7 +298,7 @@ pub fn flush_scrollback<B: Backend>(
     if width == 0 {
         return Ok(());
     }
-    let wrapped = wrap_lines(&lines, width);
+    let wrapped = wrap_lines(lines, width);
     let height = wrapped.len().min(u16::MAX as usize) as u16;
     if height == 0 {
         return Ok(());
@@ -291,6 +307,25 @@ pub fn flush_scrollback<B: Backend>(
     terminal.insert_before(height, |buf| {
         paragraph.render(buf.area, buf);
     })
+}
+
+/// Print `lines` at the cursor, wrapped to `width`, as plain terminal
+/// output: much less to write than drawing them cell by cell.
+fn print_lines(lines: &[Line<'static>], width: u16) -> io::Result<()> {
+    let mut out = io::BufWriter::new(io::stdout().lock());
+    for line in lines {
+        for row in wrap_lines(std::slice::from_ref(line), usize::from(width.max(1))) {
+            for span in &row.spans {
+                let style = row.style.patch(span.style).into_crossterm();
+                queue!(
+                    out,
+                    PrintStyledContent(StyledContent::new(style, &span.content))
+                )?;
+            }
+            queue!(out, Print("\r\n"))?;
+        }
+    }
+    out.flush()
 }
 
 /// Display width of a single Unicode character in terminal cells.
