@@ -28,7 +28,7 @@ use genai::chat::ChatMessage;
 use harness_core::tools::{is_read_only, Question};
 use harness_core::{
     Agent, Error, Event, ModelInfo, ModelList, SessionData, SessionStore, SessionSummary,
-    SessionWriter, Skill, Steering, Thinking, TokenUsage,
+    SessionWriter, Steering, Thinking, TokenUsage,
 };
 use harness_sandbox::GitGuard;
 use tokio::sync::mpsc;
@@ -247,8 +247,6 @@ pub struct RunOptions {
     pub git_guard: Option<GitGuard>,
     /// Colors of code blocks, instead of the default theme.
     pub code_theme: Option<CodeTheme>,
-    /// The skills `/<name>` asks for.
-    pub skills: Vec<Skill>,
 }
 
 /// Disable the git repositories commands created during a prompt that
@@ -309,7 +307,6 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
         banner,
         mut git_guard,
         code_theme,
-        skills,
     } = opts;
     let mut models = ModelCatalog {
         adapters,
@@ -322,7 +319,7 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
     if let Some(theme) = code_theme {
         app.set_code_theme(theme);
     }
-    app.set_skills(&skills);
+    app.set_skills(agent.skills());
     if let Ok(cwd) = std::env::current_dir() {
         app.set_workspace(cwd);
     }
