@@ -75,6 +75,10 @@
   Cancelling puts the ones left back in the editor.
 - `@path` in a prompt attaches the file, read as the `read` tool reads it
   (images included); typing `@` offers the files of the folder.
+- Ctrl-V pastes the image of the clipboard into the prompt (PNG, JPEG,
+  WebP or GIF, read with `wl-paste` on Wayland or `xclip` on X11): it shows
+  as `[Image #1]`, and goes with the prompt while the prompt names it.
+  `/retry` sends it again. Images are not saved in the session.
 - Shift+Tab switches plan mode: the model only looks around (`read`, `ls`,
   `find`, `grep`, `todo`, `web_fetch`, `web_search`, `skill`, and `task`,
   whose subagents are in plan mode too) and answers with a plan; other

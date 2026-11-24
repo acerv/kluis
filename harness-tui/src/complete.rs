@@ -162,6 +162,7 @@ pub(crate) fn help_text() -> String {
          \x20 Tab                autocomplete command\n\
          \x20 Shift+Tab          switch plan mode on or off\n\
          \x20 Up/Down            browse prompt history\n\
+         \x20 Ctrl-V             paste an image from the clipboard\n\
          \x20 Ctrl-O             toggle thinking visibility\n\
          \x20 Alt+Up/Down        select a file in /diff (also Ctrl)\n\
          \x20 PgUp/PgDn          scroll its diff\n\

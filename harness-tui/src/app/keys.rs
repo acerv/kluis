@@ -58,6 +58,13 @@ impl App {
         if key.code == KeyCode::BackTab && !self.busy {
             return self.toggle_plan();
         }
+        if key.code == KeyCode::Char('v') && key.modifiers == KeyModifiers::CONTROL {
+            if self.busy {
+                self.notice = Some("Images can be pasted once the prompt ends".to_owned());
+                return Action::Redraw;
+            }
+            return Action::PasteImage;
+        }
         if let Some(action) = self.completion_key(key) {
             return action;
         }
@@ -116,6 +123,7 @@ impl App {
                 }
                 if !self.input.is_empty() {
                     self.input.clear();
+                    self.images.clear();
                     self.completion.clear();
                     self.notice = None;
                 } else {
