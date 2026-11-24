@@ -5,7 +5,9 @@
 
 use crossterm::event::{Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers};
 use genai::adapter::AdapterKind;
-use harness_core::{Agent, Error, ModelInfo, ModelList, Thinking};
+use std::path::PathBuf;
+
+use harness_core::{export, Agent, Error, ModelInfo, ModelList, Thinking};
 
 use crate::drive::{run_compact, Ui};
 use crate::session::{short_id, Session};
@@ -28,6 +30,26 @@ pub(crate) fn retry(
     }
     app.push_info("[retrying the last prompt]");
     Some(prompt)
+}
+
+/// Write the conversation as Markdown to `path`, by default to a file of
+/// the working folder named after the session.
+fn export(path: Option<String>, agent: &Agent, app: &mut App, session: Option<&Session>) {
+    if agent.history().is_empty() {
+        app.push_info("[nothing to export]");
+        return;
+    }
+    let path = path.map_or_else(
+        || {
+            let name = session.map_or("conversation", Session::short_id);
+            PathBuf::from(format!("kl-{name}.md"))
+        },
+        PathBuf::from,
+    );
+    match export::write_markdown(&path, agent.history()) {
+        Ok(()) => app.push_info(format!("[exported to {}]", path.display())),
+        Err(err) => app.push_info(format!("[export error: {}: {err}]", path.display())),
+    }
 }
 
 /// The models the user may pick, asked to the providers once.
@@ -86,6 +108,7 @@ pub(crate) async fn handle_slash(
                 Err(err) => ui.app.push_info(format!("[copy error: {err}]")),
             },
         },
+        SlashCommand::Export(path) => export(path, agent, &mut ui.app, session.as_deref()),
         SlashCommand::New => {
             agent.clear();
             ui.app.reset_session();

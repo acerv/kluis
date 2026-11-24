@@ -88,6 +88,11 @@ const COMMANDS: &[CommandSpec] = &[
         description: "clear screen and start a new session",
     },
     CommandSpec {
+        name: "/export",
+        arg: Some("[path]"),
+        description: "write the conversation as Markdown",
+    },
+    CommandSpec {
         name: "/help",
         arg: None,
         description: "show commands and keybindings",

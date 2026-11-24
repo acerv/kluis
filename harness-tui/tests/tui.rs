@@ -1014,6 +1014,21 @@ fn live_bash_preview_and_elapsed_spinner_timer() {
 }
 
 #[test]
+fn export_command_takes_an_optional_path() {
+    let mut app = App::new("deepseek-chat", status(), Theme::new(false));
+    app.handle_event(Event::Paste("/export".into()));
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Slash(SlashCommand::Export(None))
+    );
+    app.handle_event(Event::Paste("/export notes/chat.md".into()));
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Slash(SlashCommand::Export(Some("notes/chat.md".into())))
+    );
+}
+
+#[test]
 fn copy_command_extracts_last_assistant_reply_and_formats_osc52() {
     let mut app = App::new("deepseek-chat", status(), Theme::new(false));
     app.handle_event(Event::Paste("/copy".into()));

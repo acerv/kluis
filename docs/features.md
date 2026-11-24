@@ -96,9 +96,12 @@
   with the commands. See [Using skills](#using-skills).
 - `/<command> [args]` sends a prompt template of yours from
   `~/.kluis/commands`. See [Custom commands](#custom-commands).
-- Slash commands: `/model`, `/thinking`, `/resume`, `/copy`, `/output`,
-  `/diff`, `/retry`, `/compact`, `/status`, `/new`, `/help`, `/quit`.
+- Slash commands: `/model`, `/thinking`, `/resume`, `/copy`, `/export`,
+  `/output`, `/diff`, `/retry`, `/compact`, `/status`, `/new`, `/help`, `/quit`.
 - `/retry` sends the last prompt again, dropping what it led to.
+- `/export [path]` writes the conversation as Markdown, the tool calls and
+  their results included, to `path` or to `kl-<session>.md` in the working
+  folder. It refuses to write through a symlink.
 - `/thinking` offers only the levels the model takes when its provider says
   which (Anthropic and Ollama), and falls back to `default` when a new model
   does not take the current level. Other providers get every level.
