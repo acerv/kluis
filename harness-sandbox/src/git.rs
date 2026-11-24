@@ -11,7 +11,7 @@ use rustix::fs::{renameat_with, RenameFlags, CWD};
 use rustix::io::Errno;
 
 use crate::{
-    checked, collect_git, read_mountinfo, remote_points, resolve_denied, GitScan, Sandbox,
+    checked, collect_git, read_mountinfo, remote_points, resolve_denied, GitScan, Hidden, Sandbox,
     SandboxError,
 };
 
@@ -33,7 +33,7 @@ pub struct GitGuard {
     roots: Vec<(PathBuf, PathBuf)>,
     /// Every writable path: a `.git` allowed itself is the user's choice.
     writable: Vec<PathBuf>,
-    denied: Vec<(PathBuf, bool)>,
+    denied: Vec<Hidden>,
     /// Mounts the sandbox hides, as on a network filesystem.
     hidden: Vec<PathBuf>,
     known: HashSet<PathBuf>,
