@@ -18,6 +18,10 @@ pub const TASK_TOOL: &str = "task";
 pub struct TaskTool {
     /// What the subagent is asked, which is all it knows.
     pub prompt: String,
+    /// Whether the subagent only gets the tools that change nothing.
+    /// Such tasks asked together run at the same time.
+    #[serde(default)]
+    pub read_only: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,7 +34,14 @@ impl TaskTool {
     pub fn schema() -> Value {
         json!({
             "type": "object",
-            "properties": { "prompt": { "type": "string" } },
+            "properties": {
+                "prompt": { "type": "string" },
+                "read_only": {
+                    "type": "boolean",
+                    "description": "Only read, search and fetch, changing nothing. \
+                        Read-only tasks asked together run at the same time."
+                }
+            },
             "required": ["prompt"]
         })
     }
@@ -40,7 +51,9 @@ impl TaskTool {
         Tool::new(TASK_TOOL)
             .with_description(
                 "Give a task to a subagent and get its answer. It has the same \
-                 tools but none of this conversation: say all it needs in prompt.",
+                 tools but none of this conversation: say all it needs in prompt. \
+                 For a search or a question, set read_only and ask several \
+                 tasks at once to run them in parallel.",
             )
             .with_schema(Self::schema())
     }
