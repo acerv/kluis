@@ -11,8 +11,9 @@ container that shows only the folders you configure.
 - There is no network by default. You can allow all of it, or some TCP ports
   (Linux 6.7+). Allowed ports are open on every host, not only locally.
 - `$HOME` is an empty private folder that lives in memory and is gone when
-  `kl` exits. Only the current folder and the `sandbox.read` and
-  `sandbox.write` paths below it show there. See [Home folder](#home-folder).
+  `kl` exits. Only the current folder, the `sandbox.read` and
+  `sandbox.write` paths below it and, read-only, `~/.agents/skills` show
+  there. See [Home folder](#home-folder).
 - Cloud drives, network shares and credentials in `$HOME` are hidden, even
   inside a folder you show: `~/.ssh`, `~/.aws`, `gh`, registry and AI tool
   tokens, browser profiles, shell history and more. `sandbox.deny` hides

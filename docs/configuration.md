@@ -26,8 +26,8 @@ env = ["CC", "CFLAGS"]
 
 Paths may start with `~`. Sizes take a `K`, `M` or `G` suffix.
 
-Commands see an empty `$HOME` showing only the current folder and the
-`read` and `write` paths below it: list the toolchains they need, such as
+Commands see an empty `$HOME` showing only the current folder, the
+`read` and `write` paths below it and, read-only, the global skills: list the toolchains they need, such as
 `~/.cargo` and `~/.rustup`. See [Home folder](sandbox.md#home-folder).
 
 Lists add up with the matching command-line options. Switches turn on when
