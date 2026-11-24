@@ -513,6 +513,31 @@ fn global_skills_left_out_when_a_shown_folder_holds_kluis_dir() {
 }
 
 #[test]
+fn custom_command_expanded_and_hidden_in_sandbox() {
+    let home = tempdir();
+    let dir = home.path().join(".kluis/commands");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("fix.md");
+    std::fs::write(&file, "---\ndescription: fix it\n---\nFix $ARGUMENTS now\n").unwrap();
+    let cwd = tempdir();
+
+    // The prompt is `/fix run`.
+    let result = run_bash_in(cwd.path(), home.path(), &["/fix"], &[], |_| {
+        format!("echo KLUIS=$(ls -A ~/.kluis); cat {}", file.display())
+    });
+
+    let user = result
+        .messages
+        .iter()
+        .find(|m| m["role"] == "user")
+        .unwrap();
+    assert_eq!(user["content"], "Fix run now", "{user}");
+    let output = &result.output;
+    assert!(output.contains("KLUIS=\n"), "{output}");
+    assert!(!output.contains("Fix $ARGUMENTS"), "{output}");
+}
+
+#[test]
 fn session_persists_continues_and_isolates_projects_in_sandbox() {
     let home = tempdir();
     let proj_a = tempdir();

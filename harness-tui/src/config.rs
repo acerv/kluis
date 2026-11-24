@@ -192,6 +192,11 @@ pub fn skills_dir() -> Option<PathBuf> {
         .then_some(dir)
 }
 
+/// Where custom commands are looked for: `~/.kluis/commands`.
+pub fn commands_dir() -> Option<PathBuf> {
+    Some(kluis_dir()?.join("commands"))
+}
+
 /// Where conversation sessions are stored: `~/.kluis/sessions`.
 pub fn sessions_dir() -> Option<PathBuf> {
     Some(kluis_dir()?.join("sessions"))
