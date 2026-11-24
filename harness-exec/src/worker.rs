@@ -8,12 +8,12 @@ use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use serde_json::json;
+use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::protocol::{read_line_bounded_async, reset_buf, Request, Response};
-use crate::{dispatch_raw, error_json, BashContext, ToolContext};
+use crate::{dispatch_raw, error_json, lock, BashContext, ToolContext};
 
 type InFlightMap = Arc<Mutex<HashMap<u64, (u64, oneshot::Sender<()>)>>>;
 
@@ -83,123 +83,127 @@ where
     // Signal readiness immediately so the host knows container setup succeeded.
     let _ = out_tx.send(Response::Ready);
 
-    // Every spawned task holds a clone of `tasks_done_tx` and drops it on exit,
-    // letting shutdown wait until all cancelled bash groups are reaped without
-    // retaining JoinHandles across the session.
-    let (tasks_done_tx, mut tasks_done_rx) = mpsc::channel::<()>(1);
-    let in_flight: InFlightMap = Arc::new(Mutex::new(HashMap::new()));
+    let (done_tx, mut done_rx) = mpsc::channel::<()>(1);
+    let mut tasks = Tasks {
+        out: out_tx,
+        done: done_tx,
+        in_flight: Arc::default(),
+        ctx,
+        below_init,
+        seq: 0,
+    };
     let mut reader = BufReader::new(reader);
     let mut line = Vec::new();
-    let mut seq = 0u64;
-
-    loop {
-        match read_line_bounded_async(&mut reader, &mut line).await {
-            Ok(0) => break,
-            Ok(_) => {
-                let trimmed = line.trim_ascii();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                match serde_json::from_slice::<Request>(trimmed) {
-                    Ok(Request::Call { id, name, args }) => {
-                        seq = seq.wrapping_add(1);
-                        let gen = seq;
-                        let (cancel_tx, cancel_rx) = oneshot::channel();
-                        if let Ok(mut map) = in_flight.lock() {
-                            if let Some((_, prev)) = map.insert(id, (gen, cancel_tx)) {
-                                let _ = prev.send(());
-                            }
-                        }
-                        let in_flight_ref = in_flight.clone();
-                        let out_tx_task = out_tx.clone();
-                        let ctx_task = ctx.clone();
-                        let done_token = tasks_done_tx.clone();
-                        tokio::spawn(async move {
-                            let _done = done_token;
-                            let _cleanup = scopeguard::guard((), |()| {
-                                if let Ok(mut map) = in_flight_ref.lock() {
-                                    if map.get(&id).is_some_and(|(g, _)| *g == gen) {
-                                        map.remove(&id);
-                                    }
-                                }
-                            });
-                            let chunk_tx = out_tx_task.clone();
-                            let call_fut = dispatch_raw(&name, &args, &ctx_task, |chunk| {
-                                let _ = chunk_tx.send(Response::Output {
-                                    id,
-                                    chunk: chunk.to_owned(),
-                                });
-                            });
-                            tokio::select! {
-                                (content, details) = call_fut => {
-                                    let _ = out_tx_task.send(Response::Result {
-                                        id,
-                                        content,
-                                        details,
-                                    });
-                                }
-                                _ = cancel_rx => {
-                                    // Dropping `call_fut` kills any active bash process group.
-                                    let _ = out_tx_task.send(Response::Result {
-                                        id,
-                                        content: error_json("cancelled"),
-                                        details: None,
-                                    });
-                                }
-                            }
-                        });
-                    }
-                    Ok(Request::StopBackground { id, keep_jobs }) => {
-                        let out_tx_task = out_tx.clone();
-                        let done_token = tasks_done_tx.clone();
-                        let jobs = ctx.bash.jobs.clone();
-                        tokio::spawn(async move {
-                            let _done = done_token;
-                            let had_jobs = jobs.stop_unless(keep_jobs);
-                            if below_init {
-                                let keep = jobs.pids();
-                                let _ = tokio::task::spawn_blocking(move || {
-                                    harness_sandbox::stop_others(&keep)
-                                })
-                                .await;
-                            }
-                            let _ = out_tx_task.send(Response::Result {
-                                id,
-                                content: json!({ "jobs": had_jobs }).to_string(),
-                                details: None,
-                            });
-                        });
-                    }
-                    Ok(Request::Cancel { id }) => {
-                        if let Ok(mut map) = in_flight.lock() {
-                            if let Some((_, cancel_tx)) = map.remove(&id) {
-                                let _ = cancel_tx.send(());
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        let _ = out_tx.send(Response::Result {
-                            id: 0,
-                            content: error_json(format_args!("invalid request: {err}")),
-                            details: None,
-                        });
-                    }
-                }
-            }
-            Err(_) => break,
+    while let Ok(1..) = read_line_bounded_async(&mut reader, &mut line).await {
+        match serde_json::from_slice::<Request>(line.trim_ascii()) {
+            Ok(Request::Call { id, name, args }) => tasks.call(id, name, args),
+            Ok(Request::StopBackground { id, keep_jobs }) => tasks.stop_background(id, keep_jobs),
+            Ok(Request::Cancel { id }) => tasks.cancel(id),
+            // The host writes every request itself: a line that is not
+            // one has no call waiting for an answer.
+            Err(_) => {}
         }
     }
 
     // Host closed stdin: cancel all active calls and wait for every task to
     // run its drop guards (reaping bash process groups) before exiting.
-    if let Ok(mut map) = in_flight.lock() {
-        for (_, (_, cancel_tx)) in map.drain() {
+    let Tasks {
+        out,
+        done,
+        in_flight,
+        ..
+    } = tasks;
+    for (_, (_, cancel_tx)) in lock(&in_flight).drain() {
+        let _ = cancel_tx.send(());
+    }
+    drop(done);
+    let _ = done_rx.recv().await;
+    drop(out);
+    let _ = writer_task.await;
+    Ok(())
+}
+
+/// What the tasks answering the requests share.
+struct Tasks {
+    out: mpsc::UnboundedSender<Response>,
+    /// Every task holds a clone and drops it on exit, letting shutdown wait
+    /// until all cancelled bash groups are reaped without retaining
+    /// JoinHandles across the session.
+    done: mpsc::Sender<()>,
+    in_flight: InFlightMap,
+    ctx: ToolContext,
+    below_init: bool,
+    /// Tells apart the calls that reuse an id.
+    seq: u64,
+}
+
+impl Tasks {
+    /// Run the tool call `id` in a task, until it ends or is cancelled.
+    fn call(&mut self, id: u64, name: String, args: Value) {
+        self.seq = self.seq.wrapping_add(1);
+        let gen = self.seq;
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        if let Some((_, prev)) = lock(&self.in_flight).insert(id, (gen, cancel_tx)) {
+            let _ = prev.send(());
+        }
+        let in_flight = self.in_flight.clone();
+        let out = self.out.clone();
+        let ctx = self.ctx.clone();
+        let done = self.done.clone();
+        tokio::spawn(async move {
+            let _done = done;
+            let _cleanup = scopeguard::guard((), |()| {
+                let mut map = lock(&in_flight);
+                if map.get(&id).is_some_and(|(g, _)| *g == gen) {
+                    map.remove(&id);
+                }
+            });
+            let chunks = out.clone();
+            let call = dispatch_raw(&name, &args, &ctx, |chunk| {
+                let _ = chunks.send(Response::Output {
+                    id,
+                    chunk: chunk.to_owned(),
+                });
+            });
+            let (content, details) = tokio::select! {
+                result = call => result,
+                // Dropping `call` kills any active bash process group.
+                _ = cancel_rx => (error_json("cancelled"), None),
+            };
+            let _ = out.send(Response::Result {
+                id,
+                content,
+                details,
+            });
+        });
+    }
+
+    /// Stop what commands left running in the background, in a task.
+    fn stop_background(&self, id: u64, keep_jobs: bool) {
+        let out = self.out.clone();
+        let done = self.done.clone();
+        let jobs = self.ctx.bash.jobs.clone();
+        let below_init = self.below_init;
+        tokio::spawn(async move {
+            let _done = done;
+            let had_jobs = jobs.stop_unless(keep_jobs);
+            if below_init {
+                let keep = jobs.pids();
+                let _ =
+                    tokio::task::spawn_blocking(move || harness_sandbox::stop_others(&keep)).await;
+            }
+            let _ = out.send(Response::Result {
+                id,
+                content: json!({ "jobs": had_jobs }).to_string(),
+                details: None,
+            });
+        });
+    }
+
+    /// Cancel the call `id`, if it still runs.
+    fn cancel(&self, id: u64) {
+        if let Some((_, cancel_tx)) = lock(&self.in_flight).remove(&id) {
             let _ = cancel_tx.send(());
         }
     }
-    drop(tasks_done_tx);
-    let _ = tasks_done_rx.recv().await;
-    drop(out_tx);
-    let _ = writer_task.await;
-    Ok(())
 }
