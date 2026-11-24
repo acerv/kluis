@@ -33,7 +33,7 @@ fn finds_global_and_project_skills_sorted_by_name() {
     let path = skill(&global, "review", &front("review", "Review a patch"));
     skill(&cwd.join(SKILLS_DIR), "build", &front("build", "Build it"));
 
-    let found = find_skills(&cwd, Some(&global));
+    let found = find_skills(&cwd, std::slice::from_ref(&global));
     assert_eq!(names(&found.skills), ["build", "review"]);
     assert_eq!(found.skills[1].description, "Review a patch");
     assert_eq!(found.skills[1].path, path);
@@ -51,10 +51,26 @@ fn more_specific_skill_wins() {
     skill(&repo.join(SKILLS_DIR), "a", &front("test", "repo"));
     let path = skill(&cwd.join(SKILLS_DIR), "a", &front("test", "folder"));
 
-    let found = find_skills(&cwd, Some(&global));
+    let found = find_skills(&cwd, std::slice::from_ref(&global));
     assert_eq!(found.skills.len(), 1);
     assert_eq!(found.skills[0].description, "folder");
     assert_eq!(found.skills[0].path, path);
+}
+
+#[test]
+fn later_global_folder_wins() {
+    let tmp = tempfile::tempdir().unwrap();
+    let shared = tmp.path().join("agents");
+    let own = tmp.path().join("kluis");
+    skill(&shared, "a", &front("test", "shared"));
+    skill(&shared, "b", &front("other", "shared"));
+    skill(&own, "a", &front("test", "own"));
+    let cwd = tmp.path().join("project");
+    fs::create_dir_all(&cwd).unwrap();
+
+    let found = find_skills(&cwd, &[shared, own]);
+    assert_eq!(names(&found.skills), ["other", "test"]);
+    assert_eq!(found.skills[1].description, "own");
 }
 
 #[test]
@@ -74,7 +90,7 @@ fn parses_quotes_and_folded_descriptions() {
     skill(&root, "c", &front("long", &"x".repeat(2000)));
     skill(&root, "d", &front("escape", "a\u{1b}]52;c;eA==\u{7}b"));
 
-    let found = find_skills(tmp.path(), None);
+    let found = find_skills(tmp.path(), &[]);
     assert!(found.warnings.is_empty(), "{:?}", found.warnings);
     let get = |name| {
         let skill = found.skills.iter().find(|s| s.name == name).unwrap();
@@ -99,7 +115,7 @@ fn warns_about_invalid_skills() {
     // A folder without a SKILL.md is not a skill.
     fs::create_dir_all(root.join("g")).unwrap();
 
-    let found = find_skills(tmp.path(), None);
+    let found = find_skills(tmp.path(), &[]);
     assert_eq!(names(&found.skills), ["good"]);
     assert_eq!(found.warnings.len(), 5, "{:?}", found.warnings);
     assert!(found.warnings[0].contains("no front matter"));
@@ -115,7 +131,7 @@ fn caps_the_number_of_skills() {
         let name = format!("s{i:03}");
         skill(&root, &name, &front(&name, "d"));
     }
-    let found = find_skills(tmp.path(), None);
+    let found = find_skills(tmp.path(), &[]);
     assert_eq!(found.skills.len(), MAX_SKILLS);
     assert_eq!(found.warnings.len(), 1);
 }
@@ -133,13 +149,13 @@ fn symlinks_in_project_skills_are_ignored() {
     symlink(&secret, root.join("file").join(SKILL_FILE)).unwrap();
     symlink(hidden.join("secret"), root.join("dir")).unwrap();
 
-    assert!(find_skills(&cwd, None).skills.is_empty());
+    assert!(find_skills(&cwd, &[]).skills.is_empty());
 
     // Nor may the skills folder itself lead elsewhere.
     let other = tmp.path().join("other");
     fs::create_dir_all(other.join(".agents")).unwrap();
     symlink(&hidden, other.join(SKILLS_DIR)).unwrap();
-    assert!(find_skills(&other, None).skills.is_empty());
+    assert!(find_skills(&other, &[]).skills.is_empty());
 }
 
 #[test]
@@ -153,7 +169,7 @@ fn symlinked_global_skills_folder_is_followed() {
     let cwd = tmp.path().join("project");
     fs::create_dir_all(&cwd).unwrap();
 
-    let found = find_skills(&cwd, Some(&global));
+    let found = find_skills(&cwd, std::slice::from_ref(&global));
     assert_eq!(names(&found.skills), ["mine"]);
     // Shown where the sandbox shows it, not where the link leads.
     assert_eq!(found.skills[0].path, global.join("a").join(SKILL_FILE));
