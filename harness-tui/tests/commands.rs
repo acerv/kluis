@@ -13,7 +13,10 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::thread::{self, JoinHandle};
 
-use common::{delta, kl, read_request, read_request_with_headers, tempdir, write_sse};
+use common::{
+    delta, kill, kl, line_count, read_request, read_request_with_headers, tempdir, wait_until,
+    write_sse,
+};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 
@@ -1064,11 +1067,6 @@ fn start_scripted_llm(calls: Vec<Value>) -> (u16, JoinHandle<Vec<String>>) {
     (port, handle)
 }
 
-/// Lines of `file`, or 0 when it is missing.
-fn line_count(file: &Path) -> usize {
-    std::fs::read_to_string(file).map_or(0, |text| text.lines().count())
-}
-
 #[test]
 fn background_commands_outlive_the_prompt_until_kl_exits() {
     let home = tempdir();
@@ -1107,6 +1105,39 @@ fn background_commands_outlive_the_prompt_until_kl_exits() {
     assert!(results[0].contains(r#""pid":"#), "{}", results[0]);
     assert!(results[1].contains("growing"), "{}", results[1]);
     let ticks = cwd.path().join("ticks");
+    let at_exit = line_count(&ticks);
+    thread::sleep(std::time::Duration::from_millis(200));
+    assert_eq!(line_count(&ticks), at_exit);
+}
+
+#[test]
+fn signal_stops_the_prompt_and_checks_git() {
+    let home = tempdir();
+    let cwd = tempdir();
+    // The server waits for the result of the call, which never comes.
+    let (port, _server) = start_scripted_llm(vec![json!({
+        "command": "mkdir .git; while :; do echo tick >> ticks; sleep 0.02; done",
+    })]);
+    let child = kl(home.path())
+        .args(["--model", "genai_1::test-model", "--print", "run"])
+        .current_dir(cwd.path())
+        .env("GENAI_1_ENDPOINT", format!("http://127.0.0.1:{port}/v1/"))
+        .env("GENAI_1_API_KEY", "secret-genai-key-12345")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let ticks = cwd.path().join("ticks");
+    wait_until("the command", || ticks.exists());
+    kill(&child, libc::SIGTERM);
+    let out = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert_eq!(out.status.code(), Some(128 + libc::SIGTERM), "{stderr}");
+    assert!(stderr.contains("stopped by signal 15"), "{stderr}");
+    assert!(cwd.path().join(".git.kl-disabled").is_dir(), "{stderr}");
+    assert!(!cwd.path().join(".git").exists());
     let at_exit = line_count(&ticks);
     thread::sleep(std::time::Duration::from_millis(200));
     assert_eq!(line_count(&ticks), at_exit);

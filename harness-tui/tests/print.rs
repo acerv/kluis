@@ -5,12 +5,12 @@
 
 mod common;
 
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::process::{Output, Stdio};
 use std::thread::{self, JoinHandle};
 
-use common::{delta, kl, read_request, tempdir, write_sse};
+use common::{delta, kill, kl, read_request, tempdir, write_sse};
 use serde_json::{json, Value};
 
 /// Start a server that answers one request with `status`, and with a
@@ -156,4 +156,26 @@ fn stream_ends_with_the_error() {
     let last = lines.last().unwrap();
     assert_eq!(last["type"], "error");
     assert!(last["error"].as_str().unwrap().contains("401"), "{last}");
+}
+
+#[test]
+fn signal_ends_the_prompts_read_from_standard_input() {
+    let home = tempdir();
+    let mut child = kl(home.path())
+        .arg("--no-sandbox")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Printed once it waits for a prompt.
+    // Kept open: nothing but the signal ends the prompts.
+    let _stdin = child.stdin.take();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut greeting = String::new();
+    stdout.read_line(&mut greeting).unwrap();
+    assert!(greeting.contains("Ctrl-D to quit"), "{greeting}");
+
+    kill(&child, libc::SIGTERM);
+    let status = child.wait().unwrap();
+    assert_eq!(status.code(), Some(128 + libc::SIGTERM), "{status:?}");
 }
