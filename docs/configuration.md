@@ -49,7 +49,7 @@ either the file or the CLI enables them.
 | `sandbox.deny`          | Paths to hide, on top of the built-in credentials    | none                |
 | `sandbox.connect`       | TCP ports the model can connect to                   | none                |
 | `sandbox.network`       | Allow any network                                    | `false`             |
-| `sandbox.web_hosts`     | Only hosts `web_fetch` reaches, with their subdomains and private addresses, see [Web tools](sandbox.md#web-tools) | any public host |
+| `sandbox.web_hosts`     | Only hosts `web_fetch` reaches, with their subdomains and private addresses; offers it without `network`, see [Web tools](sandbox.md#web-tools) | any public host |
 | `sandbox.background_commands` | Let the model keep commands running across prompts, see [Background commands](sandbox.md#background-commands) | `false` |
 | `sandbox.max_processes` | Processes and threads at once                        | `1024`              |
 | `sandbox.tmp_size`      | Size of the private `/tmp`                           | a quarter of RAM    |
