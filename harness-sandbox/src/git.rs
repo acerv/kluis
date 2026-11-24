@@ -77,9 +77,7 @@ impl GitGuard {
             if roots.last().is_some_and(|(root, _)| path.starts_with(root)) {
                 continue;
             }
-            let canon = std::fs::canonicalize(&path).map_err(|e| SandboxError {
-                message: format!("{}: {e}", path.display()),
-            })?;
+            let canon = std::fs::canonicalize(&path).map_err(|e| SandboxError::at(&path, e))?;
             roots.push((path, canon));
         }
         let shown = sandbox
