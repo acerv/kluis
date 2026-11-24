@@ -60,11 +60,33 @@ when you build, test or open the project. Review the changes like any patch.
 Three tools run outside the sandbox because they need the user or the
 network: `ask_user`, `web_fetch` and `web_search`. `web_fetch` and
 `web_search` are offered only with `--network` (or `network = true`) or
-`--no-sandbox`.
+`--no-sandbox`. See [Web tools](#web-tools).
+
+Commands allowed the network with `--network` reach any host, LAN and
+localhost included: the limits of the web tools do not apply to them.
 
 Running a file of unknown format makes the kernel run `modprobe` for a
 `binfmt-XXXX` module, outside the sandbox. Only a host setting can stop it:
 `kernel.modprobe` or `kernel.modules_disabled`.
+
+## Web tools
+
+`web_fetch` and `web_search` connect only to public addresses. Loopback,
+private, link-local (cloud metadata endpoints such as `169.254.169.254`),
+shared, multicast and reserved addresses are refused, also when written
+inside an IPv6 address. A name is judged by the addresses it resolves to,
+the connection uses only those, and each redirect is checked again.
+Proxies from the environment are not used, as they would resolve names
+themselves.
+
+`--web-host`, or `web_hosts` in `[sandbox]`, lets `web_fetch` reach only the
+hosts listed and their subdomains: `docs.rs` also allows `www.docs.rs`. A
+listed host may be private, such as `localhost`. `web_search` asks only its
+search engine, which may be private when set with `--searxng-url`.
+
+This stops the model from reaching your machine and LAN through the web
+tools. It does not stop it from sending what it reads to a public host in
+a URL: list the hosts you need for that.
 
 ## Background commands
 
