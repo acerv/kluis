@@ -332,7 +332,7 @@ impl Agent {
     /// allow too (see `BashContext::background`).
     pub fn with_background_commands(mut self) -> Self {
         for tool in self.req.tools.iter_mut().flatten() {
-            if tool.name.as_ref() == "bash" {
+            if tool.name.as_ref() == tools::BASH_TOOL {
                 *tool = BashTool::definition(true);
             }
         }
@@ -501,7 +501,7 @@ impl Agent {
     /// the model, in the sandbox when the tools run there, and return its
     /// result. Nothing joins the conversation.
     pub async fn run_command(&self, command: &str, on_output: impl FnMut(&str)) -> String {
-        let call = user_call("bash", json!({ "command": command }));
+        let call = user_call(tools::BASH_TOOL, json!({ "command": command }));
         self.executor.execute(&call, on_output).await.0.content
     }
 
@@ -511,7 +511,7 @@ impl Agent {
     async fn user_message(&self, text: &str) -> ChatMessage {
         let mut parts = vec![ContentPart::Text(text.to_owned())];
         for path in mentions(text) {
-            let call = user_call("read", json!({ "path": path }));
+            let call = user_call(tools::READ_TOOL, json!({ "path": path }));
             let (resp, details) = self.executor.execute(&call, |_| {}).await;
             let Ok(out) = serde_json::from_str::<ReadOutput>(&resp.content) else {
                 continue;

@@ -15,6 +15,9 @@ use crate::error::ToolError;
 use crate::path::resolve;
 use crate::write::atomic_write;
 
+/// Name of the `edit` tool.
+pub const EDIT_TOOL: &str = "edit";
+
 /// Maximum size of a file accepted by [`EditTool::run`].
 pub const MAX_EDIT_BYTES: u64 = 10 * 1024 * 1024;
 
@@ -78,7 +81,7 @@ impl EditTool {
 
     /// The `edit` tool, as sent to the model.
     pub fn definition() -> Tool {
-        Tool::new("edit")
+        Tool::new(EDIT_TOOL)
             .with_description(
                 "Edit a file by replacing exact text. Each oldText must match \
                  exactly one place in the file.",

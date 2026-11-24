@@ -15,6 +15,9 @@ use crate::error::ToolError;
 use crate::path::resolve;
 use crate::walk::{self, stop_on_drop};
 
+/// Name of the `find` tool.
+pub const FIND_TOOL: &str = "find";
+
 /// Default maximum number of paths returned by [`FindTool::run`].
 pub const DEFAULT_FIND_LIMIT: usize = 200;
 
@@ -63,7 +66,7 @@ impl FindTool {
 
     /// The `find` tool, as sent to the model.
     pub fn definition() -> Tool {
-        Tool::new("find")
+        Tool::new(FIND_TOOL)
             .with_description(
                 "Find files by glob pattern, e.g. '*.rs' or 'src/**/*.rs'. \
                  Respects .gitignore; directories end with '/'.",

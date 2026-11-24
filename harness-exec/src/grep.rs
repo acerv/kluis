@@ -18,6 +18,9 @@ use crate::error::ToolError;
 use crate::path::resolve;
 use crate::walk::{self, stop_on_drop};
 
+/// Name of the `grep` tool.
+pub const GREP_TOOL: &str = "grep";
+
 /// Default maximum number of matching lines returned by [`GrepTool::run`].
 pub const DEFAULT_GREP_LIMIT: usize = 50;
 
@@ -87,7 +90,7 @@ impl GrepTool {
 
     /// The `grep` tool, as sent to the model.
     pub fn definition() -> Tool {
-        Tool::new("grep")
+        Tool::new(GREP_TOOL)
             .with_description(
                 "Search file contents for a regex, or plain text with literal. \
                  Returns 'path:line: text' lines. Respects .gitignore.",
