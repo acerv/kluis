@@ -12,7 +12,7 @@ use tokio::time::{interval_at, Instant, MissedTickBehavior};
 
 use crate::session::{PromptSaver, Session};
 use crate::terminal::{EventReader, InlineTerminal};
-use crate::{Action, AgentUpdate, App, PromptStats};
+use crate::{Action, AgentUpdate, App, PromptStats, Signals};
 
 /// The terminal, what it shows and what the user does there.
 pub(crate) struct Ui {
@@ -21,6 +21,8 @@ pub(crate) struct Ui {
     pub(crate) events: EventReader,
     /// The questions the model asks the user.
     pub(crate) questions: mpsc::UnboundedReceiver<Question>,
+    /// What asks to quit from outside.
+    pub(crate) signals: Signals,
 }
 
 impl Ui {
@@ -110,6 +112,10 @@ async fn drive_agent(
         loop {
             tokio::select! {
                 biased;
+                _ = ui.signals.recv() => {
+                    quit = true;
+                    break;
+                }
                 maybe_ev = ui.events.next() => {
                     match maybe_ev {
                         Some(Ok(ev)) => match handle_event_batch(ev, &mut ui.events, &mut ui.app)? {
