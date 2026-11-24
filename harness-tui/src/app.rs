@@ -1669,6 +1669,7 @@ fn format_tool_call(name: &str, args: &str, theme: Theme) -> Line<'static> {
         }
         "web_search" => v["query"].as_str().map(summary),
         "skill" => v["name"].as_str().map(str::to_owned),
+        "task" => v["prompt"].as_str().map(summary),
         _ => None,
     });
     let detail = detail.unwrap_or_else(|| summary(args));
@@ -1774,7 +1775,7 @@ fn format_tool_result(
                 theme.muted,
             ));
         }
-        Some("ask_user") => {
+        Some("ask_user" | "task") => {
             let answer = v["answer"].as_str().unwrap_or_default();
             out.push(Line::styled(
                 format!("  answer: {}", summary(answer)),
