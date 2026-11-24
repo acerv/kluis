@@ -14,24 +14,33 @@ use crate::session::{PromptSaver, Session};
 use crate::terminal::{EventReader, InlineTerminal};
 use crate::{Action, AgentUpdate, App, PromptStats};
 
+/// The terminal, what it shows and what the user does there.
+pub(crate) struct Ui {
+    pub(crate) term: InlineTerminal,
+    pub(crate) app: App,
+    pub(crate) events: EventReader,
+    /// The questions the model asks the user.
+    pub(crate) questions: mpsc::UnboundedReceiver<Question>,
+}
+
+impl Ui {
+    pub(crate) fn draw(&mut self) -> Result<(), Error> {
+        self.term.draw_app(&mut self.app)?;
+        Ok(())
+    }
+}
+
 const SPINNER_TICK: Duration = Duration::from_millis(120);
 
 /// Run the shell `command` the user typed after `!`, showing it as a `bash`
 /// call. Returns `true` if the user requested to quit.
-pub(crate) async fn run_shell(
-    term: &mut InlineTerminal,
-    app: &mut App,
-    agent: &Agent,
-    events: &mut EventReader,
-    questions: &mut mpsc::UnboundedReceiver<Question>,
-    command: &str,
-) -> Result<bool, Error> {
-    app.start_activity();
-    app.apply_update(AgentUpdate::ToolCall {
+pub(crate) async fn run_shell(ui: &mut Ui, agent: &Agent, command: &str) -> Result<bool, Error> {
+    ui.app.start_activity();
+    ui.app.apply_update(AgentUpdate::ToolCall {
         name: BASH_TOOL.to_owned(),
         args: serde_json::json!({ "command": command }).to_string(),
     });
-    draw(term, app)?;
+    ui.draw()?;
 
     let (tx, rx) = mpsc::unbounded_channel::<AgentUpdate>();
     let run = async {
@@ -46,13 +55,13 @@ pub(crate) async fn run_shell(
         });
         Ok(String::new())
     };
-    let res = drive_agent(term, app, events, questions, rx, agent.steering(), run).await?;
-    if finish_activity(app, res) {
+    let res = drive_agent(ui, rx, agent.steering(), run).await?;
+    if finish_activity(&mut ui.app, res) {
         return Ok(true);
     }
-    restore_queued(agent, app);
+    restore_queued(agent, &mut ui.app);
     // The command may end before its result was drawn.
-    draw(term, app)?;
+    ui.draw()?;
     Ok(false)
 }
 
@@ -79,10 +88,7 @@ pub(crate) struct TurnOutcome {
 /// Drive an in-flight agent future (`prompt` or `compact`) while keeping the
 /// UI responsive to keys, resize, questions, and streaming updates.
 async fn drive_agent(
-    term: &mut InlineTerminal,
-    app: &mut App,
-    events: &mut EventReader,
-    questions: &mut mpsc::UnboundedReceiver<Question>,
+    ui: &mut Ui,
     mut rx: mpsc::UnboundedReceiver<AgentUpdate>,
     steering: Steering,
     fut: impl std::future::Future<Output = Result<String, Error>>,
@@ -104,9 +110,9 @@ async fn drive_agent(
         loop {
             tokio::select! {
                 biased;
-                maybe_ev = events.next() => {
+                maybe_ev = ui.events.next() => {
                     match maybe_ev {
-                        Some(Ok(ev)) => match handle_event_batch(ev, events, app)? {
+                        Some(Ok(ev)) => match handle_event_batch(ev, &mut ui.events, &mut ui.app)? {
                             Action::Cancel => {
                                 cancelled = true;
                                 break;
@@ -115,10 +121,10 @@ async fn drive_agent(
                                 quit = true;
                                 break;
                             }
-                            Action::Redraw => draw(term, app)?,
+                            Action::Redraw => ui.draw()?,
                             Action::Submit(text) => {
                                 steering.push(text);
-                                draw(term, app)?;
+                                ui.draw()?;
                             }
                             Action::None
                             | Action::Shell(_)
@@ -130,7 +136,7 @@ async fn drive_agent(
                                 if let Some(question) = question.take() {
                                     question.answer(answer);
                                 }
-                                draw(term, app)?;
+                                ui.draw()?;
                             }
                         },
                         Some(Err(err)) => return Err(err.into()),
@@ -141,37 +147,37 @@ async fn drive_agent(
                     }
                 }
                 Some(update) = rx.recv() => {
-                    drain_updates(update, &mut rx, app);
-                    draw(term, app)?;
+                    drain_updates(update, &mut rx, &mut ui.app);
+                    ui.draw()?;
                 }
                 // After `rx`, so the tool call shows before its question.
-                Some(asked) = questions.recv() => {
-                    app.ask(&asked.text, &asked.options);
+                Some(asked) = ui.questions.recv() => {
+                    ui.app.ask(&asked.text, &asked.options);
                     question = Some(asked);
-                    draw(term, app)?;
+                    ui.draw()?;
                 }
-                update = app.next_changes() => {
-                    app.apply_changes(update);
-                    draw(term, app)?;
+                update = ui.app.next_changes() => {
+                    ui.app.apply_changes(update);
+                    ui.draw()?;
                 }
                 res = &mut fut => {
                     outcome = Some(res);
                     break;
                 }
                 _ = ticker.tick() => {
-                    app.tick();
-                    draw(term, app)?;
+                    ui.app.tick();
+                    ui.draw()?;
                 }
             }
         }
     }
 
     if let Ok(first) = rx.try_recv() {
-        drain_updates(first, &mut rx, app);
+        drain_updates(first, &mut rx, &mut ui.app);
     }
     // A question sent just before a cancel has nobody waiting for it: drop
     // it so the next prompt does not show it.
-    while questions.try_recv().is_ok() {}
+    while ui.questions.try_recv().is_ok() {}
 
     Ok(DriveResult {
         cancelled,
@@ -183,11 +189,8 @@ async fn drive_agent(
 /// Run one agent prompt while keeping the UI responsive to keys, resize and
 /// streaming updates.
 pub(crate) async fn run_turn(
-    term: &mut InlineTerminal,
-    app: &mut App,
+    ui: &mut Ui,
     agent: &mut Agent,
-    events: &mut EventReader,
-    questions: &mut mpsc::UnboundedReceiver<Question>,
     session: Option<&mut Session>,
     prompt: &str,
 ) -> Result<TurnOutcome, Error> {
@@ -195,10 +198,7 @@ pub(crate) async fn run_turn(
     let mut stats = PromptStats::default();
     let (tx, rx) = mpsc::unbounded_channel::<AgentUpdate>();
     let res = drive_agent(
-        term,
-        app,
-        events,
-        questions,
+        ui,
         rx,
         agent.steering(),
         agent.prompt(prompt, |event| {
@@ -211,12 +211,12 @@ pub(crate) async fn run_turn(
 
     let cancelled = res.cancelled;
     if let Err(err) = saver.finish(agent.history(), stats.usage, stats.context) {
-        app.push_info(format!("[session save error: {err}]"));
+        ui.app.push_info(format!("[session save error: {err}]"));
     }
 
-    let quit = finish_activity(app, res);
+    let quit = finish_activity(&mut ui.app, res);
     if !quit {
-        draw(term, app)?;
+        ui.draw()?;
     }
     Ok(TurnOutcome {
         quit,
@@ -228,26 +228,20 @@ pub(crate) async fn run_turn(
 /// Summarize the conversation with `/compact`, replacing history on success.
 /// Returns `true` if the user requested to quit.
 pub(crate) async fn run_compact(
-    term: &mut InlineTerminal,
-    app: &mut App,
+    ui: &mut Ui,
     agent: &mut Agent,
-    events: &mut EventReader,
-    questions: &mut mpsc::UnboundedReceiver<Question>,
     session: Option<&mut Session>,
     focus: Option<&str>,
 ) -> Result<bool, Error> {
     let before = agent.history().len();
-    app.start_activity();
-    app.push_info("[compacting conversation…]");
-    draw(term, app)?;
+    ui.app.start_activity();
+    ui.app.push_info("[compacting conversation…]");
+    ui.draw()?;
 
     let mut stats = PromptStats::default();
     let (tx, rx) = mpsc::unbounded_channel::<AgentUpdate>();
     let res = drive_agent(
-        term,
-        app,
-        events,
-        questions,
+        ui,
         rx,
         agent.steering(),
         agent.compact(focus, |event| {
@@ -259,19 +253,19 @@ pub(crate) async fn run_compact(
 
     let compacted = !res.cancelled && !res.quit && matches!(res.outcome, Some(Ok(_)));
     let usage = stats.usage;
-    if finish_activity(app, res) {
+    if finish_activity(&mut ui.app, res) {
         return Ok(true);
     }
     // Messages typed meanwhile wait in the editor.
-    restore_queued(agent, app);
+    restore_queued(agent, &mut ui.app);
     if compacted {
-        app.set_context(0);
+        ui.app.set_context(0);
         if let Some(session) = session {
             if let Err(err) = session.record_compact(agent.history(), usage, 0) {
-                app.push_info(format!("[session save error: {err}]"));
+                ui.app.push_info(format!("[session save error: {err}]"));
             }
         }
-        app.push_info(format!("[compacted {before} messages]"));
+        ui.app.push_info(format!("[compacted {before} messages]"));
     }
     Ok(false)
 }
@@ -335,9 +329,4 @@ fn drain_updates(first: AgentUpdate, rx: &mut mpsc::UnboundedReceiver<AgentUpdat
         }
     }
     app.apply_update(pending);
-}
-
-pub(crate) fn draw(term: &mut InlineTerminal, app: &mut App) -> Result<(), Error> {
-    term.draw_app(app)?;
-    Ok(())
 }

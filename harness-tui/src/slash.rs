@@ -5,13 +5,10 @@
 
 use crossterm::event::{Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers};
 use genai::adapter::AdapterKind;
-use harness_core::tools::Question;
 use harness_core::{Agent, Error, ModelInfo, ModelList, Thinking};
-use tokio::sync::mpsc;
 
-use crate::drive::{draw, run_compact};
+use crate::drive::{run_compact, Ui};
 use crate::session::{short_id, Session};
-use crate::terminal::{EventReader, InlineTerminal};
 use crate::{clipboard, complete, App, SlashCommand};
 
 /// Take the last prompt out of the conversation, to send it again.
@@ -50,115 +47,105 @@ impl ModelCatalog {
 
 /// Execute a slash command, setting `next_prompt` to a prompt to send.
 /// Returns `true` when the user requested to quit.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_slash(
+    ui: &mut Ui,
     cmd: SlashCommand,
-    term: &mut InlineTerminal,
     agent: &mut Agent,
-    app: &mut App,
-    events: &mut EventReader,
-    questions: &mut mpsc::UnboundedReceiver<Question>,
     session: Option<&mut Session>,
     models: &mut ModelCatalog,
     next_prompt: &mut Option<String>,
 ) -> Result<bool, Error> {
     match cmd {
         SlashCommand::Quit => return Ok(true),
-        SlashCommand::Retry => *next_prompt = retry(agent, app, session),
+        SlashCommand::Retry => *next_prompt = retry(agent, &mut ui.app, session),
         SlashCommand::Compact(focus) => {
             if agent.history().is_empty() {
-                app.push_info("[nothing to compact]");
+                ui.app.push_info("[nothing to compact]");
                 return Ok(false);
             }
-            return run_compact(
-                term,
-                app,
-                agent,
-                events,
-                questions,
-                session,
-                focus.as_deref(),
-            )
-            .await;
+            return run_compact(ui, agent, session, focus.as_deref()).await;
         }
         SlashCommand::Status => {
             let messages = agent.history().len();
             let label = session
                 .as_deref()
                 .map(|s| if messages == 0 { "new" } else { s.short_id() });
-            app.push_info(app.status_text(label, messages));
+            ui.app.push_info(ui.app.status_text(label, messages));
         }
-        SlashCommand::Output => app.show_tool_output(),
-        SlashCommand::Diff => app.toggle_diff(),
+        SlashCommand::Output => ui.app.show_tool_output(),
+        SlashCommand::Diff => ui.app.toggle_diff(),
         SlashCommand::Copy => match clipboard::last_assistant_text(agent.history()) {
-            None => app.push_info("[nothing to copy]"),
+            None => ui.app.push_info("[nothing to copy]"),
             Some(text) => match clipboard::copy(&text) {
                 Ok(()) => {
                     let chars = text.chars().count();
                     let unit = if chars == 1 { "char" } else { "chars" };
-                    app.push_info(format!("[copied last reply ({chars} {unit})]"));
+                    ui.app
+                        .push_info(format!("[copied last reply ({chars} {unit})]"));
                 }
-                Err(err) => app.push_info(format!("[copy error: {err}]")),
+                Err(err) => ui.app.push_info(format!("[copy error: {err}]")),
             },
         },
         SlashCommand::New => {
             agent.clear();
-            app.reset_session();
+            ui.app.reset_session();
             if let Some(session) = session {
                 session.rotate(agent.model());
             }
-            term.request_clear();
-            app.push_info("[new session]");
+            ui.term.request_clear();
+            ui.app.push_info("[new session]");
         }
         SlashCommand::Model(Some(name)) => {
-            switch_model(&name, agent, app, session);
+            switch_model(&name, agent, &mut ui.app, session);
         }
         SlashCommand::Model(None) => {
-            return open_model_picker(term, agent, app, events, models).await;
+            return open_model_picker(ui, agent, models).await;
         }
         SlashCommand::Thinking(Some(arg)) => match arg.parse::<Thinking>() {
-            Ok(level) => match app.thinking_levels().filter(|l| !l.contains(&level)) {
+            Ok(level) => match ui.app.thinking_levels().filter(|l| !l.contains(&level)) {
                 Some(levels) => {
                     let takes = level_list(levels);
-                    app.push_info(format!(
+                    ui.app.push_info(format!(
                         "[{} does not take thinking {level}; it takes {takes}]",
                         agent.model()
                     ));
                 }
                 None => {
                     agent.set_thinking(level);
-                    app.set_thinking(level);
-                    app.push_info(format!("thinking: {level}"));
+                    ui.app.set_thinking(level);
+                    ui.app.push_info(format!("thinking: {level}"));
                 }
             },
-            Err(err) => app.push_info(err),
+            Err(err) => ui.app.push_info(err),
         },
         SlashCommand::Thinking(None) => {
-            let takes = app
+            let takes = ui
+                .app
                 .thinking_levels()
                 .map(|l| format!(" (this model takes {})", level_list(l)))
                 .unwrap_or_default();
-            app.push_info(format!("thinking: {}{takes}", agent.thinking()));
+            ui.app
+                .push_info(format!("thinking: {}{takes}", agent.thinking()));
         }
         SlashCommand::Resume(Some(id)) => {
-            resume_session(&id, None, agent, app, session);
+            resume_session(&id, None, agent, &mut ui.app, session);
         }
         SlashCommand::Resume(None) => match session {
-            None => app.push_info("[sessions disabled (--no-session)]"),
+            None => ui.app.push_info("[sessions disabled (--no-session)]"),
             Some(session) => match session.list() {
                 Ok(entries) if entries.is_empty() => {
-                    app.push_info("[no saved sessions for this folder]");
+                    ui.app.push_info("[no saved sessions for this folder]");
                 }
                 Ok(entries) => {
                     let current =
                         (!agent.history().is_empty()).then(|| session.current_id().to_owned());
-                    app.open_picker(entries, current);
+                    ui.app.open_picker(entries, current);
                 }
-                Err(err) => app.push_info(format!("[resume error: {err}]")),
+                Err(err) => ui.app.push_info(format!("[resume error: {err}]")),
             },
         },
         SlashCommand::Help => {
-            app.push_info(complete::help_text());
+            ui.app.push_info(complete::help_text());
         }
     }
     Ok(false)
@@ -214,15 +201,13 @@ enum FetchOutcome {
 }
 
 async fn open_model_picker(
-    term: &mut InlineTerminal,
+    ui: &mut Ui,
     agent: &Agent,
-    app: &mut App,
-    events: &mut EventReader,
     models: &mut ModelCatalog,
 ) -> Result<bool, Error> {
     if models.adapters.is_empty() {
-        app.push_info(format!("model: {}", agent.model()));
-        app.push_info(
+        ui.app.push_info(format!("model: {}", agent.model()));
+        ui.app.push_info(
             "[no configured providers — set an API key env var or ~/.kluis/auth.toml, \
              or run `kl --login <provider>`]",
         );
@@ -230,17 +215,18 @@ async fn open_model_picker(
     }
 
     if models.cached.is_none() {
-        app.push_info("[loading models…]");
-        draw(term, app)?;
-        match fetch_models(term, agent, app, events, &models.adapters).await? {
+        ui.app.push_info("[loading models…]");
+        ui.draw()?;
+        match fetch_models(ui, agent, &models.adapters).await? {
             FetchOutcome::Quit => return Ok(true),
             FetchOutcome::Cancelled => {
-                app.push_info("[cancelled]");
+                ui.app.push_info("[cancelled]");
                 return Ok(false);
             }
             FetchOutcome::Done(list) => {
                 for (provider, err) in list.errors {
-                    app.push_info(format!("[models error ({provider}): {err}]"));
+                    ui.app
+                        .push_info(format!("[models error ({provider}): {err}]"));
                 }
                 if !list.models.is_empty() {
                     models.cached = Some(list.models);
@@ -250,19 +236,18 @@ async fn open_model_picker(
     }
 
     if let Some(list) = models.cached.as_deref() {
-        app.open_model_picker(list);
+        ui.app.open_model_picker(list);
     } else {
-        app.push_info(format!("model: {}", agent.model()));
-        app.push_info("[no models returned by configured providers]");
+        ui.app.push_info(format!("model: {}", agent.model()));
+        ui.app
+            .push_info("[no models returned by configured providers]");
     }
     Ok(false)
 }
 
 async fn fetch_models(
-    term: &mut InlineTerminal,
+    ui: &mut Ui,
     agent: &Agent,
-    app: &mut App,
-    events: &mut EventReader,
     adapters: &[AdapterKind],
 ) -> Result<FetchOutcome, Error> {
     let fut = agent.list_models(adapters);
@@ -271,7 +256,7 @@ async fn fetch_models(
     loop {
         tokio::select! {
             biased;
-            maybe_ev = events.next() => match maybe_ev {
+            maybe_ev = ui.events.next() => match maybe_ev {
                 Some(Ok(TermEvent::Key(key))) if key.kind != KeyEventKind::Release => {
                     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
                     match (key.code, ctrl) {
@@ -283,8 +268,8 @@ async fn fetch_models(
                     }
                 }
                 Some(Ok(ev @ TermEvent::Resize(_, _))) => {
-                    app.handle_event(ev);
-                    draw(term, app)?;
+                    ui.app.handle_event(ev);
+                    ui.draw()?;
                 }
                 Some(Ok(_)) => {}
                 Some(Err(err)) => return Err(err.into()),
