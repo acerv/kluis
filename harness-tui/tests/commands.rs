@@ -458,13 +458,14 @@ fn write_skill(root: &Path, name: &str) -> std::path::PathBuf {
 fn global_skills_listed_and_read_only_in_sandbox() {
     let home = tempdir();
     let file = write_skill(&home.path().join(".kluis/skills"), "deploy");
-    // The rest of the home folder and of `~/.kluis` stays hidden, and so
-    // do skills of other agents.
+    // The rest of the home folder and of `~/.kluis` stays hidden, and
+    // skills elsewhere are not used.
     std::fs::write(home.path().join("secret"), "hidden").unwrap();
     std::fs::write(home.path().join(".kluis/history"), "hidden").unwrap();
     write_skill(&home.path().join(".agents/skills"), "review");
-
     let cwd = tempdir();
+    write_skill(&cwd.path().join(".agents/skills"), "project");
+
     let result = run_bash_in(cwd.path(), home.path(), &[], &[], |_| {
         format!(
             "cat {0}; echo WRITE=$( (echo evil >> {0}) 2>&1 || true ); \
@@ -476,6 +477,7 @@ fn global_skills_listed_and_read_only_in_sandbox() {
     let listed = format!("- deploy: about deploy ({})", file.display());
     assert!(result.system.contains(&listed), "{}", result.system);
     assert!(!result.system.contains("review"), "{}", result.system);
+    assert!(!result.system.contains("project"), "{}", result.system);
     let output = &result.output;
     assert!(output.contains("deploy-body"), "{output}");
     let write = output.lines().find(|l| l.starts_with("WRITE=")).unwrap();

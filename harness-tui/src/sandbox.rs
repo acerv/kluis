@@ -100,10 +100,7 @@ pub fn executor(args: &Args, cwd: &Path) -> Result<(Executor, GitGuard), Error> 
         let entries = std::fs::read_dir(dir)
             .ok()
             .filter(|_| !hides_skills(args, cwd));
-        match crate::config::skills_dir()
-            .filter(|s| s.is_dir())
-            .zip(entries)
-        {
+        match crate::config::skills_dir().zip(entries) {
             // Nothing shown holds `~/.kluis`, so only paths allowed below it
             // could show its files: hide each but the skills. One created
             // later is not below such a path.

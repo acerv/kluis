@@ -35,7 +35,7 @@ use harness_core::tools::{
 };
 use harness_core::{
     provider_name, Agent, AuthConfig, CredentialSource, Error, Event, SessionData, SessionStore,
-    Skill, Thinking, TokenUsage,
+    Skill, Skills, Thinking, TokenUsage,
 };
 use harness_sandbox::{GitGuard, NetworkAccess};
 use harness_tui::{
@@ -385,12 +385,14 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
     let agents = harness_core::find_agents_files(&cwd, config::agents_path().as_deref());
     // Commands cannot read `~/.kluis/skills` when a folder shown holds
     // `~/.kluis`: leave those skills out.
-    let skills_dir = config::skills_dir().filter(|dir| dir.is_dir());
+    let skills_dir = config::skills_dir();
     let hidden_skills = skills_dir
         .as_ref()
         .filter(|_| !args.no_sandbox && sandbox::hides_skills(&args, &cwd));
-    let global = skills_dir.as_deref().filter(|_| hidden_skills.is_none());
-    let mut skills = harness_core::find_skills(&cwd, global);
+    let mut skills = match skills_dir.as_deref() {
+        Some(dir) if hidden_skills.is_none() => harness_core::find_skills(dir),
+        _ => Skills::default(),
+    };
     if let Some(dir) = hidden_skills {
         skills.warnings.push(format!(
             "the skills in {} are not used: a folder shown to commands holds {}, \

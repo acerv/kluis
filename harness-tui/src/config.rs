@@ -183,9 +183,13 @@ pub fn agents_path() -> Option<PathBuf> {
     Some(kluis_dir()?.join(harness_core::AGENTS_FILE))
 }
 
-/// Where global skills are looked for: `~/.kluis/skills`.
+/// The folder of the skills, `~/.kluis/skills`, when it is one and not a
+/// symlink, which could lead elsewhere.
 pub fn skills_dir() -> Option<PathBuf> {
-    Some(kluis_dir()?.join("skills"))
+    let dir = kluis_dir()?.join("skills");
+    std::fs::symlink_metadata(&dir)
+        .is_ok_and(|meta| meta.is_dir())
+        .then_some(dir)
 }
 
 /// Where conversation sessions are stored: `~/.kluis/sessions`.
