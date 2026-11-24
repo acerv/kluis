@@ -45,7 +45,7 @@ pub use dispatch::{
     ToolContext, ToolDetails,
 };
 pub use edit::{Edit, EditOutput, EditTool, EDIT_TOOL, MAX_EDIT_BYTES};
-pub use error::ToolError;
+pub use error::{error_json, ToolError};
 pub use find::{FindOutput, FindTool, DEFAULT_FIND_LIMIT, FIND_TOOL, MAX_FIND_BYTES};
 pub use grep::{
     GrepOutput, GrepTool, DEFAULT_GREP_LIMIT, GREP_TOOL, MAX_GREP_BYTES, MAX_GREP_LINE_CHARS,

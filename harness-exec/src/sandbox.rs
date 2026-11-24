@@ -16,12 +16,11 @@ use genai::chat::{ToolCall, ToolResponse};
 use hakoniwa::{Child, Stdio};
 use harness_sandbox::{Sandbox, SandboxError};
 use scopeguard::ScopeGuard;
-use serde_json::json;
 use thiserror::Error;
 use tokio::sync::mpsc;
 
 use crate::protocol::{read_line_bounded, write_line, Request, Response};
-use crate::ToolDetails;
+use crate::{error_json, ToolDetails};
 
 /// Configuration for spawning the sandboxed tool worker container.
 #[derive(Debug, Clone)]
@@ -128,8 +127,7 @@ impl SandboxExecutor {
         let (pending, mut rx) = match self.send_call(id, &req) {
             Ok(pair) => pair,
             Err(err) => {
-                let content = json!({ "error": err.to_string() }).to_string();
-                return (ToolResponse::from_tool_call(call, content), None);
+                return (ToolResponse::from_tool_call(call, error_json(err)), None);
             }
         };
 
@@ -164,7 +162,7 @@ impl SandboxExecutor {
         }
 
         ScopeGuard::into_inner(cancel_guard);
-        let content = json!({ "error": "sandboxed tool executor exited unexpectedly" }).to_string();
+        let content = error_json("sandboxed tool executor exited unexpectedly");
         (ToolResponse::from_tool_call(call, content), None)
     }
 

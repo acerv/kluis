@@ -13,7 +13,7 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::protocol::{read_line_bounded_async, reset_buf, Request, Response};
-use crate::{dispatch_raw, BashContext, ToolContext};
+use crate::{dispatch_raw, error_json, BashContext, ToolContext};
 
 type InFlightMap = Arc<Mutex<HashMap<u64, (u64, oneshot::Sender<()>)>>>;
 
@@ -142,7 +142,7 @@ where
                                     // Dropping `call_fut` kills any active bash process group.
                                     let _ = out_tx_task.send(Response::Result {
                                         id,
-                                        content: json!({ "error": "cancelled" }).to_string(),
+                                        content: error_json("cancelled"),
                                         details: None,
                                     });
                                 }
@@ -180,8 +180,7 @@ where
                     Err(err) => {
                         let _ = out_tx.send(Response::Result {
                             id: 0,
-                            content: json!({ "error": format!("invalid request: {err}") })
-                                .to_string(),
+                            content: error_json(format_args!("invalid request: {err}")),
                             details: None,
                         });
                     }

@@ -7,12 +7,12 @@ use std::path::PathBuf;
 
 use genai::chat::{Tool, ToolCall, ToolResponse};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::{
-    BashContext, BashTool, Diff, EditTool, FindTool, GrepTool, Image, LsTool, ReadTool, Todo,
-    TodoTool, WriteTool, BASH_TOOL, EDIT_TOOL, FIND_TOOL, GREP_TOOL, LS_TOOL, READ_TOOL, TODO_TOOL,
-    WRITE_TOOL,
+    error_json, BashContext, BashTool, Diff, EditTool, FindTool, GrepTool, Image, LsTool, ReadTool,
+    Todo, TodoTool, WriteTool, BASH_TOOL, EDIT_TOOL, FIND_TOOL, GREP_TOOL, LS_TOOL, READ_TOOL,
+    TODO_TOOL, WRITE_TOOL,
 };
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -105,7 +105,7 @@ pub async fn dispatch_raw(
 ) -> (String, Option<ToolDetails>) {
     match dispatch(name, args, ctx, on_output).await {
         Ok(pair) => pair,
-        Err(err) => (json!({ "error": err.to_string() }).to_string(), None),
+        Err(err) => (error_json(err), None),
     }
 }
 
