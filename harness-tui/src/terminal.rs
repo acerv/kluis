@@ -195,10 +195,12 @@ impl InlineTerminal {
                 self.pending_clear = false;
             } else if self.pending_clear {
                 self.pending_clear = false;
+                // Purge after clearing the screen: some terminals (kitty,
+                // tmux) move a cleared screen into the scrollback.
                 execute!(
                     io::stdout(),
-                    Clear(ClearType::Purge),
                     Clear(ClearType::All),
+                    Clear(ClearType::Purge),
                     MoveTo(0, 0),
                 )?;
                 self.recreate_viewport(desired)?;
