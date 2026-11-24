@@ -39,9 +39,13 @@
 - `task` hands a part of the work, such as a wide search, to a subagent: a
   conversation of its own with the same model, tools and sandbox, starting
   from the prompt the model writes. Only its answer comes back, so what it
-  read along the way does not fill the main conversation. Subagents run one
-  at a time, start no subagent, and have no `todo` nor `ask_user`. The
-  tool calls of a subagent show while it works, and its tokens count in
+  read along the way does not fill the main conversation. Subagents start
+  no subagent, and have no `todo` nor `ask_user`. A task marked
+  `read_only` only gets the tools that change nothing (`read`, `ls`,
+  `find`, `grep`, `web_fetch`, `web_search`, `skill`); up to 4 of those
+  asked together run at the same time. Other tasks run one at a time. The
+  tool calls of a subagent show while it works, after the number of its
+  call when several run at once, and its tokens count in
   `/status`.
 - `ask_user` asks you a question mid-task, with suggested answers to pick from
   or your own text (interactive mode only).
