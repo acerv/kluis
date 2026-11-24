@@ -1,0 +1,19 @@
+# Advisories without a fix we can apply: every crate is pulled in by a
+# dependency (hakoniwa -> postcard, tui-markdown -> syntect) or has no
+# maintained replacement. Revisit when those crates move on.
+[advisories]
+ignore = [
+    "RUSTSEC-2023-0089", # atomic-polyfill unmaintained (hakoniwa -> postcard)
+    "RUSTSEC-2025-0141", # bincode unmaintained (tui-markdown -> syntect)
+    "RUSTSEC-2026-0543", # chrono unmaintained
+    # heapless 0.7 unsound (hakoniwa -> postcard); we use none of its APIs
+    "RUSTSEC-2026-0574",
+    "RUSTSEC-2026-0575",
+    "RUSTSEC-2026-0576",
+    "RUSTSEC-2026-0577",
+    "RUSTSEC-2026-0578",
+    "RUSTSEC-2026-0579",
+    "RUSTSEC-2026-0580",
+    "RUSTSEC-2026-0581",
+    "RUSTSEC-2026-0582",
+]
