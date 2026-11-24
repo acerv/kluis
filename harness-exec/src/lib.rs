@@ -37,7 +37,9 @@ pub use bash::{
     BashContext, BashOutput, BashTool, JobOutput, Jobs, OutputFiles, PreExec, DEFAULT_BASH_TIMEOUT,
     MAX_BASH_LINES, MAX_BASH_LOG_BYTES, MAX_BASH_OUTPUT,
 };
-pub use diff::{Diff, DiffHunk, DiffLine, DIFF_CONTEXT_LINES, MAX_DIFF_BYTES};
+pub use diff::{
+    count_lines, diff_lines, Diff, DiffHunk, DiffLine, DIFF_CONTEXT_LINES, MAX_DIFF_BYTES,
+};
 pub use dispatch::{
     definitions, dispatch_raw, execute, execute_streaming, is_read_only, run, run_with,
     ToolContext, ToolDetails,
