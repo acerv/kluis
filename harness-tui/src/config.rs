@@ -196,10 +196,15 @@ pub fn agents_path() -> Option<PathBuf> {
     Some(kluis_dir()?.join(harness_core::AGENTS_FILE))
 }
 
-/// The folder of the skills, `~/.kluis/skills`, when it is one and not a
+/// Where skills are looked for: `~/.kluis/skills`.
+pub fn skills_path() -> Option<PathBuf> {
+    Some(kluis_dir()?.join("skills"))
+}
+
+/// The folder of the skills, [`skills_path`], when it is one and not a
 /// symlink, which could lead elsewhere.
 pub fn skills_dir() -> Option<PathBuf> {
-    let dir = kluis_dir()?.join("skills");
+    let dir = skills_path()?;
     std::fs::symlink_metadata(&dir)
         .is_ok_and(|meta| meta.is_dir())
         .then_some(dir)
