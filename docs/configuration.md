@@ -9,6 +9,7 @@ model = "deepseek-chat"
 thinking = "medium"
 code_theme = "solarized-dark"
 auto_compact_tokens = 100000
+searxng_url = "https://searx.example.org"
 
 [sandbox]
 read = ["/etc/ssl"]
@@ -39,6 +40,7 @@ either the file or the CLI enables them.
 | `generic.thinking`      | Thinking effort: `default`, `off`, `low`, `medium`, `high`, `xhigh`, `max` | `default`           |
 | `generic.code_theme`          | Colors of code blocks, see [Code theme](#code-theme)            | `base16-ocean-dark` |
 | `generic.auto_compact_tokens` | Auto-compact context at this many prompt tokens (`0` disables) | `100000`            |
+| `generic.searxng_url`   | SearXNG instance for `web_search`, with its JSON format on | DuckDuckGo          |
 | `sandbox.read`          | Extra folders the model can read, also in `$HOME`    | none                |
 | `sandbox.write`         | Extra folders the model can change, also in `$HOME`  | none                |
 | `sandbox.deny`          | Paths to hide, on top of the built-in credentials    | none                |

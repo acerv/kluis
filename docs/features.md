@@ -22,8 +22,8 @@
 
 ## Tools
 
-`read`, `write`, `edit`, `ls`, `find`, `grep`, `bash`, `todo`, `ask_user` and
-`web_fetch`.
+`read`, `write`, `edit`, `ls`, `find`, `grep`, `bash`, `todo`, `ask_user`,
+`web_fetch` and `web_search`.
 
 - `read` hands PNG, JPEG, GIF and WebP images (up to 3.5 MB) to the model.
   They are not saved in the session.
@@ -35,6 +35,9 @@
 - `web_fetch` reads a web page as Markdown (or raw with `raw: true`), 24 KB at
   a time. It runs outside the sandbox, so it is offered only with `--network`
   (or `network = true`) or `--no-sandbox`.
+- `web_search` returns the titles, URLs and snippets of up to 10 results. It
+  asks DuckDuckGo, or the SearXNG instance set with `--searxng-url` (or
+  `searxng_url`), and is offered when `web_fetch` is.
 - Tool results are bounded JSON, with `{"error": "..."}` responses so the
   model recovers instead of derailing.
 
@@ -51,7 +54,7 @@
 - `@path` in a prompt attaches the file, read as the `read` tool reads it
   (images included); typing `@` offers the files of the folder.
 - Shift+Tab switches plan mode: the model only looks around (`read`, `ls`,
-  `find`, `grep`, `todo`, `web_fetch`) and answers with a plan; other tools
+  `find`, `grep`, `todo`, `web_fetch`, `web_search`) and answers with a plan; other tools
   are refused. Switch back and send a message to have the plan carried out.
 - `!<command>` runs a shell command as the `bash` tool does, in the sandbox
   when the tools run there, without adding it to the conversation.
