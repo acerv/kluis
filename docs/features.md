@@ -9,9 +9,8 @@
 - `AGENTS.md` instructions are loaded from `~/.kluis/AGENTS.md`, the
   repository root, and the current folder. Project ones must not be symlinks,
   which could point at files the sandbox hides.
-- Skills: folders with a `SKILL.md` in `~/.agents/skills`, `~/.kluis/skills`
-  or the `.agents/skills` of the repository root down to the current
-  folder. Only each skill's name and description are in
+- Skills: folders with a `SKILL.md` in `~/.kluis/skills` or the
+  `.agents/skills` of the repository root down to the current folder. Only each skill's name and description are in
   the system prompt; the model reads the rest when a task needs it. See
   [Skills](#skills).
 - Live model discovery across configured providers, with a per-provider
@@ -95,27 +94,22 @@ description: Write release notes from the git log. Use when asked for a changelo
 Run `scripts/collect.sh <tag>` and group the commits by crate...
 ```
 
-The name is up to 64 lowercase letters, digits and hyphens. Skills are
-looked up in this order, a later one replacing one of the same name:
+The name is up to 64 lowercase letters, digits and hyphens. A skill in
+`.agents/skills` of the current folder replaces one of the same name in the
+repository root, which replaces one in `~/.kluis/skills`. Up to 100 skills
+are listed; `kl` warns at start about the ones it cannot use.
 
-1. `~/.agents/skills`, shared with other agents
-2. `~/.kluis/skills`, for `kl` only
-3. `.agents/skills` of the repository root, down to the current folder
-
-Up to 100 skills are listed; `kl` warns at start about the ones it cannot
-use.
-
-Both global folders are shown read-only in the sandbox, so the model can
-read a skill and run its scripts there; the rest of `~/.kluis` stays hidden.
+`~/.kluis/skills` is shown read-only in the sandbox, so the model can read
+a skill and run its scripts there; the rest of `~/.kluis` stays hidden.
 When a folder shown to commands holds `~/.kluis`, such as `$HOME`, all of it
-stays hidden and its skills are left out, with a warning. As for `AGENTS.md`, skill folders and
-their `SKILL.md` must not be symlinks, which could point at files the
-sandbox hides.
+stays hidden and its skills are left out, with a warning. As for
+`AGENTS.md`, skill folders and their `SKILL.md` must not be symlinks, which
+could point at files the sandbox hides.
 
 ### Using skills
 
-Install a skill by putting its folder in one of the skills folders, then
-start `kl`. The banner counts the skills it found:
+Install a skill by putting its folder in `~/.kluis/skills`, or in the
+`.agents/skills` of a project, then start `kl`. The banner counts the skills it found:
 
 ```sh
 mkdir -p ~/.kluis/skills

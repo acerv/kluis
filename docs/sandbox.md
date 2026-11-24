@@ -12,8 +12,8 @@ container that shows only the folders you configure.
   (Linux 6.7+). Allowed ports are open on every host, not only locally.
 - `$HOME` is an empty private folder that lives in memory and is gone when
   `kl` exits. Only the current folder, the `sandbox.read` and
-  `sandbox.write` paths below it and, read-only, the global
-  [skills](features.md#skills) show there. See [Home folder](#home-folder).
+  `sandbox.write` paths below it and, read-only, `~/.kluis/skills` show
+  there. See [Home folder](#home-folder).
 - Cloud drives, network shares and credentials in `$HOME` are hidden, even
   inside a folder you show: `~/.ssh`, `~/.aws`, `gh`, registry and AI tool
   tokens, browser profiles, shell history and more. `sandbox.deny` hides
