@@ -12,6 +12,8 @@
 - Skills: folders with a `SKILL.md` in `~/.kluis/skills`. Only each
   skill's name and description are in the system prompt; the model loads
   the rest with the `skill` tool when a task needs it. See [Skills](#skills).
+- Bundled `mentor` and `study` skills, installed with `kl --install-skills`.
+  See [Bundled skills](#bundled-skills).
 - Live model discovery across configured providers, with a per-provider
   timeout.
 - Sessions are persisted as JSONL per workspace, appended to as they go and
@@ -178,6 +180,37 @@ Or ask for one by name, with the task after it:
 ```
 
 With `-p`, `kl -p "/release-notes since v0.1"` does the same.
+
+### Bundled skills
+
+`kl` comes with two skills that make the model guide you instead of doing
+the work:
+
+- `mentor` questions your plan before agreeing, gives hints instead of
+  solutions, and reviews what you wrote. It writes code only when you say
+  "show me".
+- `study` teaches a topic or a codebase one step at a time, checking that
+  you understood before moving on.
+
+They are installed only when you ask:
+
+```sh
+kl --install-skills
+```
+
+```text
+> /mentor I want to add a cache to the web_fetch tool
+> /study how does the sandbox work in this repo?
+```
+
+A skill's instructions stay in the conversation once loaded. To also keep
+the model from changing files, use them in plan mode (Shift+Tab).
+
+`~/.kluis/skills/.bundled` records the version of each skill installed.
+Running `kl --install-skills` again adds the missing skills and updates the
+ones you did not change; one you edited is kept, and the new version is
+written beside it as `SKILL.md.new`. Once installed, `kl` warns at start
+when it comes with newer versions.
 
 ## Custom commands
 
