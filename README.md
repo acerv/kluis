@@ -57,8 +57,8 @@ export DEEPSEEK_API_KEY="sk-..."
 ```sh
 kl "fix the typo in README.md"   # one task, one command
 git diff | kl -p "review this"   # stdin appended to the prompt
-kl --json "list the TODOs"       # result, usage and session as JSON
-kl --json-stream "fix the tests" # one JSON line per event, then the result
+kl --output-format json "list the TODOs"  # result, usage and session as JSON
+kl --output-format stream "fix the tests" # one JSON line per event, then the result
 kl                               # interactive chat, Ctrl-D to quit
 kl --login anthropic             # use a Claude subscription instead
 kl --resume                      # continue a previous session

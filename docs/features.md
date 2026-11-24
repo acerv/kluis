@@ -81,14 +81,15 @@
   does not take the current level. Other providers get every level.
 - Falls back to line mode when stdin or stdout is not a terminal.
 - For scripts: `-p`/`--print` runs one prompt with standard input appended,
-  and `--json` prints one object with `result`, `usage` and `session`, or
-  `error`. kl exits with 1 when a prompt failed, line mode included, and 2
-  on a wrong command line.
-- `--json-stream` prints one JSON object per line as the prompt runs, each
-  with a `type`: `text` (once per turn), `tool_call` and `tool_result`
-  (paired by `id`), `usage` (per turn), `retry`, `truncated`, `compacting`,
-  `compacted`, `compact_failed` and `pruned`. The last line is the `--json`
-  object, with a type of `result` or `error`.
+  and `--output-format json` prints one object with `type`, `result`,
+  `usage` and `session`, or `error`. kl exits with 1 when a prompt failed,
+  line mode included, and 2 on a wrong command line.
+- `--output-format stream` prints one JSON object per line as the prompt
+  runs, each with a `type`: `text` (once per turn), `tool_call` and
+  `tool_result` (paired by `id`), `usage` (per turn), `retry`, `truncated`,
+  `compacting`, `compacted`, `compact_failed` and `pruned`. The last line
+  is the `json` object, with a type of `result` or `error`.
+- Both imply `-p`.
 
 ## Skills
 
