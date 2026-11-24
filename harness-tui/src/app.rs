@@ -35,7 +35,7 @@ use crate::input::Input;
 use crate::markdown::{render_markdown, MarkdownStream, MarkdownStyle};
 use crate::picker::{Picker, PickerKind, PickerOutcome};
 use crate::style::Theme;
-use crate::terminal::{char_width, truncate_width, wrap_lines, wrapped_line_count};
+use crate::text::{char_width, truncate_width, wrap_lines, wrapped_line_count};
 use crate::Status;
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];

@@ -25,6 +25,7 @@ mod slash;
 mod stats;
 mod style;
 mod terminal;
+mod text;
 
 use genai::adapter::AdapterKind;
 use genai::chat::ChatMessage;

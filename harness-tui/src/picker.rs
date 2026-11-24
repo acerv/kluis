@@ -15,7 +15,7 @@ use ratatui::Frame;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::style::Theme;
-use crate::terminal::truncate_width;
+use crate::text::truncate_width;
 
 /// Maximum visible rows inside the inline picker before scrolling.
 pub(crate) const MAX_PICKER_ROWS: u16 = 8;
