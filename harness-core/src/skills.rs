@@ -13,7 +13,7 @@ use genai::chat::Tool;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::front_matter::{clean_description, split_front_matter, valid_name, NAME_RULE};
+use crate::front_matter::{clean_description, list_dir, split_front_matter, valid_name, NAME_RULE};
 use crate::prompt::read_capped;
 use crate::tools::ToolError;
 
@@ -56,25 +56,9 @@ pub struct Skills {
 pub fn find_skills(dir: &Path) -> Skills {
     let mut found = BTreeMap::new();
     let mut warnings = Vec::new();
-    let real = std::fs::symlink_metadata(dir).is_ok_and(|meta| meta.is_dir());
-    let Some(entries) = std::fs::read_dir(dir).ok().filter(|_| real) else {
-        return Skills::default();
-    };
-    // Bounded, as anything could create any number of folders there.
-    let mut dirs: Vec<_> = entries
-        .flatten()
-        .filter(|entry| entry.file_type().is_ok_and(|t| t.is_dir()))
-        .map(|entry| entry.path())
-        .take(MAX_SKILLS + 1)
-        .collect();
-    if dirs.len() > MAX_SKILLS {
-        dirs.pop();
-        warnings.push(format!(
-            "{}: only {MAX_SKILLS} skill folders are read",
-            dir.display()
-        ));
-    }
-    dirs.sort();
+    let dirs = list_dir(dir, MAX_SKILLS, "skill folders", &mut warnings, |entry| {
+        entry.file_type().is_ok_and(|t| t.is_dir())
+    });
     for skill_dir in dirs {
         let path = skill_dir.join(SKILL_FILE);
         let Some((bytes, _)) = read_capped(&path, MAX_HEADER_BYTES) else {

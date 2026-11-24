@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use crate::front_matter::{clean_description, split_front_matter, valid_name, NAME_RULE};
+use crate::front_matter::{clean_description, list_dir, split_front_matter, valid_name, NAME_RULE};
 use crate::prompt::read_capped;
 
 /// What `$ARGUMENTS` in a template is replaced with.
@@ -65,26 +65,16 @@ pub fn expand_command(commands: &[Command], text: &str) -> Option<String> {
 /// command file may be a symlink, which could lead elsewhere.
 pub fn find_commands(dir: &Path) -> Commands {
     let mut found = Commands::default();
-    let real = std::fs::symlink_metadata(dir).is_ok_and(|meta| meta.is_dir());
-    let Some(entries) = std::fs::read_dir(dir).ok().filter(|_| real) else {
-        return found;
-    };
-    // Bounded, as anything could create any number of files there.
-    let mut files: Vec<_> = entries
-        .flatten()
-        .filter(|entry| entry.file_type().is_ok_and(|t| t.is_file()))
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
-        .take(MAX_COMMANDS + 1)
-        .collect();
-    if files.len() > MAX_COMMANDS {
-        files.pop();
-        found.warnings.push(format!(
-            "{}: only {MAX_COMMANDS} command files are read",
-            dir.display()
-        ));
-    }
-    files.sort();
+    let files = list_dir(
+        dir,
+        MAX_COMMANDS,
+        "command files",
+        &mut found.warnings,
+        |entry| {
+            entry.file_type().is_ok_and(|t| t.is_file())
+                && entry.path().extension().is_some_and(|ext| ext == "md")
+        },
+    );
     for path in files {
         let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
         let command = match read_capped(&path, MAX_COMMAND_BYTES) {

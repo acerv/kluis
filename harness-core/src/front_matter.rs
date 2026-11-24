@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
-//! The YAML front matter of skills and commands: only the `name` and
-//! `description` keys are read, as plain or folded strings.
+//! What skills and commands share: the listing of their folder and
+//! their YAML front matter, of which only the `name` and `description`
+//! keys are read, as plain or folded strings.
+
+use std::fs::DirEntry;
+use std::path::{Path, PathBuf};
 
 /// Longest name of a skill or command.
 const MAX_NAME_CHARS: usize = 64;
@@ -15,6 +19,37 @@ const MAX_DESCRIPTION_CHARS: usize = 1024;
 pub(crate) struct FrontMatter {
     pub(crate) name: Option<String>,
     pub(crate) description: Option<String>,
+}
+
+/// The entries of `dir` that `keep` takes, sorted. At most `max` are
+/// listed, as anything could create any number of them there: `warnings`
+/// then tells that only `max` `what` are read.
+///
+/// Lists nothing when `dir` is a symlink, which could lead elsewhere, or
+/// can't be read.
+pub(crate) fn list_dir(
+    dir: &Path,
+    max: usize,
+    what: &str,
+    warnings: &mut Vec<String>,
+    keep: impl Fn(&DirEntry) -> bool,
+) -> Vec<PathBuf> {
+    let real = std::fs::symlink_metadata(dir).is_ok_and(|meta| meta.is_dir());
+    let Some(entries) = std::fs::read_dir(dir).ok().filter(|_| real) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<_> = entries
+        .flatten()
+        .filter(keep)
+        .map(|entry| entry.path())
+        .take(max + 1)
+        .collect();
+    if paths.len() > max {
+        paths.pop();
+        warnings.push(format!("{}: only {max} {what} are read", dir.display()));
+    }
+    paths.sort();
+    paths
 }
 
 /// The front matter `text` starts with and the text after it, or `None`
