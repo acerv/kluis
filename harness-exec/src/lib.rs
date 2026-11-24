@@ -31,6 +31,8 @@ mod walk;
 mod worker;
 mod write;
 
+use std::sync::{Mutex, MutexGuard, PoisonError};
+
 use genai::chat::{ToolCall, ToolResponse};
 
 pub use bash::{
@@ -61,6 +63,12 @@ pub use todo::{
 };
 pub use worker::{run_worker, run_worker_io};
 pub use write::{WriteOutput, WriteTool, WRITE_TOOL};
+
+/// Lock `mutex` even after a thread panicked holding it: what the mutexes
+/// here guard, lists and maps, stays usable.
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// Executes tool calls either directly in-process or inside a sandboxed worker
 /// container.

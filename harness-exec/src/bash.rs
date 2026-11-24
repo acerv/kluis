@@ -25,6 +25,7 @@ use tokio::process::{Child, Command};
 use tokio::time::{sleep_until, Instant};
 
 use crate::error::ToolError;
+use crate::lock;
 
 /// Name of the `bash` tool.
 pub const BASH_TOOL: &str = "bash";
@@ -80,14 +81,14 @@ impl Jobs {
     /// The process groups of the commands still running, which are also
     /// their sessions.
     pub fn pids(&self) -> Vec<u32> {
-        self.0.pids.lock().map(|p| p.clone()).unwrap_or_default()
+        lock(&self.0.pids).clone()
     }
 
     /// Kill every command still running.
     pub fn stop(&self) {
-        if let Ok(mut pids) = self.0.pids.lock() {
-            pids.drain(..).for_each(|pid| kill_group(Some(pid)));
-        }
+        lock(&self.0.pids)
+            .drain(..)
+            .for_each(|pid| kill_group(Some(pid)));
     }
 
     /// Kill every command still running unless `keep`, and return whether
@@ -126,7 +127,7 @@ impl BashContext {
     fn keep(&self, path: TempPath) -> Option<String> {
         let name = path.to_str()?.to_owned();
         match &self.output_files {
-            Some(files) => files.0.lock().ok()?.push(path),
+            Some(files) => lock(&files.0).push(path),
             None => {
                 path.keep().ok()?;
             }
@@ -351,9 +352,7 @@ impl BashTool {
             kill_group(Some(pid));
             return Err(ToolError::new("bash: cannot keep the output file"));
         };
-        if let Ok(mut pids) = ctx.jobs.0.pids.lock() {
-            pids.push(pid);
-        }
+        lock(&ctx.jobs.0.pids).push(pid);
         tokio::spawn(log_job(child, pipe, file, Arc::downgrade(&ctx.jobs.0)));
         Ok(JobOutput { pid, output_file })
     }
@@ -379,9 +378,7 @@ async fn log_job(mut child: Child, mut pipe: Receiver, mut file: File, jobs: Wea
     };
     let _ = tokio::join!(log, child.wait());
     if let Some(jobs) = jobs.upgrade() {
-        if let Ok(mut pids) = jobs.pids.lock() {
-            pids.retain(|&p| Some(p) != pid);
-        }
+        lock(&jobs.pids).retain(|&p| Some(p) != pid);
     }
 }
 
