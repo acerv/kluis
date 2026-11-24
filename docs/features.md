@@ -28,7 +28,9 @@
 - `read` hands PNG, JPEG, GIF and WebP images (up to 3.5 MB) to the model.
   They are not saved in the session.
 - `edit` applies changes atomically and shows a diff with line numbers.
-- `bash` streams cleaned output with a timeout and line limits.
+- `bash` streams cleaned output with a timeout and line limits. With
+  `background`, a command such as a dev server keeps running across prompts:
+  its output goes to a file, and it is stopped when `kl` exits.
 - `todo` keeps the plan of a multi-step task.
 - `ask_user` asks you a question mid-task, with suggested answers to pick from
   or your own text (interactive mode only).
