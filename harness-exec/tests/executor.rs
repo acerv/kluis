@@ -348,6 +348,33 @@ async fn worker_that_does_not_stop_background_is_replaced() {
     assert_eq!(cancels().await, r#"{"cancels":0}"#);
 }
 
+#[tokio::test(start_paused = true)]
+async fn call_to_a_worker_that_stopped_reading_can_be_cancelled() {
+    let dir = tempfile::tempdir().unwrap();
+    let sandbox = Sandbox::with_defaults(&Options {
+        write: vec![dir.path().to_path_buf()],
+        ..Options::default()
+    })
+    .no_network();
+    let exec = Executor::sandbox(SandboxConfig {
+        sandbox,
+        program: PathBuf::from("/bin/bash"),
+        args: vec![
+            "-c".into(),
+            r#"printf '{"op":"ready"}\n'; exec sleep 600"#.into(),
+        ],
+        cwd: dir.path().to_path_buf(),
+        env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+    })
+    .unwrap();
+
+    // More than the pipe to the worker holds: writing it never ends.
+    let big = call("b", "write", json!({ "content": "x".repeat(1 << 20) }));
+    let cancelled = tokio::time::timeout(Duration::from_millis(50), exec.execute(&big, |_| {}));
+    assert!(cancelled.await.is_err());
+    // Dropping the executor ends the write with the worker.
+}
+
 #[test]
 fn sandbox_executor_fails_fast_when_worker_exits_before_ready() {
     let dir = tempfile::tempdir().unwrap();
