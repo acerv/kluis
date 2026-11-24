@@ -10,7 +10,10 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use genai::chat::{ChatMessage, ChatRole, ContentPart};
-use harness_core::tools::{is_read_only, Diff, DiffLine, Todo, TodoStatus, TodoTool, TODO_TOOL};
+use harness_core::tools::{
+    is_read_only, Diff, DiffLine, Todo, TodoStatus, TodoTool, BASH_TOOL, EDIT_TOOL, FIND_TOOL,
+    GREP_TOOL, LS_TOOL, READ_TOOL, TODO_TOOL, WRITE_TOOL,
+};
 use harness_core::{
     Command, Event as AgentEvent, ModelInfo, SessionSummary, Skill, Thinking, TokenUsage,
     ToolDetails,
@@ -1721,30 +1724,30 @@ fn parse_slash(input: &str) -> Option<Result<SlashCommand, String>> {
 fn format_tool_call(name: &str, args: &str, theme: Theme) -> Line<'static> {
     let parsed: Option<Value> = serde_json::from_str(args).ok();
     let detail = parsed.as_ref().and_then(|v| match name {
-        "read" => {
+        READ_TOOL => {
             let path = v["path"].as_str()?;
             match v["offset"].as_u64() {
                 Some(offset) => Some(format!("{path}:{offset}")),
                 None => Some(path.to_owned()),
             }
         }
-        "write" | "edit" => v["path"].as_str().map(str::to_owned),
-        "bash" => v["command"].as_str().map(summary),
-        "grep" => {
+        WRITE_TOOL | EDIT_TOOL => v["path"].as_str().map(str::to_owned),
+        BASH_TOOL => v["command"].as_str().map(summary),
+        GREP_TOOL => {
             let pat = v["pattern"].as_str()?;
             match v["path"].as_str() {
                 Some(path) if !path.is_empty() => Some(format!("{pat} {path}")),
                 _ => Some(pat.to_owned()),
             }
         }
-        "find" => {
+        FIND_TOOL => {
             let pat = v["pattern"].as_str()?;
             match v["path"].as_str() {
                 Some(path) if !path.is_empty() => Some(format!("{pat} {path}")),
                 _ => Some(pat.to_owned()),
             }
         }
-        "ls" => Some(v["path"].as_str().unwrap_or(".").to_owned()),
+        LS_TOOL => Some(v["path"].as_str().unwrap_or(".").to_owned()),
         "ask_user" => v["question"].as_str().map(summary),
         "web_fetch" => {
             let url = v["url"].as_str()?;
@@ -1790,7 +1793,7 @@ fn format_tool_result(
     };
 
     match tool {
-        Some("bash") => {
+        Some(BASH_TOOL) => {
             if let Some(output) = v["output"].as_str() {
                 let mut lines = output.lines();
                 for line in lines.by_ref().take(MAX_BASH_PREVIEW_LINES) {
@@ -1814,7 +1817,7 @@ fn format_tool_result(
                 out.push(Line::styled(format!("  full output: {path}"), theme.muted));
             }
         }
-        Some("read") => {
+        Some(READ_TOOL) => {
             let total = v["total_lines"].as_u64().unwrap_or(0);
             let suffix = truncated_suffix(&v);
             out.push(Line::styled(
@@ -1822,19 +1825,19 @@ fn format_tool_result(
                 theme.muted,
             ));
         }
-        Some("write") => {
+        Some(WRITE_TOOL) => {
             let bytes = v["bytes_written"].as_u64().unwrap_or(0);
             out.push(Line::styled(format!("  wrote {bytes} bytes"), theme.muted));
         }
-        Some("ls") => {
+        Some(LS_TOOL) => {
             let count = v["entries"].as_array().map_or(0, Vec::len);
             out.push(Line::styled(format!("  {count} entries"), theme.muted));
         }
-        Some("find") => {
+        Some(FIND_TOOL) => {
             let total = v["total"].as_u64().unwrap_or(0);
             out.push(Line::styled(format!("  {total} files"), theme.muted));
         }
-        Some("grep") => {
+        Some(GREP_TOOL) => {
             let matches = v["matches"].as_u64().unwrap_or(0);
             let suffix = truncated_suffix(&v);
             out.push(Line::styled(

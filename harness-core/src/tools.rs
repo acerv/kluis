@@ -7,7 +7,8 @@ pub use harness_exec::{
     count_lines, definitions, diff_lines, execute, execute_streaming, is_read_only, run, run_with,
     run_worker, BashContext, BashTool, Diff, DiffHunk, DiffLine, ExecError, Executor, Image,
     OutputFiles, PreExec, ReadOutput, SandboxConfig, SandboxExecutor, Todo, TodoOutput, TodoStatus,
-    TodoTool, ToolContext, ToolDetails, ToolError, TODO_TOOL,
+    TodoTool, ToolContext, ToolDetails, ToolError, BASH_TOOL, EDIT_TOOL, FIND_TOOL, GREP_TOOL,
+    LS_TOOL, READ_TOOL, TODO_TOOL, WRITE_TOOL,
 };
 
 use genai::chat::{ToolCall, ToolResponse};

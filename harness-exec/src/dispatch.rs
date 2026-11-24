@@ -11,7 +11,8 @@ use serde_json::{json, Value};
 
 use crate::{
     BashContext, BashTool, Diff, EditTool, FindTool, GrepTool, Image, LsTool, ReadTool, Todo,
-    TodoTool, WriteTool,
+    TodoTool, WriteTool, BASH_TOOL, EDIT_TOOL, FIND_TOOL, GREP_TOOL, LS_TOOL, READ_TOOL, TODO_TOOL,
+    WRITE_TOOL,
 };
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -62,7 +63,7 @@ pub fn definitions() -> Vec<Tool> {
 /// Whether `name` is a read-only tool that can safely run in parallel with
 /// other read-only tools.
 pub fn is_read_only(name: &str) -> bool {
-    matches!(name, "read" | "ls" | "find" | "grep")
+    matches!(name, READ_TOOL | LS_TOOL | FIND_TOOL | GREP_TOOL)
 }
 
 /// Run a model tool call and build the response to send back.
@@ -116,23 +117,23 @@ async fn dispatch(
 ) -> Result<(String, Option<ToolDetails>), Error> {
     let cwd = &ctx.cwd;
     match name {
-        "read" => {
+        READ_TOOL => {
             let mut out = ReadTool::deserialize(args)?.run_in(cwd).await?;
             let image = out.image.take().map(ToolDetails::Image);
             Ok((serde_json::to_string(&out)?, image))
         }
-        "write" => plain(&WriteTool::deserialize(args)?.run_in(cwd).await?),
-        "edit" => {
+        WRITE_TOOL => plain(&WriteTool::deserialize(args)?.run_in(cwd).await?),
+        EDIT_TOOL => {
             let out = EditTool::deserialize(args)?.run_in(cwd).await?;
             Ok((
                 serde_json::to_string(&out)?,
                 Some(ToolDetails::Edit(out.diff)),
             ))
         }
-        "ls" => plain(&LsTool::deserialize(args)?.run_in(cwd).await?),
-        "find" => plain(&FindTool::deserialize(args)?.run_in(cwd).await?),
-        "grep" => plain(&GrepTool::deserialize(args)?.run_in(cwd).await?),
-        "bash" => {
+        LS_TOOL => plain(&LsTool::deserialize(args)?.run_in(cwd).await?),
+        FIND_TOOL => plain(&FindTool::deserialize(args)?.run_in(cwd).await?),
+        GREP_TOOL => plain(&GrepTool::deserialize(args)?.run_in(cwd).await?),
+        BASH_TOOL => {
             let tool = BashTool::deserialize(args)?;
             if tool.background {
                 plain(&tool.start_in(cwd, &ctx.bash).await?)
@@ -140,7 +141,7 @@ async fn dispatch(
                 plain(&tool.run_in_streaming(cwd, &ctx.bash, on_output).await?)
             }
         }
-        "todo" => {
+        TODO_TOOL => {
             let out = TodoTool::deserialize(args)?.run()?;
             Ok((
                 serde_json::to_string(&out)?,

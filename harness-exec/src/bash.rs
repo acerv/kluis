@@ -26,6 +26,9 @@ use tokio::time::{sleep_until, Instant};
 
 use crate::error::ToolError;
 
+/// Name of the `bash` tool.
+pub const BASH_TOOL: &str = "bash";
+
 /// Bytes kept from the end of the output.
 pub const MAX_BASH_OUTPUT: usize = 16 * 1024;
 
@@ -222,7 +225,7 @@ impl BashTool {
                  pid and a file with its output; stop it with `kill -- -PID`.",
             );
         }
-        Tool::new("bash")
+        Tool::new(BASH_TOOL)
             .with_description(description)
             .with_schema(Self::schema(background))
     }

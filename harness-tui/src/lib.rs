@@ -28,7 +28,7 @@ use std::time::Duration;
 use crossterm::event::{Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers};
 use genai::adapter::AdapterKind;
 use genai::chat::ChatMessage;
-use harness_core::tools::{is_read_only, Question};
+use harness_core::tools::{is_read_only, Question, BASH_TOOL};
 use harness_core::{
     expand_command, Agent, Command, Error, Event, ModelInfo, ModelList, SessionData, SessionStore,
     SessionSummary, SessionWriter, Steering, Thinking, TokenUsage,
@@ -546,7 +546,7 @@ async fn run_shell(
 ) -> Result<bool, Error> {
     app.start_activity();
     app.apply_update(AgentUpdate::ToolCall {
-        name: "bash".to_owned(),
+        name: BASH_TOOL.to_owned(),
         args: serde_json::json!({ "command": command }).to_string(),
     });
     draw(term, app)?;

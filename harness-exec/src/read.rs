@@ -16,6 +16,9 @@ use crate::error::ToolError;
 use crate::path::resolve;
 use crate::walk::stop_on_drop;
 
+/// Name of the `read` tool.
+pub const READ_TOOL: &str = "read";
+
 /// Default maximum number of lines returned by [`ReadTool::run`].
 pub const DEFAULT_READ_LIMIT: usize = 500;
 
@@ -80,7 +83,7 @@ impl ReadTool {
 
     /// The `read` tool, as sent to the model.
     pub fn definition() -> Tool {
-        Tool::new("read")
+        Tool::new(READ_TOOL)
             .with_description(
                 "Read a text file or an image. Use offset and limit to \
                  page through large files.",

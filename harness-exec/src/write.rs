@@ -14,6 +14,9 @@ use tempfile::Builder;
 use crate::error::ToolError;
 use crate::path::resolve;
 
+/// Name of the `write` tool.
+pub const WRITE_TOOL: &str = "write";
+
 /// A call of the `write` tool.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WriteTool {
@@ -41,7 +44,7 @@ impl WriteTool {
 
     /// The `write` tool, as sent to the model.
     pub fn definition() -> Tool {
-        Tool::new("write")
+        Tool::new(WRITE_TOOL)
             .with_description("Create or overwrite a file with the given content.")
             .with_schema(Self::schema())
     }

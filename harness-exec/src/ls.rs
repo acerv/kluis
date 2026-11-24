@@ -12,6 +12,9 @@ use serde_json::{json, Value};
 use crate::error::ToolError;
 use crate::path::resolve;
 
+/// Name of the `ls` tool.
+pub const LS_TOOL: &str = "ls";
+
 /// Default maximum number of entries returned by [`LsTool::run`].
 pub const DEFAULT_LS_LIMIT: usize = 200;
 
@@ -64,7 +67,7 @@ impl LsTool {
 
     /// The `ls` tool, as sent to the model.
     pub fn definition() -> Tool {
-        Tool::new("ls")
+        Tool::new(LS_TOOL)
             .with_description(
                 "List a directory. Entries are sorted ignoring case and hidden \
                  files are included; directories end with '/'.",
