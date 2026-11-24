@@ -25,8 +25,8 @@ use crate::oauth::OAuthLogins;
 use crate::retry::{is_too_large, EndedEarly, RetryPolicy};
 use crate::session::TokenUsage;
 use crate::tools::{
-    self, error_response, AskTool, Asker, Executor, FetchTool, HostTools, Image, ReadOutput,
-    SearchTool, Searcher, ToolContext, ToolDetails,
+    self, error_response, AskTool, Asker, BashTool, Executor, FetchTool, HostTools, Image,
+    ReadOutput, SearchTool, Searcher, ToolContext, ToolDetails,
 };
 use crate::Event;
 
@@ -235,6 +235,17 @@ impl Agent {
     /// Set the tool executor used to run model tool calls.
     pub fn with_executor(mut self, executor: Executor) -> Self {
         self.executor = executor;
+        self
+    }
+
+    /// Offer the `background` option of `bash`, which the executor must
+    /// allow too (see `BashContext::background`).
+    pub fn with_background_commands(mut self) -> Self {
+        for tool in self.req.tools.iter_mut().flatten() {
+            if tool.name.as_ref() == "bash" {
+                *tool = BashTool::definition(true);
+            }
+        }
         self
     }
 

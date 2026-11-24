@@ -439,7 +439,9 @@ fn job_pid(content: &str) -> u64 {
 
 #[tokio::test]
 async fn local_executor_keeps_jobs_until_asked() {
-    let exec = Executor::default();
+    let mut ctx = ToolContext::default();
+    ctx.bash.background = true;
+    let exec = Executor::Local(ctx);
     let job = call(
         "j",
         "bash",
@@ -459,12 +461,9 @@ async fn local_executor_keeps_jobs_until_asked() {
 async fn worker_keeps_jobs_until_asked_and_stops_them_on_exit() {
     let (mut host_write, worker_read) = tokio::io::duplex(64 * 1024);
     let (worker_write, host_read) = tokio::io::duplex(64 * 1024);
-    let worker = tokio::spawn(run_worker_io(
-        worker_read,
-        worker_write,
-        ToolContext::default(),
-        false,
-    ));
+    let mut ctx = ToolContext::default();
+    ctx.bash.background = true;
+    let worker = tokio::spawn(run_worker_io(worker_read, worker_write, ctx, false));
     let mut lines = BufReader::new(host_read).lines();
     let mut send = async |req: Request| {
         let mut raw = serde_json::to_vec(&req).unwrap();

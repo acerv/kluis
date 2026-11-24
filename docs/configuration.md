@@ -17,6 +17,7 @@ write = ["~/scratch"]
 deny = ["~/work/secrets"]
 connect = [11434]
 network = false
+background_commands = false
 max_processes = 1024
 tmp_size = "512M"
 max_memory = "4G"
@@ -46,6 +47,7 @@ either the file or the CLI enables them.
 | `sandbox.deny`          | Paths to hide, on top of the built-in credentials    | none                |
 | `sandbox.connect`       | TCP ports the model can connect to                   | none                |
 | `sandbox.network`       | Allow any network                                    | `false`             |
+| `sandbox.background_commands` | Let the model keep commands running across prompts, see [Background commands](sandbox.md#background-commands) | `false` |
 | `sandbox.max_processes` | Processes and threads at once                        | `1024`              |
 | `sandbox.tmp_size`      | Size of the private `/tmp`                           | a quarter of RAM    |
 | `sandbox.max_memory`    | Virtual memory limit per command                     | none                |

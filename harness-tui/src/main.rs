@@ -136,6 +136,12 @@ pub struct Args {
     #[arg(long, value_name = "SIZE", value_parser = config::parse_size)]
     max_memory: Option<u64>,
 
+    /// Let the model keep commands running in the background across
+    /// prompts, such as a server. A git repository they create may be
+    /// used by your git before kl disables it.
+    #[arg(long)]
+    background_commands: bool,
+
     /// Also pass this environment variable to commands (repeatable).
     #[arg(long, value_name = "NAME")]
     pass_env: Vec<String>,
@@ -218,7 +224,12 @@ fn launch(mut args: Args) -> Result<ExitCode, Error> {
         .build()?;
     if args.tool_executor {
         let cwd = std::env::current_dir()?;
-        runtime.block_on(run_worker(cwd, args.max_memory, below_init))?;
+        runtime.block_on(run_worker(
+            cwd,
+            args.max_memory,
+            args.background_commands,
+            below_init,
+        ))?;
     } else if let Some(provider) = args.login {
         runtime.block_on(login(provider))?;
     } else if let Some(provider) = args.logout {
@@ -317,6 +328,7 @@ fn apply_config(args: &mut Args) -> Result<Option<String>, Error> {
     args.allow_connect.extend(config.sandbox.connect);
     args.searxng_url = args.searxng_url.take().or(config.generic.searxng_url);
     args.network |= config.sandbox.network;
+    args.background_commands |= config.sandbox.background_commands;
     args.max_processes = args.max_processes.or(config.sandbox.max_processes);
     args.tmp_size = args.tmp_size.or(config.sandbox.tmp_size);
     args.max_memory = args.max_memory.or(config.sandbox.max_memory);
@@ -439,6 +451,7 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
         ));
         // In the real `/tmp` here: gone with the agent.
         tools.bash.output_files = Some(OutputFiles::default());
+        tools.bash.background = args.background_commands;
         (Executor::Local(tools), None)
     } else {
         let (executor, guard) = sandbox::executor(&args, &cwd)?;
@@ -451,6 +464,9 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
         .with_system(system)
         .with_history(history)
         .with_executor(executor);
+    if args.background_commands {
+        agent = agent.with_background_commands();
+    }
     if let Some(tokens) = args.auto_compact_tokens {
         agent = agent.with_auto_compact(Some(tokens));
     }
