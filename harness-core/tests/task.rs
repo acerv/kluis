@@ -8,7 +8,7 @@ mod common;
 use std::path::Path;
 use std::time::Duration;
 
-use common::{text, tool_calls, with_usage, MockModel};
+use common::{text, together, tool_calls, with_usage, MockModel};
 use genai::chat::ChatRole;
 use harness_core::tools::ToolContext;
 use harness_core::{Agent, Event, TokenUsage};
@@ -267,6 +267,92 @@ async fn cancel_stops_the_subagent_and_answers_the_task() {
     let request = &model.requests()[2];
     assert_eq!(sent(request, "tool").len(), 1);
     assert!(!request.to_string().contains("sleep 30"));
+}
+
+#[tokio::test]
+async fn read_only_tasks_run_at_the_same_time() {
+    let mut replies = vec![tool_calls(&[
+        read_only_task("t1", "look here"),
+        read_only_task("t2", "look there"),
+    ])];
+    // Neither subagent gets its first reply before both asked for it.
+    replies.extend(together(vec![
+        with_usage(100, 1, tool_calls(&[("l1", "ls", json!({}))])),
+        with_usage(100, 1, tool_calls(&[("l1", "ls", json!({}))])),
+    ]));
+    replies.extend([
+        with_usage(10, 1, text("found")),
+        with_usage(10, 1, text("found")),
+        text("done"),
+    ]);
+    let model = MockModel::start(replies).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = agent(&model, dir.path());
+
+    let mut output = String::new();
+    let mut sub = TokenUsage::default();
+    let run = agent.prompt("search", |event| match event {
+        Event::ToolOutput(chunk) => output.push_str(chunk),
+        Event::TaskUsage(usage) => sub += TokenUsage::from_genai(usage),
+        _ => {}
+    });
+    let answer = tokio::time::timeout(Duration::from_secs(10), run)
+        .await
+        .expect("tasks ran one at a time")
+        .unwrap();
+    assert_eq!(answer, "done");
+
+    // The lines of each subagent are tagged with the number of its task.
+    let mut lines: Vec<&str> = output.lines().collect();
+    lines.sort_unstable();
+    assert_eq!(lines, ["[1] ls {}", "[2] ls {}"]);
+    assert_eq!(sub.input, 220);
+
+    let requests = model.requests();
+    assert_eq!(requests.len(), 6);
+    // Read-only subagents only get the tools that change nothing.
+    let tools = offered(&requests[1]);
+    assert!(tools.contains(&"read"), "{tools:?}");
+    for name in ["bash", "write", "edit", "task", "todo", "ask_user"] {
+        assert!(!tools.contains(&name), "{tools:?}");
+    }
+    let results = sent(&requests[5], "tool");
+    assert_eq!(results.len(), 2);
+    for result in results {
+        assert_eq!(result["content"], r#"{"answer":"found"}"#);
+    }
+}
+
+#[tokio::test]
+async fn at_most_four_read_only_tasks_run_together() {
+    let prompts = ["a", "b", "c", "d", "e"];
+    let calls: Vec<_> = ["t1", "t2", "t3", "t4", "t5"]
+        .into_iter()
+        .zip(prompts)
+        .map(|(id, prompt)| read_only_task(id, prompt))
+        .collect();
+    // The first four look around, then answer.
+    let mut replies = vec![tool_calls(&calls)];
+    replies.extend(together(
+        (0..4)
+            .map(|_| tool_calls(&[("l1", "ls", json!({}))]))
+            .collect(),
+    ));
+    replies.extend((0..5).map(|_| text("x")));
+    replies.push(text("done"));
+    let model = MockModel::start(replies).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = agent(&model, dir.path());
+
+    prompt(&mut agent, "go").await;
+
+    // The fifth starts once the first four are done.
+    let requests = model.requests();
+    assert_eq!(requests.len(), 11);
+    let asked = |r: &Value| sent(r, "user")[0]["content"].clone();
+    assert!(requests[1..9].iter().all(|r| asked(r) != "e"));
+    assert_eq!(asked(&requests[9]), "e");
+    assert_eq!(sent(&requests[10], "tool").len(), 5);
 }
 
 #[tokio::test]
