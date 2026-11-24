@@ -220,6 +220,9 @@ impl InlineTerminal {
             let lines = app.take_scrollback();
             flush_scrollback(&mut self.terminal, lines)?;
             self.terminal.draw(|frame| app.render(frame))?;
+            if app.take_bell() {
+                execute!(io::stdout(), Print('\x07'))?;
+            }
             self.cursor_row = match app.cursor_position() {
                 Some(position) => position.y,
                 None => {

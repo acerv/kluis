@@ -71,6 +71,11 @@ pub struct Args {
     #[arg(long, env = "HARNESS_AUTO_COMPACT_TOKENS", value_name = "TOKENS")]
     auto_compact_tokens: Option<u64>,
 
+    /// Ring the terminal bell when a prompt that ran for 10 seconds or more
+    /// ends or asks a question.
+    #[arg(long)]
+    notify: bool,
+
     /// Continue the most recent session for the current folder.
     #[arg(short = 'c', long = "continue", conflicts_with = "no_session")]
     continue_session: bool,
@@ -335,6 +340,7 @@ fn apply_config(args: &mut Args) -> Result<Option<String>, Error> {
     let config = config::load(&path, required)?;
     args.thinking = args.thinking.or(config.generic.thinking);
     args.code_theme = args.code_theme.take().or(config.generic.code_theme);
+    args.notify |= config.generic.notify;
     args.auto_compact_tokens = args
         .auto_compact_tokens
         .or(config.generic.auto_compact_tokens);
@@ -614,6 +620,7 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
                 git_guard,
                 code_theme,
                 commands: commands.commands,
+                notify: args.notify,
             },
         )
         .await?;

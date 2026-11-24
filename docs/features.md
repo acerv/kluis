@@ -58,6 +58,9 @@
 - Spinner with elapsed time and live `bash` output preview.
 - The terminal title shows what kl is doing (`kl: Running bash`, `kl:
   Thinking`, `kl: Question`), and goes back to the old one on exit.
+- With `notify = true` in the config file, or `--notify`, kl rings the
+  terminal bell when a prompt that ran for 10 seconds or more ends or asks
+  a question.
 - Persistent input history, model and session pickers, and `/copy` of the last
   reply.
 - Messages typed while the agent works join the conversation after the

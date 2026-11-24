@@ -250,6 +250,8 @@ pub struct RunOptions {
     pub code_theme: Option<CodeTheme>,
     /// The custom commands `/<name>` runs.
     pub commands: Vec<Command>,
+    /// Ring the bell when a long prompt ends or asks a question.
+    pub notify: bool,
 }
 
 /// Disable the git repositories commands created during a prompt that
@@ -311,6 +313,7 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
         mut git_guard,
         code_theme,
         commands,
+        notify,
     } = opts;
     let mut models = ModelCatalog {
         adapters,
@@ -320,6 +323,7 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
     let mut app = App::new(agent.model().to_owned(), status, Theme::from_env());
     app.set_width(term.width());
     app.set_thinking(agent.thinking());
+    app.set_notify(notify);
     if let Some(theme) = code_theme {
         app.set_code_theme(theme);
     }
