@@ -38,19 +38,19 @@ pub fn userns_blocked_in(proc: &Path) -> bool {
 /// Check that only root can change `exe` and the folders above it, so that
 /// a profile attached to it cannot be handed to another program.
 pub fn check_owner(exe: &Path) -> Result<(), SandboxError> {
-    let error = |path: &Path, problem: &str| SandboxError {
-        message: format!("{}: {problem}", path.display()),
-    };
     if !exe.is_absolute() {
-        return Err(error(exe, "not an absolute path"));
+        return Err(SandboxError::at(exe, "not an absolute path"));
     }
     for path in exe.ancestors() {
-        let meta = fs::symlink_metadata(path).map_err(|e| error(path, &e.to_string()))?;
+        let meta = fs::symlink_metadata(path).map_err(|e| SandboxError::at(path, e))?;
         if meta.file_type().is_symlink() {
-            return Err(error(path, "is a symbolic link"));
+            return Err(SandboxError::at(path, "is a symbolic link"));
         }
         if meta.uid() != 0 || meta.mode() & 0o022 != 0 {
-            return Err(error(path, "can be changed by users other than root"));
+            return Err(SandboxError::at(
+                path,
+                "can be changed by users other than root",
+            ));
         }
     }
     Ok(())
@@ -72,11 +72,11 @@ pub fn profile(name: &str, exe: &Path) -> Result<String, SandboxError> {
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || " /._+-".contains(c))
         })
-        .ok_or_else(|| SandboxError {
-            message: format!(
-                "{}: AppArmor needs an absolute path of letters, digits, spaces and /._+-",
-                exe.display()
-            ),
+        .ok_or_else(|| {
+            SandboxError::at(
+                exe,
+                "AppArmor needs an absolute path of letters, digits, spaces and /._+-",
+            )
         })?;
     Ok(format!(
         r#"# AppArmor profile for {path}

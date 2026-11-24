@@ -98,6 +98,19 @@ pub struct SandboxError {
     pub message: String,
 }
 
+impl SandboxError {
+    pub(crate) fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+
+    /// The `problem` with `path`.
+    pub(crate) fn at(path: &Path, problem: impl fmt::Display) -> Self {
+        Self::new(format!("{}: {problem}", path.display()))
+    }
+}
+
 impl Sandbox {
     /// A sandbox that allows nothing.
     pub fn new() -> Self {
@@ -201,9 +214,7 @@ impl Sandbox {
     /// (Linux 6.7) unless any network is allowed.
     pub fn container(&self) -> Result<Container, SandboxError> {
         if self.max_tmp_size == Some(0) {
-            return Err(SandboxError {
-                message: "max_tmp_size: must be at least 1".to_string(),
-            });
+            return Err(SandboxError::new("max_tmp_size: must be at least 1"));
         }
         let mut container = Container::new();
         container
@@ -272,9 +283,7 @@ impl Sandbox {
         container.setrlimit(Rlimit::Core, CORE_LIMIT, CORE_LIMIT);
         if let Some(max) = self.max_processes {
             if max == 0 {
-                return Err(SandboxError {
-                    message: "max_processes: must be at least 1".to_string(),
-                });
+                return Err(SandboxError::new("max_processes: must be at least 1"));
             }
             container.setrlimit(Rlimit::Nproc, max, max);
         }
@@ -327,9 +336,7 @@ impl Sandbox {
             {
                 continue;
             }
-            let canon = std::fs::canonicalize(mount).map_err(|e| SandboxError {
-                message: format!("{}: {e}", mount.display()),
-            })?;
+            let canon = std::fs::canonicalize(mount).map_err(|e| SandboxError::at(mount, e))?;
             if !path_or_canon_denied(mount, &canon, &denied_targets) {
                 canon_mounts.push((mount.clone(), canon, *writable));
             }
@@ -435,9 +442,7 @@ impl Sandbox {
                 let path = path
                     .into_os_string()
                     .into_string()
-                    .map_err(|p| SandboxError {
-                        message: format!("{}: not UTF-8", PathBuf::from(p).display()),
-                    })?;
+                    .map_err(|p| SandboxError::at(Path::new(&p), "not UTF-8"))?;
                 Ok((path, kind))
             })
             .collect()
@@ -448,9 +453,7 @@ impl Sandbox {
 pub(crate) fn resolve_denied(deny: &[PathBuf]) -> Result<Vec<(PathBuf, bool)>, SandboxError> {
     let mut out = IndexSet::new();
     for raw in deny {
-        let error = |e: &dyn fmt::Display| SandboxError {
-            message: format!("{}: {e}", raw.display()),
-        };
+        let error = |e: &dyn fmt::Display| SandboxError::at(raw, e);
         let abs = std::path::absolute(raw).map_err(|e| error(&e))?;
         if abs.to_str().is_none() {
             return Err(error(&"not UTF-8"));
@@ -561,9 +564,10 @@ fn remote_mounts(
                     Some(nix::libc::ENOTCONN | nix::libc::EACCES)
                 ) => {}
             Err(e) => {
-                return Err(SandboxError {
-                    message: format!("{}: cannot hide this mount: {e}", path.display()),
-                })
+                return Err(SandboxError::at(
+                    &path,
+                    format_args!("cannot hide this mount: {e}"),
+                ))
             }
         }
     }
@@ -640,9 +644,8 @@ fn unescape(field: &str) -> OsString {
 
 /// The mount table of this namespace.
 pub(crate) fn read_mountinfo() -> Result<String, SandboxError> {
-    std::fs::read_to_string("/proc/self/mountinfo").map_err(|e| SandboxError {
-        message: format!("/proc/self/mountinfo: {e}"),
-    })
+    let path = Path::new("/proc/self/mountinfo");
+    std::fs::read_to_string(path).map_err(|e| SandboxError::at(path, e))
 }
 
 /// Denied targets mapped into every surviving mount that strictly contains
@@ -719,15 +722,16 @@ pub(crate) fn collect_git(
                 // The first one is enough to act on: commands could create
                 // any number of them.
                 if scan.unchecked.is_none() && writable_by_commands(path) {
-                    scan.unchecked = Some(SandboxError {
-                        message: format!(
-                            "{}: {}: a command could hide a .git there; make it \
-                             readable or hide it",
-                            path.display(),
-                            err.io_error()
-                                .map_or_else(|| err.to_string(), ToString::to_string)
+                    let cause = err
+                        .io_error()
+                        .map_or_else(|| err.to_string(), ToString::to_string);
+                    scan.unchecked = Some(SandboxError::at(
+                        path,
+                        format_args!(
+                            "{cause}: a command could hide a .git there; make it \
+                             readable or hide it"
                         ),
-                    });
+                    ));
                 }
                 continue;
             }
@@ -846,25 +850,18 @@ fn walk_symlinks(
             }
             Step::Name(name) => {
                 let next = cur.join(&name);
-                let meta = std::fs::symlink_metadata(&next).map_err(|e| SandboxError {
-                    message: format!("{}: {e}", next.display()),
-                })?;
+                let meta =
+                    std::fs::symlink_metadata(&next).map_err(|e| SandboxError::at(&next, e))?;
                 if meta.file_type().is_symlink() {
                     hops += 1;
                     if hops > MAX_SYMLINKS {
-                        return Err(SandboxError {
-                            message: format!(
-                                "{}: too many levels of symbolic links",
-                                abs.display()
-                            ),
-                        });
+                        return Err(SandboxError::at(abs, "too many levels of symbolic links"));
                     }
                     if let Some(dir) = writable_symlink_parent(canon_mounts, &cur) {
                         ro_paths.insert(checked(&dir)?);
                     }
-                    let target = std::fs::read_link(&next).map_err(|e| SandboxError {
-                        message: format!("{}: {e}", next.display()),
-                    })?;
+                    let target =
+                        std::fs::read_link(&next).map_err(|e| SandboxError::at(&next, e))?;
                     push_steps(&mut queue, &target);
                 } else {
                     cur = next;
@@ -915,9 +912,7 @@ fn closest_ancestor(mounts: &[(PathBuf, bool)], path: &Path) -> Option<(PathBuf,
 
 /// `path` made absolute, if it exists and is UTF-8.
 pub(crate) fn checked(path: &Path) -> Result<PathBuf, SandboxError> {
-    let error = |e: &dyn fmt::Display| SandboxError {
-        message: format!("{}: {e}", path.display()),
-    };
+    let error = |e: &dyn fmt::Display| SandboxError::at(path, e);
     let path = std::path::absolute(path).map_err(|e| error(&e))?;
     std::fs::metadata(&path).map_err(|e| error(&e))?;
     if path.to_str().is_none() {
@@ -928,9 +923,7 @@ pub(crate) fn checked(path: &Path) -> Result<PathBuf, SandboxError> {
 
 /// `path` made absolute, as UTF-8.
 fn absolute_utf8(path: &Path) -> Result<String, SandboxError> {
-    let error = |e: &dyn fmt::Display| SandboxError {
-        message: format!("{}: {e}", path.display()),
-    };
+    let error = |e: &dyn fmt::Display| SandboxError::at(path, e);
     std::path::absolute(path)
         .map_err(|e| error(&e))?
         .into_os_string()
