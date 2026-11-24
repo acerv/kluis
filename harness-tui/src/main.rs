@@ -545,7 +545,7 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
             session.as_mut(),
             git_guard.as_mut(),
             &text,
-            !args.json,
+            (!args.json).then_some(print_event),
             false,
         )
         .await;
@@ -643,7 +643,7 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
             session.as_mut(),
             git_guard.as_mut(),
             line,
-            true,
+            Some(print_event),
             true,
         )
         .await;
@@ -674,14 +674,14 @@ struct Done {
     usage: TokenUsage,
 }
 
-/// Run a prompt, printing its events when `print` is set, and save it.
+/// Run a prompt, passing its events to `output` when set, and save it.
 /// Commands started in the background keep running with `keep_jobs`.
 async fn prompt_and_persist(
     agent: &mut Agent,
     session: Option<&mut Session>,
     git_guard: Option<&mut GitGuard>,
     text: &str,
-    print: bool,
+    output: Option<fn(Event<'_>)>,
     keep_jobs: bool,
 ) -> Result<Done, Error> {
     let mut saver = PromptSaver::new(session, agent.history());
@@ -718,8 +718,8 @@ async fn prompt_and_persist(
                 Event::Text(text) if !in_compact => last_text = text.to_owned(),
                 _ => {}
             }
-            if print && !suppress_stdout {
-                print_event(event);
+            if let Some(output) = output.filter(|_| !suppress_stdout) {
+                output(event);
             }
         })
         .await;
