@@ -10,10 +10,8 @@ use std::path::{Path, PathBuf};
 use rustix::fs::{renameat_with, RenameFlags, CWD};
 use rustix::io::Errno;
 
-use crate::{
-    checked, collect_git, read_mountinfo, remote_points, resolve_denied, GitScan, Hidden, Sandbox,
-    SandboxError,
-};
+use crate::mountinfo::{read_mountinfo, remote_points};
+use crate::{checked, collect_git, resolve_denied, GitScan, Hidden, Sandbox, SandboxError};
 
 /// Name a disabled `.git` gets, with a number when it is taken.
 const DISABLED: &str = ".git.kl-disabled";
