@@ -98,88 +98,53 @@ pub(super) fn format_tool_result(
         return;
     };
 
-    match tool {
-        Some(BASH_TOOL) => {
-            if let Some(output) = v["output"].as_str() {
-                let mut lines = output.lines();
-                for line in lines.by_ref().take(MAX_BASH_PREVIEW_LINES) {
-                    out.push(tool_line(line, theme.muted));
-                }
-                let extra = lines.count();
-                if extra > 0 {
-                    out.push(Line::styled(
-                        format!("  … +{extra} more lines"),
-                        theme.muted,
-                    ));
-                }
-            }
-            if let Some(code) = v["exit_code"].as_i64().filter(|&c| c != 0) {
-                out.push(Line::styled(format!("  exit {code}"), theme.error));
-            }
-            if v["timed_out"].as_bool() == Some(true) {
-                out.push(Line::styled("  timed out", theme.error));
-            }
-            if let Some(path) = v["output_file"].as_str() {
-                out.push(Line::styled(format!("  full output: {path}"), theme.muted));
-            }
-        }
-        Some(READ_TOOL) => {
-            let total = v["total_lines"].as_u64().unwrap_or(0);
-            let suffix = truncated_suffix(&v);
-            out.push(Line::styled(
-                format!("  {total} lines{suffix}"),
-                theme.muted,
-            ));
-        }
-        Some(WRITE_TOOL) => {
-            let bytes = v["bytes_written"].as_u64().unwrap_or(0);
-            out.push(Line::styled(format!("  wrote {bytes} bytes"), theme.muted));
-        }
-        Some(LS_TOOL) => {
-            let count = v["entries"].as_array().map_or(0, Vec::len);
-            out.push(Line::styled(format!("  {count} entries"), theme.muted));
-        }
-        Some(FIND_TOOL) => {
-            let total = v["total"].as_u64().unwrap_or(0);
-            out.push(Line::styled(format!("  {total} files"), theme.muted));
-        }
-        Some(GREP_TOOL) => {
-            let matches = v["matches"].as_u64().unwrap_or(0);
-            let suffix = truncated_suffix(&v);
-            out.push(Line::styled(
-                format!("  {matches} matches{suffix}"),
-                theme.muted,
-            ));
-        }
-        Some("web_fetch") => {
-            let total = v["total_bytes"].as_u64().unwrap_or(0);
-            let suffix = truncated_suffix(&v);
-            out.push(Line::styled(
-                format!("  {total} bytes{suffix}"),
-                theme.muted,
-            ));
-        }
-        Some("web_search") => {
-            let count = v["results"].as_array().map_or(0, Vec::len);
-            out.push(Line::styled(format!("  {count} results"), theme.muted));
-        }
-        Some("skill") => {
-            let suffix = truncated_suffix(&v);
-            out.push(Line::styled(
-                format!("  instructions loaded{suffix}"),
-                theme.muted,
-            ));
-        }
+    let count = |key: &str| v[key].as_u64().unwrap_or(0);
+    let len = |key: &str| v[key].as_array().map_or(0, Vec::len);
+    let suffix = truncated_suffix(&v);
+    let text = match tool {
+        Some(BASH_TOOL) => return format_bash_result(&v, theme, out),
+        Some(READ_TOOL) => format!("{} lines{suffix}", count("total_lines")),
+        Some(WRITE_TOOL) => format!("wrote {} bytes", count("bytes_written")),
+        Some(LS_TOOL) => format!("{} entries", len("entries")),
+        Some(FIND_TOOL) => format!("{} files", count("total")),
+        Some(GREP_TOOL) => format!("{} matches{suffix}", count("matches")),
+        Some("web_fetch") => format!("{} bytes{suffix}", count("total_bytes")),
+        Some("web_search") => format!("{} results", len("results")),
+        Some("skill") => format!("instructions loaded{suffix}"),
         Some("ask_user" | "task") => {
-            let answer = v["answer"].as_str().unwrap_or_default();
+            format!(
+                "answer: {}",
+                summary(v["answer"].as_str().unwrap_or_default())
+            )
+        }
+        _ => summary(content),
+    };
+    out.push(Line::styled(format!("  {text}"), theme.muted));
+}
+
+/// The end of the output of a `bash` call, and how it ended.
+fn format_bash_result(v: &Value, theme: Theme, out: &mut Vec<Line<'static>>) {
+    if let Some(output) = v["output"].as_str() {
+        let mut lines = output.lines();
+        for line in lines.by_ref().take(MAX_BASH_PREVIEW_LINES) {
+            out.push(tool_line(line, theme.muted));
+        }
+        let extra = lines.count();
+        if extra > 0 {
             out.push(Line::styled(
-                format!("  answer: {}", summary(answer)),
+                format!("  … +{extra} more lines"),
                 theme.muted,
             ));
         }
-        _ => {
-            out.push(Line::styled(format!("  {}", summary(content)), theme.muted));
-        }
+    }
+    if let Some(code) = v["exit_code"].as_i64().filter(|&c| c != 0) {
+        out.push(Line::styled(format!("  exit {code}"), theme.error));
+    }
+    if v["timed_out"].as_bool() == Some(true) {
+        out.push(Line::styled("  timed out", theme.error));
+    }
+    if let Some(path) = v["output_file"].as_str() {
+        out.push(Line::styled(format!("  full output: {path}"), theme.muted));
     }
 }
 
