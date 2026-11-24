@@ -5,7 +5,7 @@
 <h1 align="center">K-Luis</h1>
 
 <p align="center">
-  Simplicity-focused AI harness with a fully configurable native sandbox.
+  AI harness for daily coding and studying, with a fully configurable sandbox.
 </p>
 
 <p align="center">
@@ -14,32 +14,33 @@
   <a href="https://www.kernel.org/"><img alt="Platform: Linux" src="https://img.shields.io/badge/platform-Linux-9cf"></a>
 </p>
 
-> **Note:** K-Luis is an experimental project, born from the idea of studying
-> AI integration inside projects and building something useful for my daily
-> routine job.
-
 ## Why K-Luis
 
-K-Luis is a minimal harness. It has what you need and nothing more:
+K-Luis is a mature harness for a daily coding and studying workflow. It is
+small and focused on security, but not limited: it guides you towards your
+goals instead of only running commands.
 
-- Everything a coding agent needs: read, search and edit files, run commands,
-  search the web, fetch pages, and ask you questions. See [Features](docs/features.md).
-- A small terminal UI with sessions, model switching and streaming replies.
+- A strong native sandbox, on by default.
+- Bundled skills that help you write better code and think more critically.
+- The tools a coding agent needs: read, search and edit files, run commands,
+  search the web, fetch pages, and ask you questions. See
+  [Tools](docs/features.md#tools).
 - One short config file, and an option for each setting.
+  See [Bundled skills](docs/features.md#bundled-skills).
+- A terminal UI with sessions, diffs, model switching and streaming replies.
 - Any provider supported by `genai`, plus a Claude subscription login.
 
-It also has a good sandbox, on by default. Most coding agents either
-interrupt you with permission prompts or run whatever the model asks directly
-on the host. K-Luis does neither:
+K-Luis does neither. Commands run in a `hakoniwa` container, and:
 
 - You choose which folders and ports the model can touch.
-- Commands run in a `hakoniwa` container, not on your machine.
 - `.git` stays read-only, so hooks and config cannot run code as you.
+- Your home directory is hidden, unless you expose folders explicitly.
 - API keys and `~/.kluis` are never exposed to the sandbox.
-- There is no network unless you allow it.
+- There is no network unless you allow it: all of it, or only some TCP ports.
+  `web_fetch` can be limited to a list of hosts.
 
 A malicious instruction in a file or web page can only affect the folders you
-gave the model.
+gave the model. See [Sandbox](docs/sandbox.md) for the details and the limits.
 
 ## Install
 
