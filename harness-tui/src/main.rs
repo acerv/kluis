@@ -7,8 +7,8 @@
 //! kl                           # interactive chat, Ctrl-D to quit
 //! kl "fix the typo in README.md"   # single prompt
 //! git diff | kl -p "review this"    # single prompt, stdin appended
-//! kl --json "list the TODOs"        # single prompt, JSON result
-//! kl --json-stream "fix the tests"  # single prompt, one JSON line per event
+//! kl --output-format json "list the TODOs"   # single prompt, JSON result
+//! kl --output-format stream "fix the tests"  # one JSON line per event
 //! kl --login anthropic         # use a Claude Pro/Max subscription
 //! ```
 //!
@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use genai::adapter::AdapterKind;
 use genai::chat::ChatMessage;
 use harness_core::oauth::flow::Login;
@@ -184,19 +184,22 @@ pub struct Args {
     #[arg(short, long)]
     print: bool,
 
-    /// Like --print, and write the result as one JSON object instead of
-    /// text: `result`, `usage` and `session`, or `error`.
-    #[arg(long)]
-    json: bool,
-
-    /// Like --json, and write one JSON line per event as the prompt runs:
-    /// text, tool calls and results, usage, retries. The last line is the
-    /// `result` or the `error`.
-    #[arg(long, conflicts_with = "json")]
-    json_stream: bool,
+    /// How a prompt run once writes its output: `text`; `json`, one object
+    /// with `result`, `usage` and `session`, or `error`; or `stream`, one
+    /// JSON line per event (text, tool calls and results, usage, retries)
+    /// ending with that object. `json` and `stream` imply --print.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    output_format: OutputFormat,
 
     /// Prompt to run once; starts an interactive chat when absent.
     prompt: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum OutputFormat {
+    Text,
+    Json,
+    Stream,
 }
 
 fn main() -> ExitCode {
@@ -353,7 +356,7 @@ fn apply_config(args: &mut Args) -> Result<Option<String>, Error> {
 
 async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, Error> {
     let cwd = std::env::current_dir()?;
-    let once = args.print || args.json || args.json_stream;
+    let once = args.print || args.output_format != OutputFormat::Text;
     if once {
         let mut text = args.prompt.join(" ");
         if !io::stdin().is_terminal() {
@@ -548,22 +551,21 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
     if !args.prompt.is_empty() {
         let text = args.prompt.join(" ");
         let text = harness_core::expand_command(&commands.commands, &text).unwrap_or(text);
-        let output = if args.json_stream {
-            json_lines::print_event
-        } else {
-            print_event
+        let output: fn(Event<'_>) = match args.output_format {
+            OutputFormat::Text => print_event,
+            OutputFormat::Json => |_| {},
+            OutputFormat::Stream => json_lines::print_event,
         };
-        let json = args.json || args.json_stream;
         let res = prompt_and_persist(
             &mut agent,
             session.as_mut(),
             git_guard.as_mut(),
             &text,
-            (!args.json).then_some(output),
+            output,
             false,
         )
         .await;
-        if !json {
+        if args.output_format == OutputFormat::Text {
             return res.map(|_| ExitCode::SUCCESS);
         }
         let failed = res.is_err();
@@ -574,9 +576,7 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
             }),
             Err(err) => serde_json::json!({ "error": err.to_string() }),
         };
-        if args.json_stream {
-            out["type"] = if failed { "error" } else { "result" }.into();
-        }
+        out["type"] = if failed { "error" } else { "result" }.into();
         out["session"] = session.as_ref().map(Session::current_id).into();
         println!("{out}");
         return Ok(if failed {
@@ -656,7 +656,7 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
             session.as_mut(),
             git_guard.as_mut(),
             line,
-            Some(print_event),
+            print_event,
             true,
         )
         .await;
@@ -687,14 +687,14 @@ struct Done {
     usage: TokenUsage,
 }
 
-/// Run a prompt, passing its events to `output` when set, and save it.
+/// Run a prompt, passing its events to `output`, and save it.
 /// Commands started in the background keep running with `keep_jobs`.
 async fn prompt_and_persist(
     agent: &mut Agent,
     session: Option<&mut Session>,
     git_guard: Option<&mut GitGuard>,
     text: &str,
-    output: Option<fn(Event<'_>)>,
+    output: fn(Event<'_>),
     keep_jobs: bool,
 ) -> Result<Done, Error> {
     let mut saver = PromptSaver::new(session, agent.history());
@@ -731,7 +731,7 @@ async fn prompt_and_persist(
                 Event::Text(text) if !in_compact => last_text = text.to_owned(),
                 _ => {}
             }
-            if let Some(output) = output.filter(|_| !suppress_stdout) {
+            if !suppress_stdout {
                 output(event);
             }
         })

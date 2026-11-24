@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
-//! Prompt events as newline-delimited JSON, for `kl --json-stream`.
+//! Prompt events as newline-delimited JSON, for `kl --output-format stream`.
 //!
 //! Every line is an object whose `type` names the event. Text comes once
 //! per turn, not piece by piece, and the last line is the `result` or the
-//! `error` that `--json` prints.
+//! `error` that `--output-format json` prints.
 
 use harness_core::Event;
 use harness_core::TokenUsage;

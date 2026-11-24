@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
-//! Tests of `kl --print` and `kl --json` against a local mock server.
+//! Tests of `kl --print` and `kl --output-format` against a local mock server.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -130,7 +130,7 @@ fn print_appends_standard_input_to_the_prompt() {
 
 #[test]
 fn json_prints_the_result_as_one_object() {
-    let (out, server) = run_kl(&["--json"], "hello", 200);
+    let (out, server) = run_kl(&["--output-format", "json"], "hello", 200);
 
     assert!(out.status.success(), "{out:?}");
     assert_eq!(server.join().unwrap(), "hello");
@@ -142,7 +142,7 @@ fn json_prints_the_result_as_one_object() {
 
 #[test]
 fn json_reports_a_failure_with_its_exit_code() {
-    let (out, _) = run_kl(&["--json", "hello"], "", 401);
+    let (out, _) = run_kl(&["--output-format", "json", "hello"], "", 401);
 
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     let result: Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -168,8 +168,8 @@ fn json_lines(stdout: &[u8]) -> Vec<Value> {
 }
 
 #[test]
-fn json_stream_prints_one_line_per_event() {
-    let (out, server) = run_kl(&["--json-stream", "hello"], "", 200);
+fn stream_prints_one_line_per_event() {
+    let (out, server) = run_kl(&["--output-format", "stream", "hello"], "", 200);
 
     assert!(out.status.success(), "{out:?}");
     assert_eq!(server.join().unwrap(), "hello");
@@ -184,8 +184,8 @@ fn json_stream_prints_one_line_per_event() {
 }
 
 #[test]
-fn json_stream_ends_with_the_error() {
-    let (out, _) = run_kl(&["--json-stream", "hello"], "", 401);
+fn stream_ends_with_the_error() {
+    let (out, _) = run_kl(&["--output-format", "stream", "hello"], "", 401);
 
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     let lines = json_lines(&out.stdout);
