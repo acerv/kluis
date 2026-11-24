@@ -19,6 +19,7 @@ mod input;
 pub mod json_lines;
 mod markdown;
 mod picker;
+mod stats;
 mod style;
 mod terminal;
 
@@ -49,6 +50,7 @@ pub use clipboard::{last_assistant_text, osc52_sequence};
 pub use complete::is_builtin;
 pub use history::{History, MAX_HISTORY};
 pub use markdown::code_theme;
+pub use stats::PromptStats;
 pub use style::Theme;
 pub use terminal::flush_scrollback;
 pub use tui_markdown::CodeTheme;
@@ -276,7 +278,7 @@ pub fn git_notices(guard: Option<&mut GitGuard>, messages: &[ChatMessage]) -> Ve
 
 /// Like [`git_notices`], when the caller already tracked whether any tool call
 /// in the prompt could change files (even if auto-compaction replaced history).
-pub fn check_git_guard(guard: Option<&mut GitGuard>, changed_files: bool) -> Vec<String> {
+fn check_git_guard(guard: Option<&mut GitGuard>, changed_files: bool) -> Vec<String> {
     let Some(guard) = guard.filter(|_| changed_files) else {
         return Vec::new();
     };
@@ -872,17 +874,10 @@ fn resume_session(
     app.set_context(session.context());
 }
 
-#[derive(Default)]
-struct DriveStats {
-    usage: TokenUsage,
-    changed_files: bool,
-}
-
 struct DriveResult {
     cancelled: bool,
     quit: bool,
     outcome: Option<Result<String, Error>>,
-    stats: DriveStats,
 }
 
 struct TurnOutcome {
@@ -905,7 +900,6 @@ async fn drive_agent(
     let mut cancelled = false;
     let mut quit = false;
     let mut outcome: Option<Result<String, Error>> = None;
-    let mut stats = DriveStats::default();
     // The question of the model waiting for the user's answer.
     let mut question: Option<Question> = None;
 
@@ -957,7 +951,7 @@ async fn drive_agent(
                     }
                 }
                 Some(update) = rx.recv() => {
-                    drain_updates(update, &mut rx, app, &mut stats);
+                    drain_updates(update, &mut rx, app);
                     draw(term, app)?;
                 }
                 // After `rx`, so the tool call shows before its question.
@@ -983,7 +977,7 @@ async fn drive_agent(
     }
 
     if let Ok(first) = rx.try_recv() {
-        drain_updates(first, &mut rx, app, &mut stats);
+        drain_updates(first, &mut rx, app);
     }
     // A question sent just before a cancel has nobody waiting for it: drop
     // it so the next prompt does not show it.
@@ -993,7 +987,6 @@ async fn drive_agent(
         cancelled,
         quit,
         outcome,
-        stats,
     })
 }
 
@@ -1009,6 +1002,7 @@ async fn run_turn(
     prompt: &str,
 ) -> Result<TurnOutcome, Error> {
     let mut saver = PromptSaver::new(session, agent.history());
+    let mut stats = PromptStats::default();
     let (tx, rx) = mpsc::unbounded_channel::<AgentUpdate>();
     let res = drive_agent(
         term,
@@ -1019,14 +1013,14 @@ async fn run_turn(
         agent.steering(),
         agent.prompt(prompt, |event| {
             saver.on_event(&event);
+            stats.on_event(&event);
             forward_event(&tx, event);
         }),
     )
     .await?;
 
-    let changed_files = res.stats.changed_files;
     let cancelled = res.cancelled;
-    if let Err(err) = saver.finish(agent.history(), res.stats.usage, app.context()) {
+    if let Err(err) = saver.finish(agent.history(), stats.usage, stats.context) {
         app.push_info(format!("[session save error: {err}]"));
     }
 
@@ -1037,7 +1031,7 @@ async fn run_turn(
     Ok(TurnOutcome {
         quit,
         cancelled,
-        changed_files,
+        changed_files: stats.changed_files,
     })
 }
 
@@ -1057,6 +1051,7 @@ async fn run_compact(
     app.push_info("[compacting conversation…]");
     draw(term, app)?;
 
+    let mut stats = PromptStats::default();
     let (tx, rx) = mpsc::unbounded_channel::<AgentUpdate>();
     let res = drive_agent(
         term,
@@ -1065,12 +1060,15 @@ async fn run_compact(
         questions,
         rx,
         agent.steering(),
-        agent.compact(focus, |event| forward_event(&tx, event)),
+        agent.compact(focus, |event| {
+            stats.on_event(&event);
+            forward_event(&tx, event);
+        }),
     )
     .await?;
 
     let compacted = !res.cancelled && !res.quit && matches!(res.outcome, Some(Ok(_)));
-    let usage = res.stats.usage;
+    let usage = stats.usage;
     if finish_activity(app, res) {
         return Ok(true);
     }
@@ -1132,12 +1130,7 @@ fn handle_event_batch(
 /// Apply `first` and any immediately queued updates from `rx`, coalescing
 /// consecutive `TextDelta` or `ReasoningDelta` chunks so Markdown parsing
 /// and terminal redraws run once per batch instead of once per token.
-fn drain_updates(
-    first: AgentUpdate,
-    rx: &mut mpsc::UnboundedReceiver<AgentUpdate>,
-    app: &mut App,
-    stats: &mut DriveStats,
-) {
+fn drain_updates(first: AgentUpdate, rx: &mut mpsc::UnboundedReceiver<AgentUpdate>, app: &mut App) {
     let mut pending = first;
     while let Ok(next) = rx.try_recv() {
         match (&mut pending, next) {
@@ -1146,21 +1139,12 @@ fn drain_updates(
                 acc.push_str(&more);
             }
             (_, next) => {
-                apply_and_track(pending, app, stats);
+                app.apply_update(pending);
                 pending = next;
             }
         }
     }
-    apply_and_track(pending, app, stats);
-}
-
-fn apply_and_track(update: AgentUpdate, app: &mut App, stats: &mut DriveStats) {
-    match &update {
-        AgentUpdate::TurnEnd(usage) | AgentUpdate::TaskUsage(usage) => stats.usage += *usage,
-        AgentUpdate::ToolCall { name, .. } if !is_read_only(name) => stats.changed_files = true,
-        _ => {}
-    }
-    app.apply_update(update);
+    app.apply_update(pending);
 }
 
 fn draw(term: &mut InlineTerminal, app: &mut App) -> Result<(), Error> {
