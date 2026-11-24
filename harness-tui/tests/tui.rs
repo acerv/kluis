@@ -127,6 +127,19 @@ fn footer_shows_model_context_sandbox_and_folder() {
         screen.contains("gpt-4o (default) · 3.5M context  "),
         "{screen}"
     );
+
+    // Nor what a subagent sent: its conversation is another one.
+    app.apply_update(AgentUpdate::TaskUsage(TokenUsage {
+        input: 9_000,
+        output: 100,
+        cached: 0,
+    }));
+    term.draw(|f| app.render(f)).unwrap();
+    let screen = render_text(&term);
+    assert!(
+        screen.contains("gpt-4o (default) · 3.5M context  "),
+        "{screen}"
+    );
 }
 
 #[test]

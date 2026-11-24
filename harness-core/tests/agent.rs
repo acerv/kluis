@@ -173,6 +173,7 @@ async fn tool_call_round_trip() {
                 Event::Truncated => "truncated".to_owned(),
                 Event::TurnStart => "start".to_owned(),
                 Event::TurnEnd(usage) => format!("end {:?}", usage.and_then(|u| u.total_tokens)),
+                Event::TaskUsage(usage) => format!("task {:?}", usage.total_tokens),
                 Event::ReasoningDelta(text) => format!("reason {text}"),
                 Event::TextDelta(text) => format!("delta {text}"),
                 Event::Text(text) => format!("text {text}"),

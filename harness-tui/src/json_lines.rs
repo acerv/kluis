@@ -7,6 +7,7 @@
 //! per turn, not piece by piece, and the last line is the `result` or the
 //! `error` that `--output-format json` prints.
 
+use genai::chat::Usage;
 use harness_core::Event;
 use harness_core::TokenUsage;
 use serde_json::{json, Value};
@@ -27,6 +28,13 @@ pub fn usage_json(usage: TokenUsage) -> Value {
     })
 }
 
+/// The `usage` line of a turn.
+fn turn_usage(usage: &Usage) -> Value {
+    let mut value = usage_json(TokenUsage::from_genai(usage));
+    value["type"] = "usage".into();
+    value
+}
+
 fn event_json(event: Event<'_>) -> Option<Value> {
     let value = match event {
         Event::Text(text) => json!({ "type": "text", "text": text }),
@@ -41,9 +49,10 @@ fn event_json(event: Event<'_>) -> Option<Value> {
             "id": resp.call_id,
             "content": resp.content,
         }),
-        Event::TurnEnd(Some(usage)) => {
-            let mut value = usage_json(TokenUsage::from_genai(usage));
-            value["type"] = "usage".into();
+        Event::TurnEnd(Some(usage)) => turn_usage(usage),
+        Event::TaskUsage(usage) => {
+            let mut value = turn_usage(usage);
+            value["subagent"] = true.into();
             value
         }
         Event::Retry {
@@ -78,7 +87,7 @@ fn event_json(event: Event<'_>) -> Option<Value> {
 mod tests {
     use std::time::Duration;
 
-    use genai::chat::{ToolCall, ToolResponse, Usage};
+    use genai::chat::{ToolCall, ToolResponse};
 
     use super::*;
 
@@ -116,6 +125,25 @@ mod tests {
         assert_eq!(
             event_json(Event::TurnEnd(Some(&usage))),
             Some(json!({ "type": "usage", "input": 12, "output": 3, "cached": 0 }))
+        );
+    }
+
+    #[test]
+    fn usage_of_a_subagent_is_marked() {
+        let usage = Usage {
+            prompt_tokens: Some(7),
+            completion_tokens: Some(2),
+            ..Default::default()
+        };
+        assert_eq!(
+            event_json(Event::TaskUsage(&usage)),
+            Some(json!({
+                "type": "usage",
+                "input": 7,
+                "output": 2,
+                "cached": 0,
+                "subagent": true,
+            }))
         );
     }
 
