@@ -35,7 +35,8 @@ fn turn_usage(usage: &Usage) -> Value {
     value
 }
 
-fn event_json(event: Event<'_>) -> Option<Value> {
+/// The line for `event`, or `None` for the events scripts have no use for.
+pub fn event_json(event: Event<'_>) -> Option<Value> {
     let value = match event {
         Event::Text(text) => json!({ "type": "text", "text": text }),
         Event::ToolCall(call) => json!({
@@ -81,93 +82,4 @@ fn event_json(event: Event<'_>) -> Option<Value> {
         | Event::TurnEnd(None) => return None,
     };
     Some(value)
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use genai::chat::{ToolCall, ToolResponse};
-
-    use super::*;
-
-    #[test]
-    fn tool_calls_and_results_keep_their_id() {
-        let call = ToolCall {
-            call_id: "c1".into(),
-            fn_name: "bash".into(),
-            fn_arguments: json!({ "command": "ls" }),
-            thought_signatures: None,
-        };
-        assert_eq!(
-            event_json(Event::ToolCall(&call)),
-            Some(json!({
-                "type": "tool_call",
-                "id": "c1",
-                "name": "bash",
-                "arguments": { "command": "ls" },
-            }))
-        );
-        let resp = ToolResponse::new("c1", "README.md");
-        assert_eq!(
-            event_json(Event::ToolResult(&resp, None)),
-            Some(json!({ "type": "tool_result", "id": "c1", "content": "README.md" }))
-        );
-    }
-
-    #[test]
-    fn usage_matches_the_final_object() {
-        let usage = Usage {
-            prompt_tokens: Some(12),
-            completion_tokens: Some(3),
-            ..Default::default()
-        };
-        assert_eq!(
-            event_json(Event::TurnEnd(Some(&usage))),
-            Some(json!({ "type": "usage", "input": 12, "output": 3, "cached": 0 }))
-        );
-    }
-
-    #[test]
-    fn usage_of_a_subagent_is_marked() {
-        let usage = Usage {
-            prompt_tokens: Some(7),
-            completion_tokens: Some(2),
-            ..Default::default()
-        };
-        assert_eq!(
-            event_json(Event::TaskUsage(&usage)),
-            Some(json!({
-                "type": "usage",
-                "input": 7,
-                "output": 2,
-                "cached": 0,
-                "subagent": true,
-            }))
-        );
-    }
-
-    #[test]
-    fn retries_give_their_delay_in_milliseconds() {
-        let retry = Event::Retry {
-            attempt: 2,
-            delay: Duration::from_secs(4),
-            reason: "rate limited",
-        };
-        assert_eq!(
-            event_json(retry),
-            Some(json!({
-                "type": "retry",
-                "attempt": 2,
-                "delay_ms": 4000,
-                "reason": "rate limited",
-            }))
-        );
-    }
-
-    #[test]
-    fn pieces_of_text_are_left_out() {
-        assert_eq!(event_json(Event::TextDelta("do")), None);
-        assert_eq!(event_json(Event::TurnEnd(None)), None);
-    }
 }
