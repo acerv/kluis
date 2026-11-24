@@ -830,7 +830,7 @@ fn symlinked_project_agents_file_is_ignored() {
 
     assert!(find_agents_files(&cwd, None).is_empty());
     // Not even when handed the path, as if swapped in after it was found.
-    let prompt = system_prompt(&cwd, &[cwd.join(AGENTS_FILE)]);
+    let prompt = system_prompt(&cwd, &[cwd.join(AGENTS_FILE)], &[]);
     assert!(!prompt.contains("sk-secret"), "{prompt}");
 }
 
@@ -847,7 +847,7 @@ fn symlinked_global_agents_file_is_followed() {
 
     let found = find_agents_files(&cwd, Some(&global));
     assert_eq!(found, [std::fs::canonicalize(&rules).unwrap()]);
-    assert!(system_prompt(&cwd, &found).contains("global rules"));
+    assert!(system_prompt(&cwd, &found, &[]).contains("global rules"));
 }
 
 #[test]
@@ -866,7 +866,7 @@ fn system_prompt_includes_context_and_truncates_large_agents_file() {
     std::fs::write(&huge, big).unwrap();
 
     let missing = cwd.join("missing.md");
-    let text = system_prompt(cwd, &[missing, empty, rules.clone(), huge.clone()]);
+    let text = system_prompt(cwd, &[missing, empty, rules.clone(), huge.clone()], &[]);
 
     assert!(text.contains(&cwd.display().to_string()), "{text}");
     assert!(text.contains("OS: linux"), "{text}");
