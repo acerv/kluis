@@ -67,6 +67,21 @@ pub struct Image {
     pub data: String,
 }
 
+impl Image {
+    /// `bytes` as an image the providers take: PNG, JPEG, GIF or WebP, up
+    /// to [`MAX_IMAGE_BYTES`].
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        let mime = image_mime(bytes).ok_or("not a PNG, JPEG, GIF or WebP image")?;
+        if bytes.len() as u64 > MAX_IMAGE_BYTES {
+            return Err(format!("image larger than {MAX_IMAGE_BYTES} bytes"));
+        }
+        Ok(Self {
+            mime: mime.to_owned(),
+            data: STANDARD.encode(bytes),
+        })
+    }
+}
+
 impl ReadTool {
     /// JSON Schema of the tool input.
     pub fn schema() -> Value {
@@ -151,8 +166,8 @@ fn read_window(
     stop: &AtomicBool,
 ) -> Result<ReadOutput, ToolError> {
     let mut file = File::open(path).map_err(|e| ToolError::io(display, e))?;
-    if let Some(mime) = image_type(&mut file).map_err(|e| ToolError::io(display, e))? {
-        return read_image(file, mime, display);
+    if is_image(&mut file).map_err(|e| ToolError::io(display, e))? {
+        return read_image(file, display);
     }
     let start = offset - 1;
     let end = start.saturating_add(limit);
@@ -273,39 +288,38 @@ fn flush_line(
     line_buf.clear();
 }
 
-/// The MIME type of `file` when it is an image the providers take, from its
-/// first bytes. The file is read from its start again afterwards.
-fn image_type(file: &mut File) -> std::io::Result<Option<&'static str>> {
+/// Whether `file` is an image the providers take, from its first bytes.
+/// The file is read from its start again afterwards.
+fn is_image(file: &mut File) -> std::io::Result<bool> {
     let mut head = Vec::with_capacity(12);
     file.take(12).read_to_end(&mut head)?;
     file.rewind()?;
-    Ok(match head.as_slice() {
+    Ok(image_mime(&head).is_some())
+}
+
+/// The MIME type of the image starting with `head`, when the providers
+/// take it.
+fn image_mime(head: &[u8]) -> Option<&'static str> {
+    match head {
         [0x89, b'P', b'N', b'G', ..] => Some("image/png"),
         [0xff, 0xd8, 0xff, ..] => Some("image/jpeg"),
         [b'G', b'I', b'F', b'8', ..] => Some("image/gif"),
-        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P'] => Some("image/webp"),
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => Some("image/webp"),
         _ => None,
-    })
+    }
 }
 
-fn read_image(file: File, mime: &str, display: &str) -> Result<ReadOutput, ToolError> {
+fn read_image(file: File, display: &str) -> Result<ReadOutput, ToolError> {
     let mut data = Vec::new();
     file.take(MAX_IMAGE_BYTES + 1)
         .read_to_end(&mut data)
         .map_err(|e| ToolError::io(display, e))?;
-    if data.len() as u64 > MAX_IMAGE_BYTES {
-        return Err(ToolError::new(format!(
-            "{display}: image larger than {MAX_IMAGE_BYTES} bytes"
-        )));
-    }
+    let image = Image::from_bytes(&data).map_err(|e| ToolError::new(format!("{display}: {e}")))?;
     Ok(ReadOutput {
-        content: format!("{mime} image of {} bytes, attached", data.len()),
+        content: format!("{} image of {} bytes, attached", image.mime, data.len()),
         total_lines: 0,
         truncated: false,
         next_offset: None,
-        image: Some(Image {
-            mime: mime.to_owned(),
-            data: STANDARD.encode(&data),
-        }),
+        image: Some(image),
     })
 }
