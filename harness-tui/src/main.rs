@@ -119,7 +119,7 @@ pub struct Args {
     network: bool,
 
     /// Let web_fetch reach only this host and its subdomains, private
-    /// addresses included (repeatable).
+    /// addresses included, even without --network (repeatable).
     #[arg(long, value_name = "HOST")]
     web_host: Vec<String>,
 
@@ -502,14 +502,18 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
         agent = agent.with_auto_compact(Some(tokens));
     }
     // Fetching and searching run on the host: only when the model may reach
-    // the network anyway, which is always the case without the sandbox.
-    if args.network || args.no_sandbox {
+    // the network anyway, which is always the case without the sandbox, or,
+    // for fetching, the user lists the hosts it may reach.
+    let any_network = args.network || args.no_sandbox;
+    if any_network || !args.web_host.is_empty() {
+        agent = agent.with_web_fetch(WebClient::new(&args.web_host)?);
+    }
+    if any_network {
         let searcher = match &args.searxng_url {
             Some(url) => Searcher::new(Engine::Searxng, url)?,
             None => Searcher::duckduckgo()?,
         };
-        let fetcher = WebClient::new(&args.web_host)?;
-        agent = agent.with_web_fetch(fetcher).with_web_search(searcher);
+        agent = agent.with_web_search(searcher);
     }
 
     // Commands can write a repository only in a writable folder.
@@ -774,7 +778,11 @@ fn sandbox_details(args: &Args, cwd: &Path) -> String {
         let ports: Vec<_> = args.allow_connect.iter().map(u16::to_string).collect();
         format!("ports {}", ports.join(", "))
     };
-    format!("sandbox: {access} · {network}")
+    let mut details = format!("sandbox: {access} · {network}");
+    if !args.web_host.is_empty() {
+        details += &format!(" · web {}", args.web_host.join(", "));
+    }
+    details
 }
 
 /// The provider of `model` and where its credentials come from.

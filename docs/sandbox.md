@@ -59,8 +59,9 @@ when you build, test or open the project. Review the changes like any patch.
 
 Three tools run outside the sandbox because they need the user or the
 network: `ask_user`, `web_fetch` and `web_search`. `web_fetch` and
-`web_search` are offered only with `--network` (or `network = true`) or
-`--no-sandbox`. See [Web tools](#web-tools).
+`web_search` are offered with `--network` (or `network = true`) or
+`--no-sandbox`, and `web_fetch` also when hosts are listed for it. See
+[Web tools](#web-tools).
 
 Commands allowed the network with `--network` reach any host, LAN and
 localhost included: the limits of the web tools do not apply to them.
@@ -79,14 +80,17 @@ the connection uses only those, and each redirect is checked again.
 Proxies from the environment are not used, as they would resolve names
 themselves.
 
+With `--network` this matters in plan mode only, as commands can then
+reach your machine and LAN themselves.
+
 `--web-host`, or `web_hosts` in `[sandbox]`, lets `web_fetch` reach only the
 hosts listed and their subdomains: `docs.rs` also allows `www.docs.rs`. A
-listed host may be private, such as `localhost`. `web_search` asks only its
-search engine, which may be private when set with `--searxng-url`.
-
-This stops the model from reaching your machine and LAN through the web
-tools. It does not stop it from sending what it reads to a public host in
-a URL: list the hosts you need for that.
+listed host may be private, such as `localhost`. Listing hosts offers
+`web_fetch` even without `--network`, so the model can read the
+documentation it needs while commands stay off the network, and cannot
+send what it reads to a host you did not list. `web_search` is not offered
+then. It asks only its search engine, which may be private when set with
+`--searxng-url`.
 
 ## Background commands
 

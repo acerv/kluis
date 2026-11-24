@@ -33,8 +33,8 @@
 //! # Allow any network, to commands too.
 //! network = false
 //! # Let web_fetch reach only these hosts and their subdomains, private
-//! # addresses included; any public host when empty. Commands are not
-//! # limited by it.
+//! # addresses included, even without network; any public host when
+//! # empty. Commands are not limited by it.
 //! web_hosts = ["docs.rs", "github.com"]
 //! # Let the model keep commands running in the background across
 //! # prompts; a git repository they create may be used by your git before
