@@ -5,6 +5,8 @@
 
 use std::borrow::Cow;
 use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
@@ -26,7 +28,8 @@ use crate::retry::{is_too_large, EndedEarly, RetryPolicy};
 use crate::session::TokenUsage;
 use crate::tools::{
     self, error_response, AskTool, Asker, BashTool, Executor, FetchTool, HostTools, Image,
-    ReadOutput, SearchTool, Searcher, SkillTool, ToolContext, ToolDetails, WebClient,
+    ReadOutput, SearchTool, Searcher, SkillTool, TaskOutput, TaskTool, ToolContext, ToolDetails,
+    WebClient,
 };
 use crate::{Event, Skill};
 
@@ -43,6 +46,9 @@ pub const DEFAULT_AUTO_COMPACT_TOKENS: u64 = 100_000;
 /// Consecutive identical turns (or identical calls within one turn) before the
 /// agent refuses to re-run them and asks the model to change approach.
 const MAX_REPEATED_CALLS: usize = 3;
+
+/// Characters shown of a tool call a subagent makes.
+const MAX_TASK_LINE: usize = 200;
 
 /// Thinking / reasoning effort sent to models that support it.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,7 +138,8 @@ pub struct Agent {
     thinking: Thinking,
     req: ChatRequest,
     cache_key: Uuid,
-    executor: Executor,
+    /// Shared with the subagents.
+    executor: Arc<Executor>,
     host: HostTools,
     retry: RetryPolicy,
     max_turns: Option<usize>,
@@ -142,6 +149,8 @@ pub struct Agent {
     plan: bool,
     /// Whether the last prompt was sent in plan mode.
     planned: bool,
+    /// A subagent: it starts none itself.
+    sub: bool,
 }
 
 /// Messages of the user waiting to join a running prompt, shared with the
@@ -184,9 +193,11 @@ impl Agent {
             oauth: None,
             model: model.into(),
             thinking: Thinking::Default,
-            req: ChatRequest::default().with_tools(tools::definitions()),
+            req: ChatRequest::default()
+                .with_tools(tools::definitions())
+                .append_tool(TaskTool::definition()),
             cache_key: Uuid::new_v4(),
-            executor: Executor::default(),
+            executor: Arc::default(),
             host: HostTools::default(),
             retry: RetryPolicy::default(),
             max_turns: Some(DEFAULT_MAX_TURNS),
@@ -194,7 +205,86 @@ impl Agent {
             steering: Steering::default(),
             plan: false,
             planned: false,
+            sub: false,
         }
+    }
+
+    /// An agent for a task this one hands off: the same model and tools,
+    /// in the same mode, with a conversation of its own. It cannot hand
+    /// off tasks, ask the user nor keep a todo list.
+    fn subagent(&self) -> Self {
+        let mut tools = self.req.tools.clone();
+        if let Some(tools) = &mut tools {
+            tools.retain(|tool| {
+                ![tools::TASK_TOOL, tools::ASK_TOOL, tools::TODO_TOOL].contains(&tool.name.as_ref())
+            });
+        }
+        Self {
+            client: self.client.clone(),
+            oauth: self.oauth.clone(),
+            model: self.model.clone(),
+            thinking: self.thinking,
+            req: ChatRequest {
+                system: self.req.system.clone(),
+                tools,
+                ..ChatRequest::default()
+            },
+            cache_key: Uuid::new_v4(),
+            executor: self.executor.clone(),
+            host: HostTools {
+                asker: None,
+                ..self.host.clone()
+            },
+            retry: self.retry,
+            max_turns: self.max_turns,
+            auto_compact_tokens: self.auto_compact_tokens,
+            steering: Steering::default(),
+            plan: self.plan,
+            planned: false,
+            sub: true,
+        }
+    }
+
+    /// Answer a call of the `task` tool as its subagent, starting from an
+    /// empty conversation: the answer to its prompt is the result.
+    /// `on_event` gets what the UI shows of the work: the tool calls as
+    /// output of the call, the token usage and the retries.
+    ///
+    /// The future is boxed, as it runs in the loop of another agent.
+    fn run_task<'a>(
+        &'a mut self,
+        call: &'a ToolCall,
+        on_event: &'a mut (dyn FnMut(Event<'_>) + Send),
+    ) -> Pin<Box<dyn Future<Output = ToolResponse> + Send + 'a>> {
+        Box::pin(async move {
+            let task = match TaskTool::deserialize(&call.fn_arguments) {
+                Ok(task) if !task.prompt.trim().is_empty() => task,
+                Ok(_) => return error_response(call, "prompt must not be empty"),
+                Err(err) => return error_response(call, &err.to_string()),
+            };
+            self.clear();
+            let run = self.prompt(&task.prompt, |event| match event {
+                Event::ToolCall(call) => {
+                    let line: String = format!("{} {}", call.fn_name, call.fn_arguments)
+                        .chars()
+                        .filter(|c| !c.is_control())
+                        .take(MAX_TASK_LINE)
+                        .chain(['\n'])
+                        .collect();
+                    on_event(Event::ToolOutput(&line));
+                }
+                Event::TurnEnd(Some(usage)) => on_event(Event::TaskUsage(usage)),
+                Event::Retry { .. } => on_event(event),
+                _ => {}
+            });
+            match run.await {
+                Ok(answer) => {
+                    let content = json!(TaskOutput { answer }).to_string();
+                    ToolResponse::from_tool_call(call, content)
+                }
+                Err(err) => error_response(call, &err.to_string()),
+            }
+        })
     }
 
     /// Shape requests and list models of the adapters covered by `oauth` as
@@ -234,7 +324,7 @@ impl Agent {
 
     /// Set the tool executor used to run model tool calls.
     pub fn with_executor(mut self, executor: Executor) -> Self {
-        self.executor = executor;
+        self.executor = Arc::new(executor);
         self
     }
 
@@ -321,9 +411,8 @@ impl Agent {
     }
 
     /// Set how local tools run (shorthand for `with_executor(Executor::Local(tools))`).
-    pub fn with_tool_context(mut self, tools: ToolContext) -> Self {
-        self.executor = Executor::Local(tools);
-        self
+    pub fn with_tool_context(self, tools: ToolContext) -> Self {
+        self.with_executor(Executor::Local(tools))
     }
 
     /// Set the system prompt sent with every request. An empty string clears
@@ -475,7 +564,7 @@ impl Agent {
     pub async fn prompt(
         &mut self,
         text: &str,
-        mut on_event: impl FnMut(Event<'_>),
+        mut on_event: impl FnMut(Event<'_>) + Send,
     ) -> Result<String, Error> {
         // Where the messages not yet reported with `Event::Messages` start.
         let mut saved = self.req.messages.len();
@@ -602,6 +691,9 @@ impl Agent {
                     None
                 }
             };
+            // Made before the history is borrowed for the results.
+            let mut sub = (!self.sub && calls.iter().any(|c| c.fn_name == tools::TASK_TOOL))
+                .then(|| self.subagent());
             let mut pending = Pending {
                 messages: &mut self.req.messages,
                 calls: &calls,
@@ -630,6 +722,9 @@ impl Agent {
                     on_event(Event::ToolCall(call));
                     let (resp, details) = if let Some(why) = refusal(idx, call) {
                         (error_response(call, why), None)
+                    } else if let (tools::TASK_TOOL, Some(sub)) = (call.fn_name.as_str(), &mut sub)
+                    {
+                        (sub.run_task(call, &mut on_event).await, None)
                     } else if let Some(resp) = self.host.run(call).await {
                         (resp, None)
                     } else {
@@ -1041,6 +1136,7 @@ fn allowed_in_plan(name: &str) -> bool {
             tools::FETCH_TOOL,
             tools::SEARCH_TOOL,
             tools::SKILL_TOOL,
+            tools::TASK_TOOL,
         ]
         .contains(&name)
 }

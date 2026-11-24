@@ -26,9 +26,10 @@ pub use crate::search::{
     SEARCH_TOOL,
 };
 pub use crate::skills::{SkillOutput, SkillTool, MAX_SKILL_BYTES, SKILL_TOOL};
+pub use crate::task::{TaskOutput, TaskTool, TASK_TOOL};
 
 /// What the tools the agent runs itself, not the executor, need.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct HostTools {
     pub asker: Option<Asker>,
     pub fetcher: Option<WebClient>,

@@ -25,6 +25,7 @@ mod retry;
 mod search;
 mod session;
 mod skills;
+mod task;
 pub mod tools;
 
 pub use agent::{Agent, Error, Steering, Thinking, DEFAULT_AUTO_COMPACT_TOKENS, DEFAULT_MAX_TURNS};
