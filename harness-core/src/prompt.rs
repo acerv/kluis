@@ -124,18 +124,13 @@ pub fn system_prompt(cwd: &Path, agents_files: &[PathBuf], skills: &[Skill]) -> 
     if !skills.is_empty() {
         prompt.push_str(
             "\n\n## Skills\n\n\
-             Skills hold instructions for specific tasks. When a task matches a skill, \
-             read its file first and follow it; paths in it are relative to its folder. \
-             A message starting with `/<name>` asks to use that skill.\n",
+             Skills hold the user's instructions for specific tasks. Before starting a \
+             task that matches a skill below, call the `skill` tool with its name and \
+             follow the instructions it returns. A message starting with `/<name>` \
+             asks for that skill.\n",
         );
         for skill in skills {
-            let _ = write!(
-                prompt,
-                "\n- {}: {} ({})",
-                skill.name,
-                skill.description,
-                skill.path.display()
-            );
+            let _ = write!(prompt, "\n- {}: {}", skill.name, skill.description);
         }
     }
 

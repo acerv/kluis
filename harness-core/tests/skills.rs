@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
+mod common;
+
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
-use harness_core::{find_skills, system_prompt, Skill, MAX_SKILLS, SKILL_FILE};
+use common::{text, tool_calls, MockModel};
+use harness_core::tools::{SkillTool, MAX_SKILL_BYTES, SKILL_TOOL};
+use harness_core::{find_skills, system_prompt, Agent, Skill, MAX_SKILLS, SKILL_FILE};
+use serde_json::{json, Value};
 
 /// Write the skill `dir` in the skills folder `root` with `text` as its
 /// `SKILL.md`, returning the path of the file.
@@ -139,9 +144,73 @@ fn system_prompt_lists_skills() {
     }];
     let text = system_prompt(tmp.path(), &[], &skills);
     assert!(text.contains("## Skills"), "{text}");
-    assert!(
-        text.contains("- review: Review a patch (/skills/review/SKILL.md)"),
-        "{text}"
-    );
+    assert!(text.contains("call the `skill` tool"), "{text}");
+    assert!(text.contains("- review: Review a patch"), "{text}");
     assert!(!system_prompt(tmp.path(), &[], &[]).contains("## Skills"));
+}
+
+#[test]
+fn tool_returns_the_instructions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let small = skill(tmp.path(), "small", &front("small", "d"));
+    let big = front("big", "d") + &"x".repeat(MAX_SKILL_BYTES);
+    skill(tmp.path(), "big", &big);
+    let skills = find_skills(tmp.path()).skills;
+
+    let call = |name: &str| SkillTool { name: name.into() }.run(&skills);
+    let out = call("small").unwrap();
+    assert_eq!(out.folder, small.parent().unwrap());
+    assert_eq!(out.instructions, front("small", "d"));
+    assert!(!out.truncated);
+    let out = call("big").unwrap();
+    assert!(out.truncated);
+    assert_eq!(out.instructions.len(), MAX_SKILL_BYTES);
+    let err = call("nope").unwrap_err();
+    assert!(
+        err.message.contains("no skill named nope"),
+        "{}",
+        err.message
+    );
+}
+
+#[tokio::test]
+async fn agent_offers_and_runs_the_tool() {
+    let tmp = tempfile::tempdir().unwrap();
+    skill(tmp.path(), "review", &front("review", "Review a patch"));
+    let skills = find_skills(tmp.path()).skills;
+    let call = ("call_1", SKILL_TOOL, json!({ "name": "review" }));
+    let model = MockModel::start(vec![tool_calls(&[call]), text("ok")]).await;
+
+    let mut agent = Agent::with_client(model.client(), "test-model")
+        .with_skills(skills.clone())
+        .with_skills(skills);
+    // It changes nothing, so plan mode keeps it.
+    agent.set_plan(true);
+    assert_eq!(agent.prompt("review", |_| {}).await.unwrap(), "ok");
+
+    let requests = model.requests();
+    let tools = requests[0]["tools"].as_array().unwrap();
+    let offered: Vec<_> = tools
+        .iter()
+        .filter(|t| t["function"]["name"] == SKILL_TOOL)
+        .collect();
+    assert_eq!(offered.len(), 1);
+    let names = &offered[0]["function"]["parameters"]["properties"]["name"]["enum"];
+    assert_eq!(names, &json!(["review"]));
+
+    let messages = requests[1]["messages"].as_array().unwrap();
+    let result = messages.iter().find(|m| m["role"] == "tool").unwrap();
+    let output: Value = serde_json::from_str(result["content"].as_str().unwrap()).unwrap();
+    let instructions = output["instructions"].as_str().unwrap();
+    assert!(instructions.contains("# Body"), "{output}");
+}
+
+#[tokio::test]
+async fn not_offered_without_skills() {
+    let model = MockModel::start(vec![text("ok")]).await;
+    let mut agent = Agent::with_client(model.client(), "test-model").with_skills(Vec::new());
+    agent.prompt("hi", |_| {}).await.unwrap();
+    let request = &model.requests()[0];
+    let tools = request["tools"].as_array().unwrap();
+    assert!(!tools.iter().any(|t| t["function"]["name"] == SKILL_TOOL));
 }

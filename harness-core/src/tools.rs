@@ -15,6 +15,8 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::skills::Skill;
+
 pub use crate::ask::{AskOutput, AskTool, Asker, Question, ASK_TOOL, MAX_ASK_OPTIONS};
 pub use crate::fetch::{
     FetchOutput, FetchTool, FETCH_TIMEOUT, FETCH_TOOL, MAX_FETCH_BODY_BYTES, MAX_FETCH_BYTES,
@@ -23,6 +25,7 @@ pub use crate::search::{
     Engine, SearchOutput, SearchResult, SearchTool, Searcher, DUCKDUCKGO_URL, MAX_SEARCH_RESULTS,
     SEARCH_TOOL,
 };
+pub use crate::skills::{SkillOutput, SkillTool, MAX_SKILL_BYTES, SKILL_TOOL};
 
 /// What the tools the agent runs itself, not the executor, need.
 #[derive(Debug, Default)]
@@ -30,6 +33,7 @@ pub(crate) struct HostTools {
     pub asker: Option<Asker>,
     pub fetcher: Option<Client>,
     pub searcher: Option<Searcher>,
+    pub skills: Vec<Skill>,
 }
 
 impl HostTools {
@@ -45,6 +49,9 @@ impl HostTools {
             }
             SEARCH_TOOL => {
                 output(async { parse::<SearchTool>(args)?.run(self.searcher.as_ref()).await }.await)
+            }
+            SKILL_TOOL if !self.skills.is_empty() => {
+                output(parse::<SkillTool>(args).and_then(|tool| tool.run(&self.skills)))
             }
             _ => return None,
         };
