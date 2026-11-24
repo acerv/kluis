@@ -68,6 +68,8 @@
 - `/output` shows the whole output of the last tool call.
 - `/<skill> [task]` asks the model to use a skill; typing `/` offers them
   with the commands. See [Using skills](#using-skills).
+- `/<command> [args]` sends a prompt template of yours from
+  `~/.kluis/commands`. See [Custom commands](#custom-commands).
 - Slash commands: `/model`, `/thinking`, `/resume`, `/copy`, `/output`,
   `/retry`, `/compact`, `/status`, `/new`, `/help`, `/quit`.
 - `/retry` sends the last prompt again, dropping what it led to.
@@ -130,3 +132,36 @@ Or ask for one by name, with the task after it:
 ```
 
 With `-p`, `kl -p "/release-notes since v0.1"` does the same.
+
+## Custom commands
+
+A custom command is a prompt you send often, kept in
+`~/.kluis/commands/<name>.md`. `/<name> [args]` sends its text, with each
+`$ARGUMENTS` replaced by the arguments; without `$ARGUMENTS`, the arguments
+are appended after a blank line. An optional front matter describes it for
+the completion menu, else its first line does:
+
+```markdown
+---
+description: Review a change for bugs
+---
+
+Review $ARGUMENTS for bugs and missing tests. Do not edit any file.
+```
+
+```text
+> /review the last commit
+```
+
+The prompt is expanded before it is sent, so the conversation holds the
+full text. `kl -p "/review the last commit"` and line mode do the same, and
+`git diff | kl -p /review` reviews the diff on standard input.
+
+The name is up to 64 lowercase letters, digits and hyphens. Commands come
+only from `~/.kluis/commands`, which you control: projects cannot bring their
+own, and neither the folder nor a command file may be a symlink. Up to 100
+files of at most 32 KiB are read at start; `kl` warns about the ones it
+cannot use. A command of `kl`, such as `/model`, wins over a custom command
+of the same name, and a custom command wins over a skill; `kl` warns about
+both. The folder stays hidden from the sandbox, with the rest of
+`~/.kluis`.
