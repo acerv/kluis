@@ -82,12 +82,22 @@
 - `!<command>` runs a shell command as the `bash` tool does, in the sandbox
   when the tools run there, without adding it to the conversation.
 - `/output` shows the whole output of the last tool call.
+- `/diff` opens a panel on the right: the files the session added,
+  changed or deleted, with the lines added and removed, over the diff of
+  the one selected (Alt+Up/Down, or Ctrl, to select, PgUp/PgDn to scroll
+  it). It follows the changes as the tools run, and works while a prompt
+  runs. The files are compared with a snapshot kl takes at the start, and
+  again on `/new`: no git command runs, so it works outside git
+  repositories too, and leaves out what `.gitignore` lists. The snapshot
+  keeps the text of files up to 1 MiB, 64 MiB in all; larger and binary
+  files show as changed without a diff. While it is open, kl uses the
+  whole screen, and puts the output back in the scrollback once it closes.
 - `/<skill> [task]` asks the model to use a skill; typing `/` offers them
   with the commands. See [Using skills](#using-skills).
 - `/<command> [args]` sends a prompt template of yours from
   `~/.kluis/commands`. See [Custom commands](#custom-commands).
 - Slash commands: `/model`, `/thinking`, `/resume`, `/copy`, `/output`,
-  `/retry`, `/compact`, `/status`, `/new`, `/help`, `/quit`.
+  `/diff`, `/retry`, `/compact`, `/status`, `/new`, `/help`, `/quit`.
 - `/retry` sends the last prompt again, dropping what it led to.
 - `/thinking` offers only the levels the model takes when its provider says
   which (Anthropic and Ollama), and falls back to `default` when a new model
