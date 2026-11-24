@@ -61,7 +61,7 @@ pub fn find_agents_files(cwd: &Path, global: Option<&Path>) -> Vec<PathBuf> {
 
 /// The folders from the enclosing git repository root down to `cwd`
 /// (inclusive), or only `cwd` when it is not inside a git repository.
-pub(crate) fn project_dirs(cwd: &Path) -> Vec<&Path> {
+fn project_dirs(cwd: &Path) -> Vec<&Path> {
     let mut dirs = Vec::new();
     for dir in cwd.ancestors() {
         dirs.push(dir);

@@ -37,5 +37,5 @@ pub use session::{
     SessionData, SessionEntry, SessionMeta, SessionStore, SessionSummary, SessionWriter,
     TokenUsage, MAX_SESSION_BYTES,
 };
-pub use skills::{find_skills, Skill, Skills, MAX_SKILLS, SKILLS_DIR, SKILL_FILE};
+pub use skills::{find_skills, Skill, Skills, MAX_SKILLS, SKILL_FILE};
 pub use tools::ToolDetails;
