@@ -14,7 +14,7 @@ use genai::chat::Tool;
 use htmd::element_handler::{Element, Handlers};
 use htmd::HtmlToMarkdown;
 use reqwest::header::CONTENT_TYPE;
-use reqwest::{Client, Url};
+use reqwest::{Client, Response, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -136,7 +136,7 @@ impl FetchTool {
         if !matches!(url.scheme(), "http" | "https") {
             return Err("only http and https URLs are allowed".into());
         }
-        let mut resp = client.get(url).send().await.map_err(|e| chain(&e))?;
+        let resp = client.get(url).send().await.map_err(|e| chain(&e))?;
         let status = resp.status();
         if !status.is_success() {
             return Err(format!("HTTP {status}"));
@@ -149,22 +149,7 @@ impl FetchTool {
         let (kind, encoding) = parse_content_type(header)
             .ok_or_else(|| format!("unsupported content type {header}"))?;
 
-        // The server's length is a hint, never more than the cap.
-        let hint = resp
-            .content_length()
-            .unwrap_or(0)
-            .min(MAX_FETCH_BODY_BYTES as u64);
-        let mut body = Vec::with_capacity(hint as usize);
-        let mut incomplete = false;
-        while let Some(chunk) = resp.chunk().await.map_err(|e| chain(&e))? {
-            let room = MAX_FETCH_BODY_BYTES - body.len();
-            if chunk.len() > room {
-                body.extend_from_slice(&chunk[..room]);
-                incomplete = true;
-                break;
-            }
-            body.extend_from_slice(&chunk);
-        }
+        let (body, incomplete) = read_body(resp, MAX_FETCH_BODY_BYTES).await?;
         // Text does not contain NUL bytes; binary content would only reach
         // the model as garbage.
         if memchr::memchr(0, &body).is_some() {
@@ -193,6 +178,23 @@ impl FetchTool {
             incomplete,
         })
     }
+}
+
+/// At most `max` bytes of the body of `resp`, and whether more were left
+/// out.
+pub(crate) async fn read_body(mut resp: Response, max: usize) -> Result<(Vec<u8>, bool), String> {
+    // The server's length is a hint, never more than the cap.
+    let hint = resp.content_length().unwrap_or(0).min(max as u64);
+    let mut body = Vec::with_capacity(hint as usize);
+    while let Some(chunk) = resp.chunk().await.map_err(|e| chain(&e))? {
+        let room = max - body.len();
+        if chunk.len() > room {
+            body.extend_from_slice(&chunk[..room]);
+            return Ok((body, true));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok((body, false))
 }
 
 /// The kind of body and its encoding from a `Content-Type` header, or
