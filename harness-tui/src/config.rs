@@ -276,7 +276,7 @@ pub fn load(path: &Path, required: bool) -> Result<Config, Error> {
 /// not exist yet.
 fn init_default(path: &Path) -> Result<(), Error> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        harness_core::private_file::create_dir(parent)?;
     }
     let text = toml::to_string(&Config::default())?;
     match std::fs::OpenOptions::new()
