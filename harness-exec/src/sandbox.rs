@@ -4,10 +4,11 @@
 //! Host-side client for running tool calls inside a sandboxed worker container.
 
 use std::collections::HashMap;
-use std::io::{self, BufRead, BufReader, PipeWriter};
+use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -65,10 +66,13 @@ pub struct SandboxExecutor {
 
 struct Worker {
     child: Child,
-    stdin: Option<PipeWriter>,
+    /// What to write to the worker, taken by the writer thread: a worker
+    /// that stopped reading never keeps a caller waiting.
+    requests: Option<Sender<Request>>,
     pending: PendingMap,
     alive: Arc<AtomicBool>,
     reader: Option<thread::JoinHandle<()>>,
+    writer: Option<thread::JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for Worker {
@@ -82,12 +86,16 @@ impl std::fmt::Debug for Worker {
 
 impl Drop for Worker {
     fn drop(&mut self) {
-        // Closing stdin signals clean EOF, then SIGKILL guarantees container
-        // PID 1 and all descendants terminate immediately without hanging.
-        self.stdin.take();
+        // Nothing more to write closes stdin, a clean EOF, then SIGKILL
+        // guarantees container PID 1 and all descendants terminate
+        // immediately without hanging, which also ends a write still waiting.
+        self.requests.take();
         let _ = self.child.kill();
         let _ = self.child.wait();
-        if let Some(handle) = self.reader.take() {
+        for handle in [self.reader.take(), self.writer.take()]
+            .into_iter()
+            .flatten()
+        {
             let _ = handle.join();
         }
     }
@@ -124,7 +132,7 @@ impl SandboxExecutor {
             args: call.fn_arguments.clone(),
         };
 
-        let (pending, mut rx) = match self.send_call(id, &req) {
+        let (pending, mut rx) = match self.send_call(id, req) {
             Ok(pair) => pair,
             Err(err) => {
                 return (ToolResponse::from_tool_call(call, error_json(err)), None);
@@ -135,11 +143,9 @@ impl SandboxExecutor {
         // the worker that owns it so the worker and its `/tmp` stay alive.
         let cancel_guard = scopeguard::guard((), |()| {
             lock(&pending).remove(&id);
-            if let Some(worker) = lock(&self.worker).as_mut() {
+            if let Some(worker) = lock(&self.worker).as_ref() {
                 if Arc::ptr_eq(&worker.pending, &pending) {
-                    if let Some(stdin) = worker.stdin.as_mut() {
-                        let _ = write_line(stdin, &Request::Cancel { id });
-                    }
+                    let _ = worker.send(Request::Cancel { id });
                 }
             }
         });
@@ -183,7 +189,7 @@ impl SandboxExecutor {
         }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let req = Request::StopBackground { id, keep_jobs };
-        let Ok((_, mut rx)) = self.send_call(id, &req) else {
+        let Ok((_, mut rx)) = self.send_call(id, req) else {
             return true;
         };
         let stopped = async {
@@ -209,7 +215,7 @@ impl SandboxExecutor {
     fn send_call(
         &self,
         id: u64,
-        req: &Request,
+        mut req: Request,
     ) -> Result<(PendingMap, mpsc::UnboundedReceiver<Response>), ExecError> {
         let mut guard = lock(&self.worker);
 
@@ -222,27 +228,34 @@ impl SandboxExecutor {
                 guard.take();
                 *guard = Some(spawn_worker(&self.config, self.program)?);
             }
-            let worker = guard.as_mut().expect("worker just spawned");
+            let worker = guard.as_ref().expect("worker just spawned");
             let (tx, rx) = mpsc::unbounded_channel();
             lock(&worker.pending).insert(id, tx);
-            let write_res = worker
-                .stdin
-                .as_mut()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "worker stdin closed"))
-                .and_then(|stdin| write_line(stdin, req));
-            match write_res {
+            match worker.send(req) {
                 Ok(()) => return Ok((worker.pending.clone(), rx)),
-                Err(err) => {
+                Err(unsent) => {
                     lock(&worker.pending).remove(&id);
                     if attempt > 0 {
-                        return Err(ExecError::Io(err));
+                        break;
                     }
                     // The worker died: start another one.
                     worker.alive.store(false, Ordering::Release);
+                    req = unsent;
                 }
             }
         }
         Err(ExecError::Startup("failed to send call to worker".into()))
+    }
+}
+
+impl Worker {
+    /// Queue `req` for the worker, giving it back when a write failed
+    /// before, as the worker is then dead.
+    fn send(&self, req: Request) -> Result<(), Request> {
+        match &self.requests {
+            Some(requests) => requests.send(req).map_err(|err| err.0),
+            None => Err(req),
+        }
     }
 }
 
@@ -299,13 +312,17 @@ fn spawn_worker(config: &SandboxConfig, expected: FileId) -> Result<Worker, Exec
     let alive = Arc::new(AtomicBool::new(true));
     let (pending_bg, alive_bg) = (pending.clone(), alive.clone());
     let reader = thread::spawn(move || read_responses(stdout_reader, &pending_bg, &alive_bg));
+    let (requests, queued) = channel();
+    let alive_bg = alive.clone();
+    let writer = thread::spawn(move || write_requests(stdin, &queued, &alive_bg));
 
     Ok(Worker {
         child,
-        stdin: Some(stdin),
+        requests: Some(requests),
         pending,
         alive,
         reader: Some(reader),
+        writer: Some(writer),
     })
 }
 
@@ -367,6 +384,17 @@ fn read_responses(mut stdout: impl BufRead, pending: &PendingMap, alive: &Atomic
         // The result of a call is the last it gets.
         if last {
             map.remove(&id);
+        }
+    }
+}
+
+/// Write each of the `requests` to the worker, until there is none to
+/// wait for or a write fails: the worker is then dead.
+fn write_requests(mut stdin: impl Write, requests: &Receiver<Request>, alive: &AtomicBool) {
+    for req in requests {
+        if write_line(&mut stdin, &req).is_err() {
+            alive.store(false, Ordering::Release);
+            break;
         }
     }
 }
