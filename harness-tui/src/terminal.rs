@@ -10,9 +10,10 @@ use std::time::Duration;
 use crossterm::cursor::{MoveTo, Show};
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste, Event};
 use crossterm::execute;
+use crossterm::style::Print;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, BeginSynchronizedUpdate, Clear, ClearType,
-    EndSynchronizedUpdate,
+    EndSynchronizedUpdate, SetTitle,
 };
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::Size;
@@ -28,6 +29,11 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::app::App;
 
 const EVENT_POLL: Duration = Duration::from_millis(10);
+
+/// Save the terminal title on the terminal's stack (xterm), to put it back
+/// on exit; terminals without the stack ignore it.
+const PUSH_TITLE: &str = "\x1b[22;0t";
+const POP_TITLE: &str = "\x1b[23;0t";
 
 static PANIC_HOOK: Once = Once::new();
 
@@ -104,6 +110,8 @@ pub struct InlineTerminal {
     /// still tells where the viewport is once the terminal resizes.
     cursor_row: u16,
     pending_clear: bool,
+    /// The terminal title set last.
+    title: String,
     signals: JoinHandle<()>,
 }
 
@@ -118,7 +126,7 @@ impl InlineTerminal {
             return Err(err);
         }
         let mut stdout = io::stdout();
-        if let Err(err) = execute!(stdout, EnableBracketedPaste) {
+        if let Err(err) = execute!(stdout, EnableBracketedPaste, Print(PUSH_TITLE)) {
             let _ = disable_raw_mode();
             signals.abort();
             return Err(err);
@@ -136,6 +144,7 @@ impl InlineTerminal {
                     size,
                     cursor_row: area.y,
                     pending_clear: false,
+                    title: String::new(),
                     signals,
                 })
             }
@@ -203,6 +212,11 @@ impl InlineTerminal {
                 self.recreate_viewport(desired)?;
             }
 
+            let title = app.title();
+            if title != self.title {
+                execute!(io::stdout(), SetTitle(&title))?;
+                self.title = title;
+            }
             let lines = app.take_scrollback();
             flush_scrollback(&mut self.terminal, lines)?;
             self.terminal.draw(|frame| app.render(frame))?;
@@ -400,7 +414,13 @@ fn spawn_signal_handler() -> io::Result<JoinHandle<()>> {
 
 fn restore_terminal() {
     let mut stdout = io::stdout();
-    let _ = execute!(stdout, EndSynchronizedUpdate, DisableBracketedPaste, Show);
+    let _ = execute!(
+        stdout,
+        EndSynchronizedUpdate,
+        DisableBracketedPaste,
+        Print(POP_TITLE),
+        Show
+    );
     let _ = disable_raw_mode();
     let _ = writeln!(stdout);
     let _ = stdout.flush();

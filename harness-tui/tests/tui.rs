@@ -2260,3 +2260,33 @@ fn skill_shows_its_name() {
         "{lines:?}"
     );
 }
+
+#[test]
+fn terminal_title_follows_the_activity() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    assert_eq!(app.title(), "kl");
+
+    app.start_prompt("go");
+    assert_eq!(app.title(), "kl: Working");
+    app.apply_update(AgentUpdate::ReasoningDelta("hmm".into()));
+    assert_eq!(app.title(), "kl: Thinking");
+
+    // The model names the tool: control characters stay out of the title.
+    app.apply_update(AgentUpdate::ToolCall {
+        name: "ba\x07sh\x1b]0;x".into(),
+        args: "{}".into(),
+    });
+    assert_eq!(app.title(), "kl: Running bash]0;x");
+    app.apply_update(AgentUpdate::ToolCall {
+        name: "x".repeat(100),
+        args: "{}".into(),
+    });
+    assert_eq!(app.title().chars().count(), "kl: ".len() + 40);
+
+    app.ask("Proceed?", &[]);
+    assert_eq!(app.title(), "kl: Question");
+    assert_eq!(app.handle_event(key(KeyCode::Esc)), Action::Cancel);
+
+    app.finish_prompt(Ok(()));
+    assert_eq!(app.title(), "kl");
+}
