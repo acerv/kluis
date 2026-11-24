@@ -140,20 +140,23 @@ where
                             }
                         });
                     }
-                    Ok(Request::StopBackground { id }) => {
+                    Ok(Request::StopBackground { id, keep_jobs }) => {
                         let out_tx_task = out_tx.clone();
                         let done_token = tasks_done_tx.clone();
+                        let jobs = ctx.bash.jobs.clone();
                         tokio::spawn(async move {
                             let _done = done_token;
+                            let had_jobs = jobs.stop_unless(keep_jobs);
                             if below_init {
-                                let _ = tokio::task::spawn_blocking(|| {
-                                    harness_sandbox::stop_others(&[])
+                                let keep = jobs.pids();
+                                let _ = tokio::task::spawn_blocking(move || {
+                                    harness_sandbox::stop_others(&keep)
                                 })
                                 .await;
                             }
                             let _ = out_tx_task.send(Response::Result {
                                 id,
-                                content: "{}".into(),
+                                content: json!({ "jobs": had_jobs }).to_string(),
                                 details: None,
                             });
                         });

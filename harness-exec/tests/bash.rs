@@ -424,6 +424,7 @@ async fn eventually(mut done: impl FnMut() -> bool) -> bool {
 fn group_alive(pid: u32) -> bool {
     std::process::Command::new("kill")
         .args(["-0", "--", &format!("-{pid}")])
+        .stderr(std::process::Stdio::null())
         .status()
         .unwrap()
         .success()

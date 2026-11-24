@@ -426,9 +426,10 @@ impl Agent {
     }
 
     /// Stop what tool commands left running in the background, when they
-    /// run in the sandbox: call it between prompts.
-    pub async fn stop_background(&self) {
-        self.executor.stop_background().await;
+    /// run in the sandbox: call it between prompts. See
+    /// [`Executor::stop_background`].
+    pub async fn stop_background(&self, keep_jobs: bool) -> bool {
+        self.executor.stop_background(keep_jobs).await
     }
 
     /// Send a user message, run the tool calls the model makes, and return

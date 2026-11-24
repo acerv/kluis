@@ -654,7 +654,7 @@ async fn prompt_and_persist(
         .await;
     // Before the git check: a program left running could recreate a
     // repository right after it.
-    agent.stop_background().await;
+    agent.stop_background(false).await;
     if let Err(err) = saver.finish(agent.history(), usage, context) {
         eprintln!("warning: could not save session: {err}");
     }
