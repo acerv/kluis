@@ -193,6 +193,29 @@ fn ports_are_accepted() {
 }
 
 #[test]
+fn web_hosts_are_accepted_and_validated() {
+    let home = tempdir();
+    write_default(home.path(), "[sandbox]\nweb_hosts = [\"docs.rs\"]\n");
+    let out = run_cli(home.path(), &["--network", "--web-host", "localhost"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    // Checked only when web_fetch is offered: with network access.
+    write_default(
+        home.path(),
+        "[sandbox]\nweb_hosts = [\"https://docs.rs\"]\n",
+    );
+    let out = run_cli(home.path(), &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let out = run_cli(home.path(), &["--network"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("https://docs.rs is not a host name"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
 fn file_in_current_folder_works() {
     // Shown read-only on top of the writable current folder.
     let home = tempdir();

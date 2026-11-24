@@ -32,6 +32,10 @@
 //! connect = [11434]
 //! # Allow any network, to commands too.
 //! network = false
+//! # Let web_fetch reach only these hosts and their subdomains, private
+//! # addresses included; any public host when empty. Commands are not
+//! # limited by it.
+//! web_hosts = ["docs.rs", "github.com"]
 //! # Let the model keep commands running in the background across
 //! # prompts; a git repository they create may be used by your git before
 //! # kl disables it.
@@ -125,6 +129,8 @@ pub struct SandboxConfig {
     pub connect: Vec<u16>,
     /// Allow any network, like `--network`.
     pub network: bool,
+    /// Only hosts `web_fetch` reaches, like `--web-host`.
+    pub web_hosts: Vec<String>,
     /// Background commands, like `--background-commands`.
     pub background_commands: bool,
     /// Process and thread limit, like `--max-processes`.
@@ -147,6 +153,7 @@ impl Default for SandboxConfig {
             deny: Vec::new(),
             connect: Vec::new(),
             network: false,
+            web_hosts: Vec::new(),
             background_commands: false,
             max_processes: Some(1024),
             tmp_size: None,
