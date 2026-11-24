@@ -11,7 +11,7 @@ use crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyM
 use genai::chat::{ChatMessage, ChatRole, ContentPart};
 use harness_core::tools::{Diff, DiffLine, Todo, TodoStatus, TodoTool, TODO_TOOL};
 use harness_core::{
-    Event as AgentEvent, ModelInfo, SessionSummary, Thinking, TokenUsage, ToolDetails,
+    Event as AgentEvent, ModelInfo, SessionSummary, Skill, Thinking, TokenUsage, ToolDetails,
 };
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
@@ -460,6 +460,15 @@ impl App {
     /// a restored one.
     pub fn set_context(&mut self, tokens: u64) {
         self.context = tokens;
+    }
+
+    /// Let `/<name>` ask for each of `skills`.
+    pub fn set_skills(&mut self, skills: &[Skill]) {
+        let skills = skills
+            .iter()
+            .map(|s| (s.name.clone(), s.description.clone()))
+            .collect();
+        self.completion.set_skills(skills);
     }
 
     /// Offer the files of `root` when completing `@` in the editor.
@@ -1009,14 +1018,15 @@ impl App {
             if trimmed.is_empty() {
                 return Action::Redraw;
             }
-            if let Some(action) = parse_slash(trimmed) {
-                return match action {
-                    Ok(cmd) => Action::Slash(cmd),
-                    Err(unknown) => {
-                        self.push_info(format!("unknown command: {unknown} (try /help)"));
-                        Action::Redraw
-                    }
-                };
+            match parse_slash(trimmed) {
+                Some(Ok(cmd)) => return Action::Slash(cmd),
+                // A skill: the model reads the message as it is.
+                Some(Err(unknown)) if self.completion.is_skill(&unknown[1..]) => {}
+                Some(Err(unknown)) => {
+                    self.push_info(format!("unknown command: {unknown} (try /help)"));
+                    return Action::Redraw;
+                }
+                None => {}
             }
             if let Some(command) = trimmed.strip_prefix('!') {
                 return Action::Shell(command.trim_start().to_owned());
