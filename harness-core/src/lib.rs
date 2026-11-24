@@ -10,6 +10,7 @@
 mod agent;
 mod ask;
 mod auth;
+mod bundled;
 mod commands;
 mod error;
 mod event;
@@ -31,6 +32,7 @@ pub mod tools;
 
 pub use agent::{Agent, Error, Steering, Thinking, DEFAULT_AUTO_COMPACT_TOKENS, DEFAULT_MAX_TURNS};
 pub use auth::{AuthConfig, CredentialSource, ProviderAuth};
+pub use bundled::{install_skills, outdated_skills, Installed, BUNDLED_SKILLS};
 pub use commands::{
     expand_command, find_commands, Command, Commands, ARGUMENTS, MAX_COMMANDS, MAX_COMMAND_BYTES,
 };
