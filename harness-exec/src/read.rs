@@ -201,7 +201,7 @@ fn read_window(
         while !slice.is_empty() {
             if line_idx >= end || cut_at.is_some() {
                 line_idx += memchr::memchr_iter(b'\n', slice).count();
-                in_line = *slice.last().unwrap() != b'\n';
+                in_line = slice.last() != Some(&b'\n');
                 break;
             }
 
