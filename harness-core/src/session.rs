@@ -615,26 +615,12 @@ struct EntryKind {
 /// replacing the conversation. The new file replaces the old one only once
 /// complete.
 fn rewrite_compacted(path: &Path, messages: &[ChatMessage]) -> io::Result<()> {
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = PathBuf::from(tmp);
-    let res = write_compacted(path, &tmp, messages).and_then(|()| fs::rename(&tmp, path));
-    if res.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    res
+    private_file::replace(path, |tmp| write_compacted(path, tmp, messages))
 }
 
-fn write_compacted(path: &Path, tmp: &Path, messages: &[ChatMessage]) -> io::Result<()> {
+fn write_compacted(path: &Path, tmp: &mut File, messages: &[ChatMessage]) -> io::Result<()> {
     let old = BufReader::new(File::open(path)?);
-    let mut out = BufWriter::new(
-        OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(tmp)?,
-    );
+    let mut out = BufWriter::new(tmp);
     let mut first_message = true;
     for line in old.split(b'\n') {
         let line = line?;
@@ -653,7 +639,7 @@ fn write_compacted(path: &Path, tmp: &Path, messages: &[ChatMessage]) -> io::Res
         }
     }
     write_entry(&mut out, &SessionEntryRef::Compact { messages })?;
-    out.into_inner()?.sync_all()
+    out.flush()
 }
 
 /// `message` with its images replaced by a note: they would soon make the
@@ -671,7 +657,7 @@ fn without_images(message: &ChatMessage) -> Cow<'_, ChatMessage> {
     Cow::Owned(message)
 }
 
-fn write_entry(writer: &mut BufWriter<File>, entry: &SessionEntryRef<'_>) -> io::Result<()> {
+fn write_entry(writer: &mut impl Write, entry: &SessionEntryRef<'_>) -> io::Result<()> {
     serde_json::to_writer(&mut *writer, entry)
         .map_err(|e| io::Error::new(ErrorKind::InvalidData, e))?;
     writer.write_all(b"\n")

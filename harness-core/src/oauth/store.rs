@@ -7,7 +7,6 @@
 //! exclusive lock on `oauth.toml.lock` so concurrent processes never use a
 //! refresh token twice.
 
-use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -197,7 +196,7 @@ impl OAuthStore {
 
     /// Take the exclusive lock shared by all processes; released on drop.
     async fn lock(&self) -> Result<File, Error> {
-        let path = sibling(&self.path, ".lock");
+        let path = private_file::sibling(&self.path, ".lock");
         tokio::task::spawn_blocking(move || -> Result<File, Error> {
             if let Some(dir) = path.parent() {
                 private_file::create_dir(dir)?;
@@ -217,13 +216,6 @@ impl OAuthStore {
     }
 }
 
-/// `path` with `suffix` appended to its file name.
-fn sibling(path: &Path, suffix: &str) -> PathBuf {
-    let mut name = OsString::from(path.as_os_str());
-    name.push(suffix);
-    name.into()
-}
-
 fn read(path: &Path) -> Result<OAuthFile, Error> {
     let Some(raw) = private_file::read(path, MAX_OAUTH_BYTES)? else {
         return Ok(OAuthFile::default());
@@ -241,19 +233,5 @@ fn write(path: &Path, file: &OAuthFile) -> Result<(), Error> {
             _ => Ok(()),
         };
     }
-    let tmp = sibling(path, ".tmp");
-    let _ = fs::remove_file(&tmp);
-    let mut out = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&tmp)
-        .map_err(|e| error(&e))?;
-    out.write_all(raw.as_bytes())
-        .and_then(|()| out.sync_all())
-        .and_then(|()| fs::rename(&tmp, path))
-        .map_err(|e| {
-            let _ = fs::remove_file(&tmp);
-            error(&e).into()
-        })
+    private_file::replace(path, |out| out.write_all(raw.as_bytes())).map_err(|e| error(&e).into())
 }
