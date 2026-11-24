@@ -12,14 +12,15 @@ container that shows only the folders you configure.
   (Linux 6.7+). Allowed ports are open on every host, not only locally.
 - `$HOME` is an empty private folder that lives in memory and is gone when
   `kl` exits. Only the current folder, the `sandbox.read` and
-  `sandbox.write` paths below it and, read-only, `~/.agents/skills` show
-  there. See [Home folder](#home-folder).
+  `sandbox.write` paths below it and, read-only, the global
+  [skills](features.md#skills) show there. See [Home folder](#home-folder).
 - Cloud drives, network shares and credentials in `$HOME` are hidden, even
   inside a folder you show: `~/.ssh`, `~/.aws`, `gh`, registry and AI tool
   tokens, browser profiles, shell history and more. `sandbox.deny` hides
   additional paths. A folder you show that is itself on such a filesystem,
   or the current folder, stays: `kl` warns at startup instead.
-- API keys and `~/.kluis` are never passed into the sandbox.
+- API keys and `~/.kluis` are never passed into the sandbox, but for
+  `~/.kluis/skills`, read-only.
 - The kernel attack surface is reduced: no user namespaces, only common socket
   types, no mount changes, no core dumps.
 - `kl` refuses to run as root or with sudo, even with `--no-sandbox`: root
