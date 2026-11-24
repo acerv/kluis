@@ -36,7 +36,7 @@ use harness_core::tools::{
 };
 use harness_core::{
     provider_name, Agent, AuthConfig, Command, CredentialSource, Error, Event, SessionData,
-    SessionStore, Skill, Skills, Thinking, TokenUsage,
+    SessionStore, SessionSummary, Skill, Skills, Thinking, TokenUsage,
 };
 use harness_sandbox::{GitGuard, NetworkAccess};
 use harness_tui::{
@@ -361,32 +361,8 @@ fn apply_config(args: &mut Args) -> Result<Option<String>, Error> {
 
 async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, Error> {
     let cwd = std::env::current_dir()?;
-    let once = args.print || args.output_format != OutputFormat::Text;
-    if once {
-        let mut text = args.prompt.join(" ");
-        if !io::stdin().is_terminal() {
-            // Bounded: more could not fit in a request anyway.
-            let mut input = String::new();
-            tokio::io::stdin()
-                .take(MAX_STDIN_BYTES + 1)
-                .read_to_string(&mut input)
-                .await?;
-            if input.len() as u64 > MAX_STDIN_BYTES {
-                return Err(format!(
-                    "standard input is larger than {} MiB",
-                    MAX_STDIN_BYTES >> 20
-                )
-                .into());
-            }
-            if !text.is_empty() && !input.is_empty() {
-                text.push_str("\n\n");
-            }
-            text.push_str(&input);
-        }
-        if text.trim().is_empty() {
-            return Err("no prompt: give one as arguments or on standard input".into());
-        }
-        args.prompt = vec![text];
+    if args.print || args.output_format != OutputFormat::Text {
+        args.prompt = vec![read_prompt(&args).await?];
     }
     // A wrong theme fails now, not only once the terminal UI starts.
     let code_theme = args
@@ -405,12 +381,131 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
     let adapters = auth.configured_adapters();
     let oauth = auth.oauth_logins();
     let agents = harness_core::find_agents_files(&cwd, config::agents_path().as_deref());
-    // Commands cannot read `~/.kluis/skills` when a folder shown holds
-    // `~/.kluis`: leave those skills out.
+    let skills = find_skills(&args, &cwd);
+    let mut commands = config::commands_dir()
+        .map(|dir| harness_core::find_commands(&dir))
+        .unwrap_or_default();
+    commands
+        .warnings
+        .extend(clash_warnings(&mut commands.commands, &skills.skills));
+    let system = harness_core::system_prompt(&cwd, &agents, &skills.skills);
+    let default_model = config_model.as_deref().unwrap_or(config::DEFAULT_MODEL);
+    let Opened {
+        model,
+        history,
+        mut session,
+        picker_entries,
+    } = open_session(&args, &cwd, default_model)?;
+    let credential = AdapterKind::from_model(&model)
+        .ok()
+        .map(|kind| (kind, auth.credential_source(kind)));
+    drop(auth);
+
+    let (executor, mut git_guard) = executor(&args, &cwd)?;
+    let agent = Agent::with_client(client, &model)
+        .with_oauth(oauth)
+        .with_thinking(args.thinking.unwrap_or_default())
+        .with_system(system)
+        .with_history(history)
+        .with_executor(executor)
+        .with_skills(skills.skills);
+    let mut agent = with_options(agent, &args)?;
+
+    let warnings = startup_warnings(&args, &cwd, skills.warnings, commands.warnings);
+    let full_screen =
+        args.prompt.is_empty() && io::stdin().is_terminal() && io::stdout().is_terminal();
+    if !full_screen {
+        for warning in &warnings {
+            eprintln!("warning: {warning}");
+        }
+    }
+
+    if !args.prompt.is_empty() {
+        let text = args.prompt.join(" ");
+        let text = harness_core::expand_command(&commands.commands, &text).unwrap_or(text);
+        return run_once(
+            &mut agent,
+            session.as_mut(),
+            git_guard.as_mut(),
+            &text,
+            args.output_format,
+        )
+        .await;
+    }
+
+    let sandbox = sandbox_label(&args);
+    if !full_screen {
+        return run_lines(agent, session, git_guard, &commands.commands, &sandbox).await;
+    }
+    let status = Status {
+        sandbox,
+        folder: current_folder(),
+    };
+    let mut banner = vec![
+        BannerLine::new(format!("kluis v{}", env!("CARGO_PKG_VERSION"))),
+        auth_line(&model, credential),
+        BannerLine::new(sandbox_details(&args, &cwd)),
+        BannerLine::new(context_line(&agents, &commands.commands, agent.skills())),
+        BannerLine::new(session_line(session.as_ref(), agent.history().len())),
+    ];
+    banner.extend(warnings.into_iter().map(BannerLine::warning));
+    let history = config::history_path().map(History::load);
+    harness_tui::run(
+        agent,
+        status,
+        RunOptions {
+            session,
+            model: args.model,
+            history,
+            picker_entries,
+            adapters,
+            banner,
+            git_guard,
+            code_theme,
+            commands: commands.commands,
+            notify: args.notify,
+        },
+    )
+    .await?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The prompt of `-p`: the arguments, then what standard input holds
+/// unless it is a terminal.
+async fn read_prompt(args: &Args) -> Result<String, Error> {
+    let mut text = args.prompt.join(" ");
+    if !io::stdin().is_terminal() {
+        // Bounded: more could not fit in a request anyway.
+        let mut input = String::new();
+        tokio::io::stdin()
+            .take(MAX_STDIN_BYTES + 1)
+            .read_to_string(&mut input)
+            .await?;
+        if input.len() as u64 > MAX_STDIN_BYTES {
+            return Err(format!(
+                "standard input is larger than {} MiB",
+                MAX_STDIN_BYTES >> 20
+            )
+            .into());
+        }
+        if !text.is_empty() && !input.is_empty() {
+            text.push_str("\n\n");
+        }
+        text.push_str(&input);
+    }
+    if text.trim().is_empty() {
+        return Err("no prompt: give one as arguments or on standard input".into());
+    }
+    Ok(text)
+}
+
+/// The skills of the user, unless commands cannot read them: a folder
+/// shown that holds `~/.kluis` keeps `~/.kluis/skills` hidden.
+fn find_skills(args: &Args, cwd: &Path) -> Skills {
     let skills_dir = config::skills_dir();
     let hidden_skills = skills_dir
         .as_ref()
-        .filter(|_| !args.no_sandbox && sandbox::hides_skills(&args, &cwd));
+        .filter(|_| !args.no_sandbox && sandbox::hides_skills(args, cwd));
     let mut skills = match skills_dir.as_deref() {
         Some(dir) if hidden_skills.is_none() => harness_core::find_skills(dir),
         _ => Skills::default(),
@@ -423,94 +518,87 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
             tilde(dir.parent().unwrap_or(dir)),
         ));
     }
-    let mut commands = config::commands_dir()
-        .map(|dir| harness_core::find_commands(&dir))
-        .unwrap_or_default();
-    commands
-        .warnings
-        .extend(clash_warnings(&mut commands.commands, &skills.skills));
-    let system = harness_core::system_prompt(&cwd, &agents, &skills.skills);
+    skills
+}
+
+/// The session a run starts with.
+struct Opened {
+    model: String,
+    history: Vec<ChatMessage>,
+    session: Option<Session>,
+    /// The sessions to pick one from first, for `--resume` without an id.
+    picker_entries: Vec<SessionSummary>,
+}
+
+/// Open the session `args` ask for in `cwd`: the last one, the one named,
+/// or a new one using `default_model` unless `args` name a model.
+fn open_session(args: &Args, cwd: &Path, default_model: &str) -> Result<Opened, Error> {
     let store = (!args.no_session)
         .then(config::sessions_dir)
         .flatten()
-        .map(|root| SessionStore::new(root, &cwd));
-    let default_model = args
-        .model
-        .as_deref()
-        .or(config_model.as_deref())
-        .unwrap_or(config::DEFAULT_MODEL);
-
-    let mut picker_entries = Vec::new();
-    let (model, history, mut session) = if args.continue_session {
+        .map(|root| SessionStore::new(root, cwd));
+    let model = args.model.as_deref().unwrap_or(default_model).to_owned();
+    let new = |store: Option<SessionStore>, picker_entries| Opened {
+        session: store.map(|store| {
+            let writer = store.create(&model);
+            Session::new(store, writer, TokenUsage::default(), 0)
+        }),
+        model: model.clone(),
+        history: Vec::new(),
+        picker_entries,
+    };
+    if args.continue_session {
         let store = store.ok_or("cannot continue session: HOME is not set")?;
         let Some(data) = store.latest()? else {
             return Err(format!("no session to continue for {}", cwd.display()).into());
         };
-        open_loaded_session(store, data, args.model.as_deref())?
-    } else if let Some(ref query) = args.resume_session {
-        let store = store.ok_or("cannot resume session: HOME is not set")?;
-        if query.is_empty() {
-            if !args.prompt.is_empty() || !io::stdin().is_terminal() || !io::stdout().is_terminal()
-            {
-                return Err(
-                    "--resume without an ID requires an interactive terminal (pass --resume <id> or --continue)"
-                        .into(),
-                );
-            }
-            let entries = store.list()?;
-            if entries.is_empty() {
-                return Err(format!("no sessions to resume for {}", cwd.display()).into());
-            }
-            picker_entries = entries;
-            let model = default_model.to_owned();
-            let writer = store.create(&model);
-            (
-                model,
-                Vec::new(),
-                Some(Session::new(store, writer, TokenUsage::default(), 0)),
-            )
-        } else {
-            let data = store.load(query)?;
-            open_loaded_session(store, data, args.model.as_deref())?
-        }
-    } else {
-        let model = default_model.to_owned();
-        let session = store.map(|store| {
-            let writer = store.create(&model);
-            Session::new(store, writer, TokenUsage::default(), 0)
-        });
-        (model, Vec::new(), session)
+        return open_loaded_session(store, data, args.model.as_deref());
+    }
+    let Some(query) = &args.resume_session else {
+        return Ok(new(store, Vec::new()));
     };
-    let credential = AdapterKind::from_model(&model)
-        .ok()
-        .map(|kind| (kind, auth.credential_source(kind)));
-    drop(auth);
+    let store = store.ok_or("cannot resume session: HOME is not set")?;
+    if !query.is_empty() {
+        let data = store.load(query)?;
+        return open_loaded_session(store, data, args.model.as_deref());
+    }
+    if !args.prompt.is_empty() || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return Err(
+            "--resume without an ID requires an interactive terminal (pass --resume <id> or --continue)"
+                .into(),
+        );
+    }
+    let entries = store.list()?;
+    if entries.is_empty() {
+        return Err(format!("no sessions to resume for {}", cwd.display()).into());
+    }
+    Ok(new(Some(store), entries))
+}
 
-    let (executor, mut git_guard) = if args.no_sandbox {
-        // Even without the container, keep local bash commands away from API
-        // keys in our memory and environment.
-        harness_sandbox::protect_self()?;
-        let mut tools = ToolContext::default();
-        tools.bash.env = Some(harness_sandbox::command_env(
-            std::env::vars_os(),
-            &args.pass_env,
-        ));
-        // In the real `/tmp` here: gone with the agent.
-        tools.bash.output_files = Some(OutputFiles::default());
-        tools.bash.background = args.background_commands;
-        (Executor::Local(tools), None)
-    } else {
-        let (executor, guard) = sandbox::executor(&args, &cwd)?;
-        (executor, Some(guard))
-    };
+/// What runs the tools for `args` in `cwd`: the sandbox, with the guard
+/// against the git repositories commands create, or this process.
+fn executor(args: &Args, cwd: &Path) -> Result<(Executor, Option<GitGuard>), Error> {
+    if !args.no_sandbox {
+        let (executor, guard) = sandbox::executor(args, cwd)?;
+        return Ok((executor, Some(guard)));
+    }
+    // Even without the container, keep local bash commands away from API
+    // keys in our memory and environment.
+    harness_sandbox::protect_self()?;
+    let mut tools = ToolContext::default();
+    tools.bash.env = Some(harness_sandbox::command_env(
+        std::env::vars_os(),
+        &args.pass_env,
+    ));
+    // In the real `/tmp` here: gone with the agent.
+    tools.bash.output_files = Some(OutputFiles::default());
+    tools.bash.background = args.background_commands;
+    Ok((Executor::Local(tools), None))
+}
 
-    let mut agent = Agent::with_client(client, &model)
-        .with_oauth(oauth)
-        .with_thinking(args.thinking.unwrap_or_default())
-        .with_system(system)
-        .with_history(history)
-        .with_executor(executor)
-        .with_skills(skills.skills);
+/// `agent` with what `args` turn on: background commands, the size to
+/// compact at, and the web tools.
+fn with_options(mut agent: Agent, args: &Args) -> Result<Agent, Error> {
     if args.background_commands {
         agent = agent.with_background_commands();
     }
@@ -531,101 +619,81 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
         };
         agent = agent.with_web_search(searcher);
     }
+    Ok(agent)
+}
 
+/// What to tell the user before the first prompt: the warnings found
+/// with the `skills` and the `commands`, and what the sandbox of `args`
+/// leaves open in `cwd`.
+fn startup_warnings(
+    args: &Args,
+    cwd: &Path,
+    skills: Vec<String>,
+    commands: Vec<String>,
+) -> Vec<String> {
     // Commands can write a repository only in a writable folder.
     let writable = !args.no_sandbox && (!args.strict || !args.allow_write.is_empty());
     let mut warnings = if writable {
-        sandbox::git_warnings(&cwd)
+        sandbox::git_warnings(cwd)
     } else {
         Vec::new()
     };
-    warnings.extend(skills.warnings);
-    warnings.extend(commands.warnings);
+    warnings.extend(skills);
+    warnings.extend(commands);
     if !args.no_sandbox {
-        warnings.extend(sandbox::secrets_warning(&args, &cwd));
-        warnings.extend(sandbox::remote_warnings(&args, &cwd));
+        warnings.extend(sandbox::secrets_warning(args, cwd));
+        warnings.extend(sandbox::remote_warnings(args, cwd));
     }
-    let full_screen =
-        args.prompt.is_empty() && io::stdin().is_terminal() && io::stdout().is_terminal();
-    if !full_screen {
-        for warning in &warnings {
-            eprintln!("warning: {warning}");
-        }
-    }
+    warnings
+}
 
-    if !args.prompt.is_empty() {
-        let text = args.prompt.join(" ");
-        let text = harness_core::expand_command(&commands.commands, &text).unwrap_or(text);
-        let output: fn(Event<'_>) = match args.output_format {
-            OutputFormat::Text => print_event,
-            OutputFormat::Json => |_| {},
-            OutputFormat::Stream => harness_tui::json_lines::print_event,
-        };
-        let res = prompt_and_persist(
-            &mut agent,
-            session.as_mut(),
-            git_guard.as_mut(),
-            &text,
-            output,
-            false,
-        )
-        .await;
-        if args.output_format == OutputFormat::Text {
-            return res.map(|_| ExitCode::SUCCESS);
-        }
-        let failed = res.is_err();
-        let mut out = match res {
-            Ok(done) => serde_json::json!({
-                "result": done.text,
-                "usage": harness_tui::json_lines::usage_json(done.usage),
-            }),
-            Err(err) => serde_json::json!({ "error": err.to_string() }),
-        };
-        out["type"] = if failed { "error" } else { "result" }.into();
-        out["session"] = session.as_ref().map(Session::current_id).into();
-        println!("{out}");
-        return Ok(if failed {
-            ExitCode::FAILURE
-        } else {
-            ExitCode::SUCCESS
-        });
+/// Run the one prompt `text` and print its result as `format` asks.
+async fn run_once(
+    agent: &mut Agent,
+    mut session: Option<&mut Session>,
+    git_guard: Option<&mut GitGuard>,
+    text: &str,
+    format: OutputFormat,
+) -> Result<ExitCode, Error> {
+    let output: fn(Event<'_>) = match format {
+        OutputFormat::Text => print_event,
+        OutputFormat::Json => |_| {},
+        OutputFormat::Stream => harness_tui::json_lines::print_event,
+    };
+    let res = prompt_and_persist(
+        agent,
+        session.as_deref_mut(),
+        git_guard,
+        text,
+        output,
+        false,
+    )
+    .await;
+    if format == OutputFormat::Text {
+        return res.map(|_| ExitCode::SUCCESS);
     }
+    let failed = res.is_err();
+    let mut out = match res {
+        Ok(done) => serde_json::json!({
+            "result": done.text,
+            "usage": harness_tui::json_lines::usage_json(done.usage),
+        }),
+        Err(err) => serde_json::json!({ "error": err.to_string() }),
+    };
+    out["type"] = if failed { "error" } else { "result" }.into();
+    out["session"] = session.map(|session| session.current_id()).into();
+    println!("{out}");
+    Ok(exit_code(failed))
+}
 
-    let sandbox = sandbox_label(&args);
-    if full_screen {
-        let status = Status {
-            sandbox,
-            folder: current_folder(),
-        };
-        let mut banner = vec![
-            BannerLine::new(format!("kluis v{}", env!("CARGO_PKG_VERSION"))),
-            auth_line(&model, credential),
-            BannerLine::new(sandbox_details(&args, &cwd)),
-            BannerLine::new(context_line(&agents, &commands.commands, agent.skills())),
-            BannerLine::new(session_line(session.as_ref(), agent.history().len())),
-        ];
-        banner.extend(warnings.into_iter().map(BannerLine::warning));
-        let history = config::history_path().map(History::load);
-        harness_tui::run(
-            agent,
-            status,
-            RunOptions {
-                session,
-                model: args.model,
-                history,
-                picker_entries,
-                adapters,
-                banner,
-                git_guard,
-                code_theme,
-                commands: commands.commands,
-                notify: args.notify,
-            },
-        )
-        .await?;
-        return Ok(ExitCode::SUCCESS);
-    }
-
+/// Run the prompts read from standard input, a line each, until it ends.
+async fn run_lines(
+    mut agent: Agent,
+    mut session: Option<Session>,
+    mut git_guard: Option<GitGuard>,
+    commands: &[Command],
+    sandbox: &str,
+) -> Result<ExitCode, Error> {
     println!(
         "kluis ({} ({}), {sandbox}), Ctrl-D to quit",
         agent.model(),
@@ -643,17 +711,13 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
                 eprintln!("{}", printable(&notice));
             }
             // Scripts feeding prompts learn that one failed.
-            return Ok(if failed {
-                ExitCode::FAILURE
-            } else {
-                ExitCode::SUCCESS
-            });
+            return Ok(exit_code(failed));
         };
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        let expanded = harness_core::expand_command(&commands.commands, line);
+        let expanded = harness_core::expand_command(commands, line);
         let line = expanded.as_deref().unwrap_or(line);
 
         // Keep the session alive on failures such as network errors.
@@ -673,18 +737,30 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
     }
 }
 
+fn exit_code(failed: bool) -> ExitCode {
+    if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
 fn open_loaded_session(
     store: SessionStore,
     data: SessionData,
     model_override: Option<&str>,
-) -> Result<(String, Vec<ChatMessage>, Option<Session>), Error> {
+) -> Result<Opened, Error> {
     let model = model_override.unwrap_or(&data.meta.model).to_owned();
     let mut writer = store.open(&data);
     if model_override.is_some() && model != data.meta.model {
         writer.append_model(&model)?;
     }
-    let session = Session::new(store, writer, data.usage, data.context);
-    Ok((model, data.messages, Some(session)))
+    Ok(Opened {
+        model,
+        session: Some(Session::new(store, writer, data.usage, data.context)),
+        history: data.messages,
+        picker_entries: Vec::new(),
+    })
 }
 
 /// What a prompt left: the last text of the model, and the tokens it used.
