@@ -19,7 +19,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::render_diff;
 use crate::changes::{ChangeKind, ChangesUpdate, FileChange, Watcher, MAX_FILES};
 use crate::style::Theme;
-use crate::terminal::char_width;
+use crate::text::char_width;
 
 /// Spinner ticks between two scans while a tool runs: about 2 seconds.
 const RESCAN_TICKS: u32 = 16;

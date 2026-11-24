@@ -19,7 +19,7 @@ use unicode_width::UnicodeWidthStr;
 use harness_core::Thinking;
 
 use crate::style::Theme;
-use crate::terminal::truncate_width;
+use crate::text::truncate_width;
 
 /// Maximum visible completion rows below the editor.
 const MAX_COMPLETION_ROWS: u16 = 10;
