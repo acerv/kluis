@@ -50,133 +50,40 @@ impl Sandbox {
                 all.push((checked(path)?, writable));
             }
         }
-        let denied_targets = resolve_denied(&self.deny)?;
-
-        // A mount inside another one would create its mount point on the
-        // host; a writable mount of the same path also supersedes a
-        // read-only one.
-        let covered = |(path, writable): &(PathBuf, bool)| {
-            all.iter().any(|(other, w)| {
-                (other != path && path.starts_with(other) && (*w || !writable))
-                    || (other == path && *w && !writable)
-            })
-        };
-        let mut canon_mounts = Vec::new();
-        for (mount, writable) in all.iter().filter(|m| !covered(m)) {
-            if canon_mounts
-                .iter()
-                .any(|m: &Mount| m.path == *mount && m.writable == *writable)
-            {
-                continue;
-            }
-            let canon = std::fs::canonicalize(mount).map_err(|e| SandboxError::at(mount, e))?;
-            if !path_or_canon_denied(mount, &canon, &denied_targets) {
-                canon_mounts.push(Mount {
-                    path: mount.clone(),
-                    canon,
-                    writable: *writable,
-                });
-            }
-        }
-        let all_writable: Vec<_> = all.iter().filter(|(_, w)| *w).map(|(p, _)| p).collect();
+        let denied = resolve_denied(&self.deny)?;
+        let mut shown = shown_mounts(&all, &denied)?;
         let allowed: Vec<&Path> = all.iter().map(|(path, _)| path.as_path()).collect();
         let mountinfo = read_mountinfo()?;
 
-        // Every `.git` must be found and kept read-only, or commands could
-        // change one that git on the host then runs. Hidden mounts are out
-        // of their reach.
-        let writable_roots: Vec<_> = canon_mounts
-            .iter()
-            .filter(|m| m.writable)
-            .map(|m| (m.path.as_path(), m.canon.as_path()))
-            .collect();
-        let remote = remote_points(&writable_roots, &allowed, &mountinfo);
-        let mut scan = GitScan::default();
-        for (root, canon_root) in &writable_roots {
-            collect_git(
-                root,
-                canon_root,
-                &all_writable,
-                &denied_targets,
-                &remote,
-                &mut scan,
-            );
-        }
         let mut ro_paths = IndexSet::new();
-        for git in scan.complete()? {
-            resolve_read_only(&canon_mounts, &git, false, &mut ro_paths)?;
+        for git in git_entries(&shown, &all, &allowed, &denied, &mountinfo)? {
+            resolve_read_only(&shown, &git, false, &mut ro_paths)?;
         }
         for path in &self.read_only {
-            resolve_read_only(&canon_mounts, path, true, &mut ro_paths)?;
+            resolve_read_only(&shown, path, true, &mut ro_paths)?;
         }
-        ro_paths.retain(|p| !covered_by_denied(p, &denied_targets));
+        ro_paths.retain(|p| !covered_by_denied(p, &denied));
 
         // A path kept read-only also overrides writable mounts at or below it.
-        canon_mounts.retain(|m| {
+        shown.retain(|m| {
             !m.writable
                 || !ro_paths
                     .iter()
                     .any(|ro| m.path.starts_with(ro) || m.canon.starts_with(ro))
         });
 
-        let mut mask_paths = map_denied(&canon_mounts, &denied_targets);
-        ro_paths.retain(|ro| !mask_paths.iter().any(|m| ro.starts_with(&m.path)));
-
-        let mut effective: Vec<_> = canon_mounts
-            .iter()
-            .map(|m| (m.path.clone(), m.writable))
-            .collect();
-        for path in &ro_paths {
-            effective.push((path.clone(), false));
-        }
-        for Hidden { path, .. } in &mask_paths {
-            effective.push((path.clone(), false));
-        }
+        let mut masks = map_denied(&shown, &denied);
+        ro_paths.retain(|ro| !masks.iter().any(|m| ro.starts_with(&m.path)));
 
         // A bind mount brings the mounts of the host below the folder too.
         // On a FUSE or network filesystem, reading, writing or even looking
         // up a file goes to a program or a server that can reach the
         // network, e.g. a cloud drive: hide those, like denied paths,
         // unless allowed themselves.
-        let remote = remote_mounts(&canon_mounts, &allowed, &mask_paths, &mountinfo)?;
-        for hidden in remote {
-            effective.push((hidden.path.clone(), false));
-            mask_paths.push(hidden);
-        }
+        let remote = remote_mounts(&shown, &allowed, &masks, &mountinfo)?;
+        masks.extend(remote);
 
-        let mut mounts: IndexSet<_> = canon_mounts
-            .into_iter()
-            .map(|m| {
-                let writable = m.writable;
-                (m.path, MountKind::Bind { writable })
-            })
-            .collect();
-        for path in ro_paths.iter().chain(mask_paths.iter().map(|m| &m.path)) {
-            // The folders on the way from a writable mount become mount
-            // points, which cannot be moved away to free the path.
-            if let Some((root, true)) = closest_ancestor(&effective, path) {
-                for dir in path.ancestors().skip(1).take_while(|d| *d != root) {
-                    mounts.insert((dir.to_path_buf(), MountKind::Bind { writable: true }));
-                }
-            }
-        }
-        for path in ro_paths {
-            // Skip paths already covered by a read-only mount: bind-mounting
-            // inside an existing mount touches the target on the host, which
-            // fails on files owned by another user (e.g. under /usr).
-            if !matches!(closest_ancestor(&effective, &path), Some((_, false))) {
-                mounts.insert((path, MountKind::Bind { writable: false }));
-            }
-        }
-        for Hidden { path, is_dir } in mask_paths {
-            let kind = if is_dir {
-                MountKind::MaskDir
-            } else {
-                MountKind::MaskFile
-            };
-            mounts.insert((path, kind));
-        }
-        mounts
+        ordered(shown, ro_paths, masks)
             .into_iter()
             .map(|(path, kind)| {
                 let path = path
@@ -187,6 +94,112 @@ impl Sandbox {
             })
             .collect()
     }
+}
+
+/// The mounts for `all` the allowed paths and whether each is writable,
+/// without the ones a mount of a parent folder already shows, and the
+/// ones at or below a `denied` path.
+fn shown_mounts(all: &[(PathBuf, bool)], denied: &[Hidden]) -> Result<Vec<Mount>, SandboxError> {
+    // A mount inside another one would create its mount point on the
+    // host; a writable mount of the same path also supersedes a
+    // read-only one.
+    let covered = |(path, writable): &(PathBuf, bool)| {
+        all.iter().any(|(other, w)| {
+            (other != path && path.starts_with(other) && (*w || !writable))
+                || (other == path && *w && !writable)
+        })
+    };
+    let mut shown = Vec::new();
+    for (mount, writable) in all.iter().filter(|m| !covered(m)) {
+        if shown
+            .iter()
+            .any(|m: &Mount| m.path == *mount && m.writable == *writable)
+        {
+            continue;
+        }
+        let canon = std::fs::canonicalize(mount).map_err(|e| SandboxError::at(mount, e))?;
+        if !path_or_canon_denied(mount, &canon, denied) {
+            shown.push(Mount {
+                path: mount.clone(),
+                canon,
+                writable: *writable,
+            });
+        }
+    }
+    Ok(shown)
+}
+
+/// Every `.git` in the writable mounts of `shown`: all must be found and
+/// kept read-only, or commands could change one that git on the host then
+/// runs. Hidden mounts are out of their reach.
+fn git_entries(
+    shown: &[Mount],
+    all: &[(PathBuf, bool)],
+    allowed: &[&Path],
+    denied: &[Hidden],
+    mountinfo: &str,
+) -> Result<Vec<PathBuf>, SandboxError> {
+    let all_writable: Vec<_> = all.iter().filter(|(_, w)| *w).map(|(p, _)| p).collect();
+    let writable_roots: Vec<_> = shown
+        .iter()
+        .filter(|m| m.writable)
+        .map(|m| (m.path.as_path(), m.canon.as_path()))
+        .collect();
+    let remote = remote_points(&writable_roots, allowed, mountinfo);
+    let mut scan = GitScan::default();
+    for (root, canon_root) in &writable_roots {
+        collect_git(root, canon_root, &all_writable, denied, &remote, &mut scan);
+    }
+    scan.complete()
+}
+
+/// The mounts in the order to make them: the ones `shown`, the folders
+/// leading to the next ones, the paths kept read-only, then the `masks`.
+fn ordered(
+    shown: Vec<Mount>,
+    ro_paths: IndexSet<PathBuf>,
+    masks: Vec<Hidden>,
+) -> IndexSet<(PathBuf, MountKind)> {
+    // Every mount and whether it is writable.
+    let effective: Vec<_> = shown
+        .iter()
+        .map(|m| (m.path.clone(), m.writable))
+        .chain(ro_paths.iter().map(|path| (path.clone(), false)))
+        .chain(masks.iter().map(|m| (m.path.clone(), false)))
+        .collect();
+    let mut mounts: IndexSet<_> = shown
+        .into_iter()
+        .map(|m| {
+            let writable = m.writable;
+            (m.path, MountKind::Bind { writable })
+        })
+        .collect();
+    for path in ro_paths.iter().chain(masks.iter().map(|m| &m.path)) {
+        // The folders on the way from a writable mount become mount
+        // points, which cannot be moved away to free the path.
+        if let Some((root, true)) = closest_ancestor(&effective, path) {
+            for dir in path.ancestors().skip(1).take_while(|d| *d != root) {
+                mounts.insert((dir.to_path_buf(), MountKind::Bind { writable: true }));
+            }
+        }
+    }
+    for path in ro_paths {
+        // Skip paths already covered by a read-only mount: bind-mounting
+        // inside an existing mount touches the target on the host, which
+        // fails on files owned by another user (e.g. under /usr).
+        if !matches!(closest_ancestor(&effective, &path), Some((_, false))) {
+            mounts.insert((path, MountKind::Bind { writable: false }));
+        }
+    }
+    for Hidden { path, is_dir } in masks {
+        let kind = if is_dir {
+            MountKind::MaskDir
+        } else {
+            MountKind::MaskFile
+        };
+        mounts.insert((path, kind));
+    }
+    mounts
 }
 
 /// Canonical paths and whether they are directories for existing `deny` entries.
