@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
-//! Reading files that hold secrets, such as API keys or OAuth tokens.
+//! Reading the user's files with care: the ones that hold secrets, such
+//! as API keys or OAuth tokens, and the ones read up to a size.
 
 use std::fmt;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Read};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
+
+use rustix::fs::OFlags;
 
 use crate::Error;
 
@@ -48,4 +51,41 @@ pub(crate) fn read(path: &Path, max_bytes: usize) -> Result<Option<String>, Erro
         return Err(too_big().into());
     }
     Ok(Some(raw))
+}
+
+/// Up to `limit` bytes of the regular file `path`, and whether it holds
+/// more.
+pub(crate) fn read_capped(path: &Path, limit: usize) -> Option<(Vec<u8>, bool)> {
+    // Never through a symlink, even one swapped in after the file was
+    // found; non-blocking, so a FIFO cannot hang the open.
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags((OFlags::NOFOLLOW | OFlags::NONBLOCK).bits() as i32)
+        .open(path)
+        .ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    let cap = usize::try_from(meta.len()).unwrap_or(limit).min(limit + 1);
+    let mut bytes = Vec::with_capacity(cap);
+    file.take(limit as u64 + 1).read_to_end(&mut bytes).ok()?;
+    let truncated = bytes.len() > limit;
+    if truncated {
+        bytes.truncate(limit);
+        strip_incomplete_utf8_tail(&mut bytes);
+    }
+    Some((bytes, truncated))
+}
+
+fn strip_incomplete_utf8_tail(bytes: &mut Vec<u8>) {
+    let start = bytes.len().saturating_sub(3);
+    if let Some(pos) = bytes[start..].iter().rposition(|&b| b & 0xC0 != 0x80) {
+        let lead = start + pos;
+        if let Err(err) = std::str::from_utf8(&bytes[lead..]) {
+            if err.error_len().is_none() {
+                bytes.truncate(lead);
+            }
+        }
+    }
 }
