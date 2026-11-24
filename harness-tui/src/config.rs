@@ -16,6 +16,8 @@
 //! # base16-eighties-dark, base16-mocha-dark, inspired-github,
 //! # solarized-dark, solarized-light, or a TextMate theme file.
 //! code_theme = "solarized-dark"
+//! # Search the web with this SearXNG instance instead of DuckDuckGo.
+//! searxng_url = "https://searx.example.org"
 //!
 //! [sandbox]
 //! # Also allow reading, or changing, these paths; `~` is $HOME. $HOME
@@ -76,6 +78,7 @@ impl Default for Config {
                 thinking: None,
                 code_theme: None,
                 auto_compact_tokens: None,
+                searxng_url: None,
             },
             sandbox: SandboxConfig::default(),
         }
@@ -99,6 +102,9 @@ pub struct GenericConfig {
     /// Prompt-token threshold that triggers auto-compaction (`0` disables it).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_compact_tokens: Option<u64>,
+    /// SearXNG instance for web searches, like `--searxng-url`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub searxng_url: Option<String>,
 }
 
 /// The `[sandbox]` section.
