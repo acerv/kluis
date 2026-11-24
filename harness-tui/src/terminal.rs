@@ -22,9 +22,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Widget};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 use scopeguard::ScopeGuard;
-use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
 
 use crate::app::{App, MIN_SPLIT_WIDTH};
 use crate::text::wrap_lines;
@@ -43,6 +41,9 @@ static PANIC_HOOK: Once = Once::new();
 
 /// The alternate screen is in use, to leave it on exit.
 static ALTERNATE: AtomicBool = AtomicBool::new(false);
+
+/// The terminal is in raw mode, to restore it only once.
+static ENTERED: AtomicBool = AtomicBool::new(false);
 
 /// Reads crossterm events on a background thread with a short poll timeout so
 /// `crossterm::cursor::position()` (called by ratatui's inline viewport on
@@ -107,7 +108,7 @@ impl Drop for EventReader {
 }
 
 /// Owns the inline ratatui terminal and restores raw mode and bracketed paste
-/// on drop, panic, or `SIGHUP`/`SIGINT`/`SIGTERM`.
+/// on drop or panic.
 pub struct InlineTerminal {
     terminal: Terminal<CrosstermBackend<Stdout>>,
     height: u16,
@@ -125,7 +126,6 @@ pub struct InlineTerminal {
     /// While the `/diff` panel is open, on the alternate screen: the lines
     /// of the transcript not printed yet, and where the viewport was.
     split: Option<Split>,
-    signals: JoinHandle<()>,
 }
 
 struct Split {
@@ -136,19 +136,14 @@ struct Split {
 }
 
 impl InlineTerminal {
-    /// Enter raw mode with an inline viewport of `height` rows. Must be called
-    /// inside a Tokio runtime.
+    /// Enter raw mode with an inline viewport of `height` rows.
     pub fn enter(height: u16) -> io::Result<Self> {
         install_panic_hook();
-        let signals = spawn_signal_handler()?;
-        if let Err(err) = enable_raw_mode() {
-            signals.abort();
-            return Err(err);
-        }
+        enable_raw_mode()?;
+        ENTERED.store(true, Ordering::Relaxed);
         let mut stdout = io::stdout();
         if let Err(err) = execute!(stdout, EnableBracketedPaste, Print(PUSH_TITLE)) {
-            let _ = disable_raw_mode();
-            signals.abort();
+            restore_terminal();
             return Err(err);
         }
         let backend = CrosstermBackend::new(stdout);
@@ -167,11 +162,9 @@ impl InlineTerminal {
                     transcript: VecDeque::new(),
                     title: String::new(),
                     split: None,
-                    signals,
                 })
             }
             Err(err) => {
-                signals.abort();
                 restore_terminal();
                 Err(err)
             }
@@ -396,7 +389,6 @@ impl Drop for InlineTerminal {
     fn drop(&mut self) {
         // Print what the panel kept from the screen.
         let _ = self.leave_split();
-        self.signals.abort();
         restore_terminal();
     }
 }
@@ -478,25 +470,12 @@ fn install_panic_hook() {
     });
 }
 
-/// Restore the terminal and exit with `128 + signal` when asked to stop by
-/// `SIGHUP`, `SIGINT` or `SIGTERM`; in raw mode `Ctrl-C` is a key, not a
-/// signal, so `SIGINT` only comes from outside.
-fn spawn_signal_handler() -> io::Result<JoinHandle<()>> {
-    let mut hangup = signal(SignalKind::hangup())?;
-    let mut interrupt = signal(SignalKind::interrupt())?;
-    let mut terminate = signal(SignalKind::terminate())?;
-    Ok(tokio::spawn(async move {
-        let kind = tokio::select! {
-            _ = hangup.recv() => SignalKind::hangup(),
-            _ = interrupt.recv() => SignalKind::interrupt(),
-            _ = terminate.recv() => SignalKind::terminate(),
-        };
-        restore_terminal();
-        std::process::exit(128 + kind.as_raw_value());
-    }))
-}
-
-fn restore_terminal() {
+/// Put the terminal back as [`InlineTerminal::enter`] found it; nothing
+/// happens when it was not entered, or it was restored already.
+pub(crate) fn restore_terminal() {
+    if !ENTERED.swap(false, Ordering::Relaxed) {
+        return;
+    }
     let mut stdout = io::stdout();
     if ALTERNATE.swap(false, Ordering::Relaxed) {
         let _ = execute!(stdout, LeaveAlternateScreen);

@@ -21,11 +21,14 @@ pub mod json_lines;
 mod markdown;
 mod picker;
 mod session;
+mod signals;
 mod slash;
 mod stats;
 mod style;
 mod terminal;
 mod text;
+
+use std::io::Write;
 
 use genai::adapter::AdapterKind;
 use genai::chat::ChatMessage;
@@ -47,6 +50,7 @@ pub use complete::is_builtin;
 pub use history::{History, MAX_HISTORY};
 pub use markdown::code_theme;
 pub use session::{PromptSaver, Session};
+pub use signals::Signals;
 pub use stats::PromptStats;
 pub use style::Theme;
 pub use terminal::flush_scrollback;
@@ -127,8 +131,14 @@ fn check_git_guard(guard: Option<&mut GitGuard>, changed_files: bool) -> Vec<Str
     new.chain(unchecked).collect()
 }
 
-/// Run the interactive inline TUI until the user quits (`Ctrl-D` or `/quit`).
-pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), Error> {
+/// Run the interactive inline TUI until the user quits (`Ctrl-D` or `/quit`)
+/// or one of `signals` asks to.
+pub async fn run(
+    agent: Agent,
+    status: Status,
+    mut signals: Signals,
+    opts: RunOptions,
+) -> Result<(), Error> {
     let (asker, questions) = mpsc::unbounded_channel();
     let mut agent = agent.with_asker(asker);
     let RunOptions {
@@ -179,6 +189,7 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
         app,
         events,
         questions,
+        signals: signals.clone(),
     };
     ui.draw()?;
 
@@ -189,13 +200,17 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
     loop {
         if checked_model != agent.model() {
             checked_model = agent.model().to_owned();
-            check_thinking(&mut agent, &mut ui.app).await;
+            tokio::select! {
+                _ = signals.recv() => break,
+                () = check_thinking(&mut agent, &mut ui.app) => {}
+            }
             ui.draw()?;
         }
         let action = match next_prompt.take() {
             Some(prompt) => Action::Submit(prompt),
             None => {
                 let next = tokio::select! {
+                    _ = signals.recv() => break,
                     next = ui.events.next() => next,
                     update = ui.app.next_changes() => {
                         ui.app.apply_changes(update);
@@ -219,16 +234,19 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
             Action::Redraw => ui.draw()?,
             Action::Quit => break,
             Action::Slash(cmd) => {
-                if handle_slash(
+                let slash = handle_slash(
                     &mut ui,
                     cmd,
                     &mut agent,
                     session.as_mut(),
                     &mut models,
                     &mut next_prompt,
-                )
-                .await?
-                {
+                );
+                let quit = tokio::select! {
+                    _ = signals.recv() => true,
+                    quit = slash => quit?,
+                };
+                if quit {
                     break;
                 }
                 ui.draw()?;
@@ -310,8 +328,10 @@ pub async fn after_commands(
 /// Leave the TUI, printing `notices` once the screen is back.
 fn quit_with(term: InlineTerminal, notices: &[String]) {
     drop(term);
+    // Without `eprintln`: the terminal may be gone, after a `SIGHUP`.
+    let mut stderr = std::io::stderr().lock();
     for notice in notices {
-        eprintln!("{}", printable(notice));
+        let _ = writeln!(stderr, "{}", printable(notice));
     }
 }
 

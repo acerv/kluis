@@ -41,9 +41,10 @@ use harness_core::{
 use harness_sandbox::{GitGuard, NetworkAccess};
 use harness_tui::{
     after_commands, printable, pruned_notice, retry_notice, summary, BannerLine, History,
-    PromptSaver, PromptStats, RunOptions, Session, Status, TRUNCATED_NOTICE,
+    PromptSaver, PromptStats, RunOptions, Session, Signals, Status, TRUNCATED_NOTICE,
 };
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::runtime::Runtime;
 
 /// Largest standard input `--print` adds to the prompt.
 const MAX_STDIN_BYTES: u64 = 4 << 20;
@@ -256,7 +257,7 @@ fn launch(mut args: Args) -> Result<ExitCode, Error> {
         runtime.block_on(logout(provider))?;
     } else {
         let config_model = apply_config(&mut args)?;
-        return runtime.block_on(run(args, config_model));
+        return run_until_signal(runtime, args, config_model);
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -359,7 +360,33 @@ fn apply_config(args: &mut Args) -> Result<Option<String>, Error> {
     Ok(config.generic.model)
 }
 
-async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, Error> {
+/// [`run`] on `runtime`, leaving with `128 + signal` when a signal stopped it.
+fn run_until_signal(
+    runtime: Runtime,
+    args: Args,
+    config_model: Option<String>,
+) -> Result<ExitCode, Error> {
+    let signals = {
+        let _runtime = runtime.enter();
+        Signals::listen()?
+    };
+    let res = runtime.block_on(run(args, config_model, signals.clone()));
+    let Some(signal) = signals.received() else {
+        return res;
+    };
+    if let Err(err) = res {
+        eprintln!("error: {}", printable(&err.to_string()));
+    }
+    // A read of standard input left waiting would never end.
+    runtime.shutdown_background();
+    Ok(ExitCode::from(128 + signal as u8))
+}
+
+async fn run(
+    mut args: Args,
+    config_model: Option<String>,
+    signals: Signals,
+) -> Result<ExitCode, Error> {
     let cwd = std::env::current_dir()?;
     if args.print || args.output_format != OutputFormat::Text {
         args.prompt = vec![read_prompt(&args).await?];
@@ -427,6 +454,7 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
             &mut agent,
             session.as_mut(),
             git_guard.as_mut(),
+            signals,
             &text,
             args.output_format,
         )
@@ -435,7 +463,15 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
 
     let sandbox = sandbox_label(&args);
     if !full_screen {
-        return run_lines(agent, session, git_guard, &commands.commands, &sandbox).await;
+        return run_lines(
+            agent,
+            session,
+            git_guard,
+            signals,
+            &commands.commands,
+            &sandbox,
+        )
+        .await;
     }
     let status = Status {
         sandbox,
@@ -453,6 +489,7 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
     harness_tui::run(
         agent,
         status,
+        signals,
         RunOptions {
             session,
             model: args.model,
@@ -652,6 +689,7 @@ async fn run_once(
     agent: &mut Agent,
     mut session: Option<&mut Session>,
     git_guard: Option<&mut GitGuard>,
+    mut signals: Signals,
     text: &str,
     format: OutputFormat,
 ) -> Result<ExitCode, Error> {
@@ -664,6 +702,7 @@ async fn run_once(
         agent,
         session.as_deref_mut(),
         git_guard,
+        &mut signals,
         text,
         output,
         false,
@@ -686,11 +725,13 @@ async fn run_once(
     Ok(exit_code(failed))
 }
 
-/// Run the prompts read from standard input, a line each, until it ends.
+/// Run the prompts read from standard input, a line each, until it ends
+/// or one of `signals` asks to stop.
 async fn run_lines(
     mut agent: Agent,
     mut session: Option<Session>,
     mut git_guard: Option<GitGuard>,
+    mut signals: Signals,
     commands: &[Command],
     sandbox: &str,
 ) -> Result<ExitCode, Error> {
@@ -705,7 +746,12 @@ async fn run_lines(
         print!("> ");
         io::stdout().flush()?;
 
-        let Some(line) = lines.next_line().await? else {
+        let line = tokio::select! {
+            biased;
+            _ = signals.recv() => None,
+            line = lines.next_line() => line?,
+        };
+        let Some(line) = line else {
             println!();
             for notice in after_commands(&agent, git_guard.as_mut(), false, false).await {
                 eprintln!("{}", printable(&notice));
@@ -725,6 +771,7 @@ async fn run_lines(
             &mut agent,
             session.as_mut(),
             git_guard.as_mut(),
+            &mut signals,
             line,
             print_event,
             true,
@@ -769,30 +816,34 @@ struct Done {
     usage: TokenUsage,
 }
 
-/// Run a prompt, passing its events to `output`, and save it.
-/// Commands started in the background keep running with `keep_jobs`.
+/// Run a prompt, passing its events to `output`, and save it; one of
+/// `signals` stops it, which is an error. Commands started in the
+/// background keep running with `keep_jobs`, unless a signal came.
 async fn prompt_and_persist(
     agent: &mut Agent,
     session: Option<&mut Session>,
     git_guard: Option<&mut GitGuard>,
+    signals: &mut Signals,
     text: &str,
     output: fn(Event<'_>),
     keep_jobs: bool,
 ) -> Result<Done, Error> {
     let mut saver = PromptSaver::new(session, agent.history());
     let mut stats = PromptStats::default();
-    let res = agent
-        .prompt(text, |event| {
-            saver.on_event(&event);
-            // The summary of a compaction is not an answer to print.
-            let summary =
-                stats.compacting() && matches!(event, Event::TextDelta(_) | Event::Text(_));
-            stats.on_event(&event);
-            if !summary {
-                output(event);
-            }
-        })
-        .await;
+    let prompt = agent.prompt(text, |event| {
+        saver.on_event(&event);
+        // The summary of a compaction is not an answer to print.
+        let summary = stats.compacting() && matches!(event, Event::TextDelta(_) | Event::Text(_));
+        stats.on_event(&event);
+        if !summary {
+            output(event);
+        }
+    });
+    let res = tokio::select! {
+        res = prompt => res,
+        signal = signals.recv() => Err(format!("stopped by signal {signal}").into()),
+    };
+    let keep_jobs = keep_jobs && signals.received().is_none();
     let notices = after_commands(agent, git_guard, stats.changed_files, keep_jobs).await;
     if let Err(err) = saver.finish(agent.history(), stats.usage, stats.context) {
         eprintln!("warning: could not save session: {err}");
