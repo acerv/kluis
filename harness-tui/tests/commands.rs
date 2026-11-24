@@ -5,18 +5,17 @@
 //! mock server to verify what commands executed by the `bash` tool can see
 //! and do inside the sandbox.
 
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+mod common;
+
+use std::io::Write;
+use std::net::TcpListener;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::thread::{self, JoinHandle};
 
+use common::{delta, kl, read_request, read_request_with_headers, tempdir, write_sse};
 use serde_json::{json, Value};
 use tempfile::TempDir;
-
-fn tempdir() -> TempDir {
-    tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap()
-}
 
 struct RunResult {
     system: String,
@@ -104,12 +103,11 @@ fn run_bash_in(
 ) -> RunResult {
     let (llm_port, server) = start_mock_llm(make_cmd);
 
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_kl"));
+    let mut cmd = kl(home);
     cmd.args(["--model", "genai_1::test-model"])
         .args(extra_args)
         .arg("run")
         .current_dir(cwd)
-        .env("HOME", home)
         .env(
             "GENAI_1_ENDPOINT",
             format!("http://127.0.0.1:{llm_port}/v1/"),
@@ -143,33 +141,6 @@ fn run_bash(
 ) -> String {
     let cwd = tempdir();
     run_bash_in(cwd.path(), home, extra_args, extra_env, make_cmd).output
-}
-
-fn read_request(stream: &TcpStream) -> Value {
-    read_request_with_headers(stream).1
-}
-
-fn write_sse(mut stream: TcpStream, chunks: &[String]) {
-    let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n";
-    stream.write_all(head.as_bytes()).unwrap();
-    for chunk in chunks {
-        stream
-            .write_all(format!("data: {chunk}\n\n").as_bytes())
-            .unwrap();
-    }
-    stream.write_all(b"data: [DONE]\n\n").unwrap();
-    stream.flush().unwrap();
-}
-
-fn delta(delta: Value, finish_reason: Option<&str>) -> String {
-    json!({
-        "id": "chatcmpl-test",
-        "object": "chat.completion.chunk",
-        "created": 0,
-        "model": "test-model",
-        "choices": [{ "index": 0, "delta": delta, "finish_reason": finish_reason }]
-    })
-    .to_string()
 }
 
 fn write_config(home: &Path, text: &str) {
@@ -597,11 +568,9 @@ fn session_persists_continues_and_isolates_projects_in_sandbox() {
     assert!(!store_c.project_dir().exists());
 
     // `-c` in a folder with no session fails with a clear error.
-    let out = Command::new(env!("CARGO_BIN_EXE_kl"))
+    let out = kl(home.path())
         .args(["-c"])
         .current_dir(proj_c.path())
-        .env("HOME", home.path())
-        .env_remove("HARNESS_CONFIG")
         .stdin(Stdio::null())
         .output()
         .unwrap();
@@ -647,11 +616,9 @@ fn session_persists_continues_and_isolates_projects_in_sandbox() {
     );
 
     // Bare `--resume` without a TTY fails with a clear message.
-    let no_tty = Command::new(env!("CARGO_BIN_EXE_kl"))
+    let no_tty = kl(home.path())
         .args(["--resume"])
         .current_dir(proj_a.path())
-        .env("HOME", home.path())
-        .env_remove("HARNESS_CONFIG")
         .stdin(Stdio::null())
         .output()
         .unwrap();
@@ -676,10 +643,8 @@ fn auth_toml_authenticates_host_while_hidden_in_sandbox() {
     // Open permissions (0644) must be rejected before starting.
     std::fs::write(&auth_path, "[mistral]\napi_key = \"sk-open\"\n").unwrap();
     std::fs::set_permissions(&auth_path, std::fs::Permissions::from_mode(0o644)).unwrap();
-    let bad = Command::new(env!("CARGO_BIN_EXE_kl"))
+    let bad = kl(home.path())
         .current_dir(cwd.path())
-        .env("HOME", home.path())
-        .env_remove("HARNESS_CONFIG")
         .stdin(Stdio::null())
         .output()
         .unwrap();
@@ -749,11 +714,9 @@ fn auth_toml_authenticates_host_while_hidden_in_sandbox() {
     .unwrap();
     std::fs::set_permissions(&auth_path, std::fs::Permissions::from_mode(0o600)).unwrap();
 
-    let out = Command::new(env!("CARGO_BIN_EXE_kl"))
+    let out = kl(home.path())
         .args(["--model", "mistral::test-model", "run"])
         .current_dir(cwd.path())
-        .env("HOME", home.path())
-        .env_remove("HARNESS_CONFIG")
         .env_remove("MISTRAL_API_KEY")
         .stdin(Stdio::null())
         .output()
@@ -781,30 +744,6 @@ fn auth_toml_authenticates_host_while_hidden_in_sandbox() {
         .find(|l| l.starts_with("AUTH="))
         .unwrap();
     assert!(auth_line.contains("No such file"), "{auth_line}");
-}
-
-fn read_request_with_headers(stream: &TcpStream) -> (String, Value) {
-    let mut reader = BufReader::new(stream);
-    let mut headers = String::new();
-    let mut length = 0usize;
-    loop {
-        let mut line = String::new();
-        reader.read_line(&mut line).unwrap();
-        let trimmed = line.trim_end();
-        if trimmed.is_empty() {
-            break;
-        }
-        headers.push_str(trimmed);
-        headers.push('\n');
-        if let Some((name, value)) = trimmed.split_once(':') {
-            if name.eq_ignore_ascii_case("content-length") {
-                length = value.trim().parse().unwrap();
-            }
-        }
-    }
-    let mut body = vec![0u8; length];
-    reader.read_exact(&mut body).unwrap();
-    (headers, serde_json::from_slice(&body).unwrap())
 }
 
 /// Set when this test program runs inside the sandbox as the socket
@@ -1144,13 +1083,11 @@ fn background_commands_outlive_the_prompt_until_kl_exits() {
                         [ \"$b\" -gt \"$a\" ] && echo growing",
         }),
     ]);
-    let out = Command::new(env!("CARGO_BIN_EXE_kl"))
+    let out = kl(home.path())
         .args(["--model", "genai_1::test-model", "--background-commands"])
         .current_dir(cwd.path())
-        .env("HOME", home.path())
         .env("GENAI_1_ENDPOINT", format!("http://127.0.0.1:{port}/v1/"))
         .env("GENAI_1_API_KEY", "secret-genai-key-12345")
-        .env_remove("HARNESS_CONFIG")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())

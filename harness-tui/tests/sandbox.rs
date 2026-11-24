@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
+mod common;
+
 use std::process::{Command, Output, Stdio};
 
+use common::{kl, tempdir};
+
 fn run_cli(args: &[&str]) -> Output {
-    let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let home = tempdir();
     // Git set up as kl advises, so that it does not warn.
     let gitconfig = home.path().join("gitconfig");
     std::fs::write(
@@ -12,12 +16,10 @@ fn run_cli(args: &[&str]) -> Output {
         "[safe]\n\tbareRepository = explicit\n[core]\n\thooksPath = /dev/null\n",
     )
     .unwrap();
-    Command::new(env!("CARGO_BIN_EXE_kl"))
+    kl(home.path())
         .args(args)
-        .env("HOME", home.path())
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", &gitconfig)
-        .env_remove("HARNESS_CONFIG")
         .stdin(Stdio::null())
         .output()
         .unwrap()

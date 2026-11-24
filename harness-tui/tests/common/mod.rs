@@ -5,10 +5,89 @@
 
 #![allow(dead_code)]
 
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, Output, Stdio};
+
+use serde_json::{json, Value};
+use tempfile::TempDir;
+
+/// A folder below the target folder: outside `/tmp`, which is private in
+/// the container, and outside the current folder, which it shows.
+pub fn tempdir() -> TempDir {
+    tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap()
+}
+
+/// `kl` with `home` as `$HOME`, away from the config of the user.
+pub fn kl(home: &Path) -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_kl"));
+    cmd.env("HOME", home).env_remove("HARNESS_CONFIG");
+    cmd
+}
+
+pub fn stdout(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+pub fn stderr(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+/// The headers and the JSON body of the request a mock server got.
+pub fn read_request_with_headers(stream: &TcpStream) -> (String, Value) {
+    let mut reader = BufReader::new(stream);
+    let mut headers = String::new();
+    let mut length = 0usize;
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let trimmed = line.trim_end();
+        if trimmed.is_empty() {
+            break;
+        }
+        headers.push_str(trimmed);
+        headers.push('\n');
+        if let Some((name, value)) = trimmed.split_once(':') {
+            if name.eq_ignore_ascii_case("content-length") {
+                length = value.trim().parse().unwrap();
+            }
+        }
+    }
+    let mut body = vec![0u8; length];
+    reader.read_exact(&mut body).unwrap();
+    (headers, serde_json::from_slice(&body).unwrap())
+}
+
+pub fn read_request(stream: &TcpStream) -> Value {
+    read_request_with_headers(stream).1
+}
+
+/// Answer a request with `chunks` as an OpenAI stream.
+pub fn write_sse(mut stream: TcpStream, chunks: &[Value]) {
+    let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n";
+    stream.write_all(head.as_bytes()).unwrap();
+    for chunk in chunks {
+        stream
+            .write_all(format!("data: {chunk}\n\n").as_bytes())
+            .unwrap();
+    }
+    stream.write_all(b"data: [DONE]\n\n").unwrap();
+    stream.flush().unwrap();
+}
+
+/// A chunk of an OpenAI stream carrying `delta`.
+pub fn delta(delta: Value, finish_reason: Option<&str>) -> Value {
+    json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "created": 0,
+        "model": "test-model",
+        "choices": [{ "index": 0, "delta": delta, "finish_reason": finish_reason }]
+    })
+}
 
 fn winsize(rows: u16, cols: u16) -> libc::winsize {
     libc::winsize {
@@ -65,12 +144,10 @@ pub fn spawn_tui_in(home: &Path, cwd: &Path, slave: &OwnedFd) -> Child {
 
 fn tui_command(home: &Path, slave: &OwnedFd, args: &[&str]) -> Command {
     let stdio = || Stdio::from(slave.try_clone().unwrap());
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_kl"));
+    let mut cmd = kl(home);
     cmd.arg("--no-sandbox")
         .args(args)
-        .env("HOME", home)
         .env("TERM", "xterm")
-        .env_remove("HARNESS_CONFIG")
         .stdin(stdio())
         .stdout(stdio())
         .stderr(stdio());
