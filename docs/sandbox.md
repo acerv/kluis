@@ -7,7 +7,8 @@ container that shows only the folders you configure.
 
 - The current folder is writable. With `--strict` it is read-only, and
   `--no-sandbox` turns the container off.
-- `.git` stays read-only, and a new `.git` is disabled after each prompt.
+- `.git` stays read-only, and a new `.git` is disabled after each prompt, and
+  once more when background commands stop.
 - There is no network by default. You can allow all of it, or some TCP ports
   (Linux 6.7+). Allowed ports are open on every host, not only locally.
 - `$HOME` is an empty private folder that lives in memory and is gone when
@@ -24,7 +25,8 @@ container that shows only the folders you configure.
 - `kl` refuses to run as root or with sudo, even with `--no-sandbox`: root
   keeps its privileges in the container and could undo it.
 - Processes and `/tmp` are limited. Leftover programs are stopped after each
-  prompt, and on low memory commands are killed first.
+  prompt, but the commands the model starts in the background, which are
+  stopped when `kl` exits. On low memory commands are killed first.
 
 See [Configuration](configuration.md) for the settings that control this.
 
