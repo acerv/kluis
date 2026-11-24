@@ -61,7 +61,7 @@ kl --output-format json "list the TODOs"  # result, usage and session as JSON
 kl --output-format stream "fix the tests" # one JSON line per event, then the result
 kl                               # interactive chat, Ctrl-D to quit
 kl --login anthropic             # use a Claude subscription instead
-kl --install-skills              # add the mentor and study skills
+kl --install-skills              # install the skills that come with kl
 kl --resume                      # continue a previous session
 kl --strict                      # make the project read-only
 kl --no-sandbox                  # run tools on the host
