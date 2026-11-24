@@ -4,7 +4,7 @@
 //! Sandboxed tool executor for `kl`: spawns `kl --tool-executor` inside a
 //! `hakoniwa` container with the current folder writable (or read-only with
 //! `--strict`), an empty private `$HOME` showing only the allowed paths,
-//! `~/.kluis` hidden, zero API keys in the environment, and no
+//! `~/.kluis` hidden, `~/.agents/skills` read-only, zero API keys in the environment, and no
 //! network unless `--network` or `--allow-connect` is given. Commands
 //! cannot create user namespaces, nor Unix sockets without `--network`.
 
@@ -90,6 +90,9 @@ pub fn executor(args: &Args, cwd: &Path) -> Result<(Executor, GitGuard), Error> 
     } else {
         write.push(cwd.to_path_buf());
     }
+
+    // The global skills, which the model reads when it uses one.
+    read.extend(crate::config::skills_dir().filter(|dir| dir.is_dir()));
 
     // Hide all harness state (`~/.kluis`: config, auth, sessions, history,
     // global AGENTS.md) from sandboxed tools.
