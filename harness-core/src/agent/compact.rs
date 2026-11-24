@@ -111,6 +111,22 @@ const COMPACT_HEADER: &str = "Summary of the earlier conversation:";
 const COMPACT_ACK: &str = "Understood. Continuing from the compacted summary.";
 const COMPACT_CONTINUE: &str = "Continue with the task from the compacted summary above.";
 
+/// Whether to compact a conversation that is `context` tokens long (0
+/// when unknown), with `limit` the size to compact at. Once it is, it is
+/// not again while `blocked`, which lasts until the conversation got
+/// shorter than the limit: a summary that is still too long would
+/// otherwise be summarized over and over.
+pub(super) fn is_due(limit: Option<u64>, context: u64, blocked: &mut bool) -> bool {
+    match limit {
+        Some(limit) if context >= limit => !*blocked,
+        Some(_) if context > 0 => {
+            *blocked = false;
+            false
+        }
+        _ => false,
+    }
+}
+
 fn compact_instruction(focus: Option<&str>) -> Cow<'static, str> {
     match focus.map(str::trim).filter(|s| !s.is_empty()) {
         Some(focus) => Cow::Owned(format!(

@@ -7,6 +7,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
+use futures_util::future::join_all;
 use genai::adapter::AdapterKind;
 use genai::chat::{
     Binary, ChatMessage, ChatRequest, ChatRole, ContentPart, MessageContent, ToolCall, ToolResponse,
@@ -494,11 +495,9 @@ impl Agent {
         let message = self.user_message(text).await;
         self.req.messages.push(message);
         self.planned = self.plan;
-        let plan = self.plan;
 
         let mut turns = 0usize;
-        let mut prev_assistant_idx: Option<usize> = None;
-        let mut repeat_streak = 0usize;
+        let mut repeats = Repeats::default();
         let mut compact_blocked = false;
 
         loop {
@@ -561,18 +560,10 @@ impl Agent {
                 .usage
                 .as_ref()
                 .map_or(0, |u| TokenUsage::from_genai(u).prompt());
-            let need_compact = match self.auto_compact_tokens {
-                Some(limit) if context >= limit => !compact_blocked,
-                Some(_) if context > 0 => {
-                    compact_blocked = false;
-                    false
-                }
-                _ => false,
-            };
+            let need_compact =
+                compact::is_due(self.auto_compact_tokens, context, &mut compact_blocked);
 
-            // A copy, so results can join the history while calls run.
-            let calls: Vec<ToolCall> = content.tool_calls().into_iter().cloned().collect();
-            if calls.is_empty() {
+            if !content.contains_tool_call() {
                 if turn.truncated {
                     on_event(Event::Truncated);
                 }
@@ -586,119 +577,101 @@ impl Agent {
                 }
             }
 
-            let same_as_prev = !turn.truncated
-                && prev_assistant_idx.is_some_and(|prev| {
-                    same_calls(&self.req.messages[prev].content.tool_calls(), &calls)
-                });
-            repeat_streak = if turn.truncated {
-                0
-            } else if same_as_prev {
-                repeat_streak + 1
-            } else {
-                1
+            let repeated = repeats.turn(&self.req.messages, assistant_idx, turn.truncated);
+            let refused = Refused {
+                truncated: turn.truncated,
+                repeated,
+                invalid: &turn.invalid,
             };
-            prev_assistant_idx = (!turn.truncated).then_some(assistant_idx);
-            let repeated_turn = repeat_streak >= MAX_REPEATED_CALLS;
-
-            // Why the call at `idx` must not run, if so.
-            let refusal = |idx: usize, call: &ToolCall| {
-                if turn.truncated {
-                    Some(TRUNCATED)
-                } else if plan && !allowed_in_plan(&call.fn_name) {
-                    Some(PLAN_REFUSAL)
-                } else if turn.invalid.contains(&call.call_id) {
-                    Some(INVALID_ARGUMENTS)
-                } else if repeated_turn || is_within_turn_repeat(&calls[..idx], call) {
-                    Some(REPEATED_CALL)
-                } else {
-                    None
-                }
-            };
-            // Made before the history is borrowed for the results.
-            let mut sub = (!self.sub && calls.iter().any(|c| c.fn_name == tools::TASK_TOOL))
-                .then(|| self.subagent());
-            let mut pending = Pending {
-                messages: &mut self.req.messages,
-                calls: &calls,
-                answered: 0,
-            };
-            // Images the tools read, sent after all the results: a message
-            // between them would split the turn.
-            let mut images = Vec::new();
-            let mut idx = 0;
-            while idx < calls.len() {
-                // Batch consecutive read-only calls (`read`, `ls`, `find`, `grep`)
-                // and run them concurrently while emitting paired events and
-                // tool responses in original call order.
-                let batch_end = if turn.truncated || repeated_turn {
-                    idx + 1
-                } else {
-                    let mut end = idx;
-                    while end < calls.len() && tools::is_read_only(&calls[end].fn_name) {
-                        end += 1;
-                    }
-                    end.max(idx + 1)
-                };
-                let batch = &calls[idx..batch_end];
-                if batch.len() == 1 {
-                    let call = &batch[0];
-                    on_event(Event::ToolCall(call));
-                    let (resp, details) = if let Some(why) = refusal(idx, call) {
-                        (error_response(call, why), None)
-                    } else if let (tools::TASK_TOOL, Some(sub)) = (call.fn_name.as_str(), &mut sub)
-                    {
-                        (sub.run_task(call, &mut on_event).await, None)
-                    } else if let Some(resp) = self.host.run(call).await {
-                        (resp, None)
-                    } else {
-                        self.executor
-                            .execute(call, |chunk| on_event(Event::ToolOutput(chunk)))
-                            .await
-                    };
-                    let details = take_image(details, &mut images);
-                    on_event(Event::ToolResult(&resp, details.as_ref()));
-                    pending.answer(resp);
-                } else {
-                    let executor = &self.executor;
-                    let results = futures_util::future::join_all(batch.iter().enumerate().map(
-                        |(off, call)| {
-                            let refusal = refusal(idx + off, call);
-                            async move {
-                                if let Some(why) = refusal {
-                                    (error_response(call, why), None)
-                                } else {
-                                    executor.execute(call, |_| {}).await
-                                }
-                            }
-                        },
-                    ))
-                    .await;
-                    for (call, (resp, details)) in batch.iter().zip(results) {
-                        let details = take_image(details, &mut images);
-                        on_event(Event::ToolCall(call));
-                        on_event(Event::ToolResult(&resp, details.as_ref()));
-                        pending.answer(resp);
-                    }
-                }
-                idx = batch_end;
-            }
-            drop(pending);
-            drop(calls);
-            if !images.is_empty() {
-                images.insert(0, ContentPart::Text(IMAGES.to_owned()));
-                self.req
-                    .messages
-                    .push(ChatMessage::user(MessageContent::from_parts(images)));
-            }
+            self.run_calls(assistant_idx, refused, &mut on_event).await;
 
             if need_compact && self.max_turns.is_none_or(|limit| turns < limit) {
                 if self.run_auto_compact(context, true, &mut on_event).await {
                     saved = self.req.messages.len();
-                    prev_assistant_idx = None;
-                    repeat_streak = 0;
+                    repeats = Repeats::default();
                 }
                 compact_blocked = true;
             }
+        }
+    }
+
+    /// Run the tool calls of the model turn at `turn` in the history, and
+    /// add their results to it, in order. The `refused` ones do not run.
+    ///
+    /// Dropping the future answers the calls left as cancelled.
+    async fn run_calls(
+        &mut self,
+        turn: usize,
+        refused: Refused<'_>,
+        on_event: &mut (impl FnMut(Event<'_>) + Send),
+    ) {
+        // A copy, so results can join the history while calls run.
+        let content = &self.req.messages[turn].content;
+        let calls: Vec<ToolCall> = content.tool_calls().into_iter().cloned().collect();
+        let plan = self.plan;
+        // Why the call at `idx` must not run, if so.
+        let refusal = |idx: usize, call: &ToolCall| {
+            if refused.truncated {
+                Some(TRUNCATED)
+            } else if plan && !allowed_in_plan(&call.fn_name) {
+                Some(PLAN_REFUSAL)
+            } else if refused.invalid.contains(&call.call_id) {
+                Some(INVALID_ARGUMENTS)
+            } else if refused.repeated || is_within_turn_repeat(&calls[..idx], call) {
+                Some(REPEATED_CALL)
+            } else {
+                None
+            }
+        };
+        // Made before the history is borrowed for the results.
+        let mut sub = (!self.sub && calls.iter().any(|c| c.fn_name == tools::TASK_TOOL))
+            .then(|| self.subagent());
+        let (host, executor) = (&self.host, &*self.executor);
+        let mut pending = Pending {
+            messages: &mut self.req.messages,
+            calls: &calls,
+            answered: 0,
+            images: Vec::new(),
+        };
+        let mut idx = 0;
+        while idx < calls.len() {
+            // Consecutive calls that change nothing (`read`, `ls`, `find`,
+            // `grep`) run together; their events and results keep the
+            // order of the calls.
+            let together = calls[idx..]
+                .iter()
+                .take_while(|call| !refused.all() && tools::is_read_only(&call.fn_name))
+                .count();
+            if together > 1 {
+                let batch = &calls[idx..idx + together];
+                let results = join_all(batch.iter().enumerate().map(|(off, call)| {
+                    let refusal = refusal(idx + off, call);
+                    async move { answer(host, executor, call, refusal, None, &mut |_| {}).await }
+                }))
+                .await;
+                for (call, result) in batch.iter().zip(results) {
+                    on_event(Event::ToolCall(call));
+                    pending.answer(result, on_event);
+                }
+                idx += together;
+            } else {
+                let call = &calls[idx];
+                on_event(Event::ToolCall(call));
+                let refusal = refusal(idx, call);
+                let result = answer(host, executor, call, refusal, sub.as_mut(), on_event).await;
+                pending.answer(result, on_event);
+                idx += 1;
+            }
+        }
+        // Sent after all the results: a message between them would split
+        // the turn.
+        let mut images = std::mem::take(&mut pending.images);
+        drop(pending);
+        if !images.is_empty() {
+            images.insert(0, ContentPart::Text(IMAGES.to_owned()));
+            self.req
+                .messages
+                .push(ChatMessage::user(MessageContent::from_parts(images)));
         }
     }
 }
@@ -755,24 +728,77 @@ fn user_call(name: &str, args: serde_json::Value) -> ToolCall {
     }
 }
 
-/// Move an image a tool read from its `details` to `images`, as the model
-/// gets it in a message of its own.
-fn take_image(details: Option<ToolDetails>, images: &mut Vec<ContentPart>) -> Option<ToolDetails> {
-    match details {
-        Some(ToolDetails::Image(Image { mime, data })) => {
-            images.push(ContentPart::Binary(Binary::from_base64(mime, data, None)));
-            None
-        }
-        details => details,
+/// The result of `call`: `refusal` when it must not run, else what the
+/// subagent `sub`, a host tool or the executor answers. `on_event` gets
+/// what it reports meanwhile.
+async fn answer(
+    host: &HostTools,
+    executor: &Executor,
+    call: &ToolCall,
+    refusal: Option<&'static str>,
+    sub: Option<&mut Agent>,
+    on_event: &mut (dyn FnMut(Event<'_>) + Send),
+) -> (ToolResponse, Option<ToolDetails>) {
+    if let Some(why) = refusal {
+        return (error_response(call, why), None);
     }
+    if let (tools::TASK_TOOL, Some(sub)) = (call.fn_name.as_str(), sub) {
+        return (sub.run_task(call, on_event).await, None);
+    }
+    if let Some(resp) = host.run(call).await {
+        return (resp, None);
+    }
+    executor
+        .execute(call, |chunk| on_event(Event::ToolOutput(chunk)))
+        .await
 }
 
 fn same_call(a: &ToolCall, b: &ToolCall) -> bool {
     a.fn_name == b.fn_name && a.fn_arguments == b.fn_arguments
 }
 
-fn same_calls(a: &[&ToolCall], b: &[ToolCall]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| same_call(x, y))
+/// The tool calls of a turn that must not run.
+struct Refused<'a> {
+    /// All: the turn was cut at the token limit.
+    truncated: bool,
+    /// All: the turn repeats the ones before it.
+    repeated: bool,
+    /// The ones with these ids: their arguments could not be read.
+    invalid: &'a [String],
+}
+
+impl Refused<'_> {
+    fn all(&self) -> bool {
+        self.truncated || self.repeated
+    }
+}
+
+/// The turns in a row that made the same tool calls.
+#[derive(Default)]
+struct Repeats {
+    /// Where the last turn is in the history, unless it was truncated.
+    prev: Option<usize>,
+    streak: usize,
+}
+
+impl Repeats {
+    /// Count the model turn at `turn` in `messages`, and tell whether it
+    /// makes the same calls as the turns before it for the
+    /// [`MAX_REPEATED_CALLS`]th time. A `truncated` turn starts the count
+    /// again.
+    fn turn(&mut self, messages: &[ChatMessage], turn: usize, truncated: bool) -> bool {
+        let calls = |idx: usize| messages[idx].content.tool_calls();
+        let same = |a: Vec<&ToolCall>, b: Vec<&ToolCall>| {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| same_call(x, y))
+        };
+        self.streak = match self.prev {
+            _ if truncated => 0,
+            Some(prev) if same(calls(prev), calls(turn)) => self.streak + 1,
+            _ => 1,
+        };
+        self.prev = (!truncated).then_some(turn);
+        self.streak >= MAX_REPEATED_CALLS
+    }
 }
 
 /// Whether `call` plus its earlier occurrences in `prior` reaches
@@ -788,10 +814,27 @@ struct Pending<'a> {
     messages: &'a mut Vec<ChatMessage>,
     calls: &'a [ToolCall],
     answered: usize,
+    /// The images the tools read: the model gets them in a message of
+    /// their own.
+    images: Vec<ContentPart>,
 }
 
 impl Pending<'_> {
-    fn answer(&mut self, resp: ToolResponse) {
+    /// Report the result of the next call and add it to the history.
+    fn answer(
+        &mut self,
+        (resp, details): (ToolResponse, Option<ToolDetails>),
+        on_event: &mut impl FnMut(Event<'_>),
+    ) {
+        let details = match details {
+            Some(ToolDetails::Image(Image { mime, data })) => {
+                let image = Binary::from_base64(mime, data, None);
+                self.images.push(ContentPart::Binary(image));
+                None
+            }
+            details => details,
+        };
+        on_event(Event::ToolResult(&resp, details.as_ref()));
         self.messages.push(resp.into());
         self.answered += 1;
     }
