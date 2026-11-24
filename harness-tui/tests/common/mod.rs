@@ -11,6 +11,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -123,6 +124,25 @@ pub fn resize(master: &OwnedFd, rows: u16, cols: u16) {
     assert_eq!(ret, 0, "TIOCSWINSZ: {}", std::io::Error::last_os_error());
 }
 
+/// Wait until `done`, which tells `what` happened.
+pub fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !done() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Lines of `file`, or 0 when it is missing.
+pub fn line_count(file: &Path) -> usize {
+    std::fs::read_to_string(file).map_or(0, |text| text.lines().count())
+}
+
+/// Send `signal` to `child`.
+pub fn kill(child: &Child, signal: i32) {
+    unsafe { libc::kill(child.id() as libc::pid_t, signal) };
+}
+
 /// Run the TUI without sandbox on the terminal `slave`, as its controlling
 /// terminal, with `home` as `$HOME`.
 pub fn spawn_tui(home: &Path, slave: &OwnedFd) -> Child {
@@ -131,23 +151,31 @@ pub fn spawn_tui(home: &Path, slave: &OwnedFd) -> Child {
 
 /// Like [`spawn_tui`], with more arguments.
 pub fn spawn_tui_with(home: &Path, slave: &OwnedFd, args: &[&str]) -> Child {
-    tui_command(home, slave, args).spawn().unwrap()
+    tui_command(home, slave)
+        .arg("--no-sandbox")
+        .args(args)
+        .spawn()
+        .unwrap()
 }
 
 /// Like [`spawn_tui`], in the folder `cwd`.
 pub fn spawn_tui_in(home: &Path, cwd: &Path, slave: &OwnedFd) -> Child {
-    tui_command(home, slave, &[])
+    tui_command(home, slave)
+        .arg("--no-sandbox")
         .current_dir(cwd)
         .spawn()
         .unwrap()
 }
 
-fn tui_command(home: &Path, slave: &OwnedFd, args: &[&str]) -> Command {
+/// Like [`spawn_tui_in`], with the sandbox.
+pub fn spawn_sandboxed_tui_in(home: &Path, cwd: &Path, slave: &OwnedFd) -> Child {
+    tui_command(home, slave).current_dir(cwd).spawn().unwrap()
+}
+
+fn tui_command(home: &Path, slave: &OwnedFd) -> Command {
     let stdio = || Stdio::from(slave.try_clone().unwrap());
     let mut cmd = kl(home);
-    cmd.arg("--no-sandbox")
-        .args(args)
-        .env("TERM", "xterm")
+    cmd.env("TERM", "xterm")
         .stdin(stdio())
         .stdout(stdio())
         .stderr(stdio());

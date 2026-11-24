@@ -6,11 +6,15 @@ mod common;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::num::NonZeroU16;
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::unix::process::ExitStatusExt;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use common::{openpty, resize, spawn_tui, spawn_tui_in, spawn_tui_with};
+use common::{
+    kill, line_count, openpty, resize, spawn_sandboxed_tui_in, spawn_tui, spawn_tui_in,
+    spawn_tui_with, tempdir, wait_until,
+};
 use genai::chat::ChatMessage;
 use harness_core::SessionStore;
 
@@ -92,6 +96,18 @@ impl Emulator {
         }
     }
 
+    /// Show output until `done`, which tells `what` happened.
+    fn wait_until(&mut self, what: &str, done: impl Fn() -> bool) {
+        wait_until(what, || {
+            self.output
+                .try_iter()
+                .collect::<Vec<_>>()
+                .iter()
+                .for_each(|bytes| self.feed(bytes));
+            done()
+        });
+    }
+
     fn type_text(&mut self, text: &str) {
         self.input.write_all(text.as_bytes()).unwrap();
     }
@@ -100,6 +116,12 @@ impl Emulator {
         self.parser.screen_mut().set_size(nz(rows), nz(cols));
         resize(master, rows, cols);
     }
+}
+
+fn is_raw(fd: &OwnedFd) -> bool {
+    let mut t: libc::termios = unsafe { std::mem::zeroed() };
+    assert_eq!(unsafe { libc::tcgetattr(fd.as_raw_fd(), &mut t) }, 0);
+    t.c_lflag & (libc::ICANON | libc::ECHO) == 0
 }
 
 fn nz(n: u16) -> NonZeroU16 {
@@ -137,7 +159,7 @@ fn resize_keeps_output_above_prompt() {
         assert_eq!(new_prompt - new_output, prompt - output, "{screen}");
     }
 
-    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+    kill(&child, libc::SIGTERM);
     child.wait().unwrap();
 }
 
@@ -164,7 +186,7 @@ fn narrower_terminal_rewraps_output() {
     assert!(term.row_of("Ctrl-D").unwrap() < rule, "{screen}");
     assert!(rule < term.row_of(PROMPT).unwrap(), "{screen}");
 
-    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+    kill(&child, libc::SIGTERM);
     child.wait().unwrap();
 }
 
@@ -188,7 +210,7 @@ fn banner_shows_startup_info() {
         assert!(screen.contains(text), "{text:?} missing:\n{screen}");
     }
 
-    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+    kill(&child, libc::SIGTERM);
     child.wait().unwrap();
 }
 
@@ -216,7 +238,7 @@ fn session_picked_at_startup_takes_the_model_asked_for() {
     // As `--resume <id> --model` does, for good.
     assert_eq!(store.latest().unwrap().unwrap().meta.model, "asked-model");
 
-    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+    kill(&child, libc::SIGTERM);
     child.wait().unwrap();
 }
 
@@ -261,7 +283,7 @@ fn thinking_falls_back_to_a_level_the_model_takes() {
     term.type_text("/thinking\r");
     term.wait_for("thinking: default (this model takes default, off)");
 
-    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+    kill(&child, libc::SIGTERM);
     child.wait().unwrap();
 }
 
@@ -320,7 +342,7 @@ fn diff_panel_shows_changes_and_keeps_the_output() {
     term.type_text("/diff\r");
     check_output(&mut term);
 
-    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+    kill(&child, libc::SIGTERM);
     child.wait().unwrap();
 }
 
@@ -340,6 +362,52 @@ fn shell_command_ends_on_screen() {
     let screen = term.rows().join("\n");
     assert!(!screen.contains("Running bash"), "{screen}");
 
-    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+    kill(&child, libc::SIGTERM);
     child.wait().unwrap();
+}
+
+#[test]
+fn signals_restore_terminal() {
+    for (signal, name) in [
+        (libc::SIGTERM, "SIGTERM"),
+        (libc::SIGHUP, "SIGHUP"),
+        (libc::SIGINT, "SIGINT"),
+    ] {
+        let home = tempfile::tempdir().unwrap();
+        let (master, slave) = openpty(24, 80);
+        let mut child = spawn_tui(home.path(), &slave);
+        let mut term = Emulator::new(&master, 24, 80);
+
+        term.wait_for("Type a message");
+        assert!(is_raw(&slave), "{name}");
+        kill(&child, signal);
+        let status = child.wait().unwrap();
+        assert_eq!(status.code(), Some(128 + signal), "{name}: {status:?}");
+        assert_eq!(status.signal(), None, "{name}");
+        assert!(!is_raw(&slave), "{name}: terminal left in raw mode");
+    }
+}
+
+#[test]
+fn signal_stops_the_command_and_checks_git() {
+    let home = tempdir();
+    let cwd = tempdir();
+    let (master, slave) = openpty(24, 80);
+    let mut child = spawn_sandboxed_tui_in(home.path(), cwd.path(), &slave);
+    let mut term = Emulator::new(&master, 24, 80);
+
+    term.wait_for("Type a message");
+    term.type_text("!mkdir .git; while :; do echo tick >> ticks; sleep 0.02; done\r");
+    let ticks = cwd.path().join("ticks");
+    term.wait_until("the command", || ticks.exists());
+    kill(&child, libc::SIGTERM);
+    let status = child.wait().unwrap();
+
+    assert_eq!(status.code(), Some(128 + libc::SIGTERM), "{status:?}");
+    // Git on the host would run what the config of a new repository names.
+    assert!(cwd.path().join(".git.kl-disabled").is_dir());
+    assert!(!cwd.path().join(".git").exists());
+    let at_exit = line_count(&ticks);
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(line_count(&ticks), at_exit);
 }
