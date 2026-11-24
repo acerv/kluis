@@ -323,3 +323,23 @@ fn diff_panel_shows_changes_and_keeps_the_output() {
     unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
     child.wait().unwrap();
 }
+
+#[test]
+fn shell_command_ends_on_screen() {
+    let home = tempfile::tempdir().unwrap();
+    let (master, slave) = openpty(24, 100);
+    let mut child = spawn_tui(home.path(), &slave);
+    let mut term = Emulator::new(&master, 24, 100);
+
+    term.wait_for("(/help for commands)");
+    // Without a sandbox, the command ends as its output comes: the screen
+    // must still show the prompt over, without waiting for a key.
+    term.type_text("!echo hello\r");
+    term.wait_for("  hello");
+    term.wait_for("(/help for commands)");
+    let screen = term.rows().join("\n");
+    assert!(!screen.contains("Running bash"), "{screen}");
+
+    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+    child.wait().unwrap();
+}
