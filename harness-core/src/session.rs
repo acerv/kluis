@@ -7,12 +7,12 @@
 
 use std::borrow::Cow;
 use std::ffi::OsString;
-use std::fs::{self, DirBuilder, File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::hash::Hasher;
 use std::io::{self, BufRead, BufReader, BufWriter, ErrorKind, Read, Write};
 use std::ops::AddAssign;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -23,7 +23,7 @@ use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::Error;
+use crate::{private_file, Error};
 
 /// Current JSONL session format version.
 const FORMAT_VERSION: u32 = 1;
@@ -208,7 +208,7 @@ impl SessionStore {
 
     /// Ensure the project session directory exists with `0700` permissions.
     pub fn ensure_dir(&self) -> io::Result<()> {
-        create_dir_private(&self.dir)
+        private_file::create_dir(&self.dir)
     }
 
     /// Load the most recently modified session for this workspace, if any.
@@ -381,7 +381,7 @@ impl SessionWriter {
     fn writer(&mut self) -> io::Result<&mut BufWriter<File>> {
         if self.file.is_none() {
             if let Some(parent) = self.path.parent() {
-                create_dir_private(parent)?;
+                private_file::create_dir(parent)?;
             }
             let file = OpenOptions::new()
                 .create(true)
@@ -413,10 +413,6 @@ impl SessionWriter {
         }
         Ok(self.file.as_mut().expect("session writer initialized"))
     }
-}
-
-fn create_dir_private(path: &Path) -> io::Result<()> {
-    DirBuilder::new().recursive(true).mode(0o700).create(path)
 }
 
 /// Regular `.jsonl` files inside `dir`, sorted newest-first by mtime then name.

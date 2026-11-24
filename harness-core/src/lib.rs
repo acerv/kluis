@@ -19,7 +19,7 @@ mod mention;
 mod models;
 mod net;
 pub mod oauth;
-mod private_file;
+pub mod private_file;
 mod prompt;
 mod retry;
 mod search;

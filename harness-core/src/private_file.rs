@@ -1,18 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
-//! Reading the user's files with care: the ones that hold secrets, such
-//! as API keys or OAuth tokens, and the ones read up to a size.
+//! The user's files handled with care: the ones that hold secrets or
+//! state, such as API keys, OAuth tokens or sessions, and the ones read
+//! up to a size.
 
 use std::fmt;
-use std::fs::{File, OpenOptions};
-use std::io::{ErrorKind, Read};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::fs::{DirBuilder, File, OpenOptions};
+use std::io::{self, ErrorKind, Read};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
 use rustix::fs::OFlags;
 
 use crate::Error;
+
+/// Create the folder `path` and the missing ones above it, for the user
+/// only (`0700`).
+pub fn create_dir(path: &Path) -> io::Result<()> {
+    DirBuilder::new().recursive(true).mode(0o700).create(path)
+}
 
 /// Read the private file at `path`, at most `max_bytes` long.
 ///

@@ -8,9 +8,9 @@
 //! refresh token twice.
 
 use std::ffi::OsString;
-use std::fs::{self, DirBuilder, File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -200,7 +200,7 @@ impl OAuthStore {
         let path = sibling(&self.path, ".lock");
         tokio::task::spawn_blocking(move || -> Result<File, Error> {
             if let Some(dir) = path.parent() {
-                DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+                private_file::create_dir(dir)?;
             }
             let file = OpenOptions::new()
                 .write(true)

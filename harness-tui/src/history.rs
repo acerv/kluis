@@ -162,7 +162,7 @@ impl History {
 
 fn ensure_parent(path: &Path) -> io::Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        harness_core::private_file::create_dir(parent)?;
     }
     Ok(())
 }
