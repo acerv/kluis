@@ -3,7 +3,7 @@
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use genai::chat::{ChatMessage, ChatRole, ContentPart, MessageContent, ToolCall, ToolResponse};
-use harness_core::tools::{Diff, DiffHunk, DiffLine};
+use harness_core::tools::{Diff, DiffHunk, DiffLine, Image};
 use harness_core::{
     Command, Event as AgentEvent, SessionStore, Skill, Thinking, TokenUsage, ToolDetails,
 };
@@ -1011,6 +1011,45 @@ fn live_bash_preview_and_elapsed_spinner_timer() {
         details: None,
     });
     assert_eq!(app.viewport_height(80), VIEWPORT_HEIGHT);
+}
+
+#[test]
+fn ctrl_v_pastes_an_image_the_prompt_names() {
+    let image = || Image {
+        mime: "image/png".into(),
+        data: "iVBORw0KGgo=".into(),
+    };
+    let mut app = App::new("deepseek-chat", status(), Theme::new(false));
+    assert_eq!(app.handle_event(ctrl('v')), Action::PasteImage);
+
+    type_str(&mut app, "look at ");
+    app.paste_image(image());
+    type_str(&mut app, " and ");
+    app.paste_image(image());
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Submit("look at [Image #1] and [Image #2]".into())
+    );
+
+    // The ones the prompt no longer names stay out.
+    let prompt = "look at [Image #2]";
+    let names: Vec<_> = app
+        .take_images(prompt)
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
+    assert_eq!(names, ["[Image #2]"]);
+    assert!(app.take_images(prompt).is_empty());
+
+    // Ctrl-C drops them with the text.
+    app.paste_image(image());
+    type_str(&mut app, "x");
+    app.handle_event(ctrl('c'));
+    assert!(app.take_images("[Image #1]").is_empty());
+
+    // Not while a prompt runs.
+    app.start_prompt("hi");
+    assert_eq!(app.handle_event(ctrl('v')), Action::Redraw);
 }
 
 #[test]

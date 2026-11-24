@@ -137,7 +137,8 @@ async fn drive_agent(
                             | Action::Slash(_)
                             | Action::ResumeSession(_)
                             | Action::SelectModel(_)
-                            | Action::SetPlan(_) => {}
+                            | Action::SetPlan(_)
+                            | Action::PasteImage => {}
                             Action::Answer(answer) => {
                                 if let Some(question) = question.take() {
                                     question.answer(answer);

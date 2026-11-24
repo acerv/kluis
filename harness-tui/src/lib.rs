@@ -263,6 +263,13 @@ pub async fn run(
                 agent.set_plan(plan);
                 ui.draw()?;
             }
+            Action::PasteImage => {
+                match clipboard::paste_image() {
+                    Ok(image) => ui.app.paste_image(image),
+                    Err(err) => ui.app.push_info(format!("[paste error: {err}]")),
+                }
+                ui.draw()?;
+            }
             Action::Shell(command) => {
                 if let Some(ref mut h) = history {
                     let _ = h.record(&format!("!{command}"));
@@ -280,6 +287,9 @@ pub async fn run(
                     let _ = h.record(&prompt);
                 }
                 let prompt = expand_command(&commands, &prompt).unwrap_or(prompt);
+                for (name, image) in ui.app.take_images(&prompt) {
+                    agent.attach_image(name, image);
+                }
                 ui.app.start_prompt(&prompt);
                 ui.draw()?;
                 let turn = run_turn(&mut ui, &mut agent, session.as_mut(), &prompt).await?;

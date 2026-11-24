@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use genai::chat::{ChatMessage, ChatRole, ContentPart};
-use harness_core::tools::{is_read_only, Todo, TodoStatus, TodoTool, TODO_TOOL};
+use harness_core::tools::{is_read_only, Image, Todo, TodoStatus, TodoTool, TODO_TOOL};
 use harness_core::{Command, ModelInfo, SessionSummary, Skill, Thinking, TokenUsage, ToolDetails};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
@@ -145,6 +145,8 @@ pub enum Action {
     SetPlan(bool),
     /// The user's answer to the question of the model.
     Answer(String),
+    /// Paste the image of the clipboard into the prompt.
+    PasteImage,
     Cancel,
     Quit,
 }
@@ -165,6 +167,8 @@ pub struct App {
     busy: bool,
     /// Messages typed while busy, waiting to join the conversation.
     queued: usize,
+    /// The images pasted into the prompt, with the words naming them there.
+    images: Vec<(String, Image)>,
     show_thinking: bool,
     is_thinking: bool,
     spinner: usize,
@@ -218,6 +222,7 @@ impl App {
             input: Input::default(),
             busy: false,
             queued: 0,
+            images: Vec::new(),
             show_thinking: true,
             is_thinking: false,
             spinner: 0,
@@ -423,6 +428,22 @@ impl App {
             self.scrollback
                 .push(Line::styled(line.to_owned(), self.theme.muted));
         }
+    }
+
+    /// Paste `image` into the prompt: its name goes where the cursor is.
+    pub fn paste_image(&mut self, image: Image) {
+        let name = format!("[Image #{}]", self.images.len() + 1);
+        self.input.paste(&name);
+        self.completion.update(self.input.text());
+        self.images.push((name, image));
+    }
+
+    /// Take the pasted images, with their names, that the prompt `text`
+    /// still names.
+    pub fn take_images(&mut self, text: &str) -> Vec<(String, Image)> {
+        let mut images = std::mem::take(&mut self.images);
+        images.retain(|(name, _)| text.contains(name.as_str()));
+        images
     }
 
     /// Forget the conversation and drop pending scrollback (e.g. on `/new`).
