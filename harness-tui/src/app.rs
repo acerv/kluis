@@ -3,21 +3,15 @@
 
 use std::borrow::Cow;
 use std::cell::Cell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use genai::chat::{ChatMessage, ChatRole, ContentPart};
-use harness_core::tools::{
-    is_read_only, Diff, DiffLine, Todo, TodoStatus, TodoTool, BASH_TOOL, EDIT_TOOL, FIND_TOOL,
-    GREP_TOOL, LS_TOOL, READ_TOOL, TODO_TOOL, WRITE_TOOL,
-};
-use harness_core::{
-    Command, Event as AgentEvent, ModelInfo, SessionSummary, Skill, Thinking, TokenUsage,
-    ToolDetails,
-};
+use harness_core::tools::{is_read_only, Todo, TodoStatus, TodoTool, TODO_TOOL};
+use harness_core::{Command, ModelInfo, SessionSummary, Skill, Thinking, TokenUsage, ToolDetails};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -38,6 +32,15 @@ use crate::style::Theme;
 use crate::text::{char_width, truncate_width, wrap_lines, wrapped_line_count};
 use crate::Status;
 
+mod tool_view;
+mod update;
+
+pub(crate) use tool_view::render_diff;
+use tool_view::{
+    format_full_output, format_tool_call, format_tool_result, ToolCall, ToolPreview, ToolRun,
+};
+pub use update::AgentUpdate;
+
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// The terminal title when idle, and the start of it when busy.
@@ -54,15 +57,6 @@ const SUMMARY_LEN: usize = 120;
 
 /// Maximum bytes retained in hidden reasoning when thinking is toggled off.
 const MAX_HIDDEN_REASONING_BYTES: usize = 64 * 1024;
-
-/// Maximum diff lines shown inline in scrollback per `edit` call.
-const MAX_DIFF_PREVIEW_LINES: usize = 24;
-
-/// Maximum output lines shown inline in scrollback per `bash` call.
-const MAX_BASH_PREVIEW_LINES: usize = 8;
-
-/// Maximum bytes retained per live tool output preview line.
-const MAX_TOOL_PREVIEW_LINE_BYTES: usize = 1024;
 
 /// Maximum visible rows in the live streaming preview above the spinner.
 const MAX_LIVE_ROWS: u16 = 6;
@@ -113,82 +107,6 @@ impl BannerLine {
             text: text.into(),
             warn: true,
         }
-    }
-}
-
-/// Owned agent progress update passed over the channel from [`Agent::prompt`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AgentUpdate {
-    TurnStart,
-    ReasoningDelta(String),
-    TextDelta(String),
-    Text(String),
-    TurnEnd(TokenUsage),
-    /// A turn of a subagent ended: its tokens count, not its context.
-    TaskUsage(TokenUsage),
-    /// The turn failed for a passing reason and will be asked again.
-    Retry {
-        attempt: u32,
-        delay: Duration,
-        reason: String,
-    },
-    ToolCall {
-        name: String,
-        args: String,
-    },
-    ToolOutput(String),
-    ToolResult {
-        content: String,
-        details: Option<ToolDetails>,
-    },
-    Compacting(u64),
-    Compacted(usize),
-    CompactFailed(String),
-    /// The request was too large: the outputs of this many old tool calls
-    /// were removed.
-    Pruned(usize),
-    /// The final text of the model was cut at its token limit.
-    Truncated,
-    /// A message the user queued joined the conversation.
-    Steered(String),
-}
-
-impl AgentUpdate {
-    /// Convert a borrowed [`harness_core::Event`] into an owned update.
-    pub fn from_event(event: AgentEvent<'_>) -> Option<Self> {
-        Some(match event {
-            AgentEvent::Messages(_) => return None,
-            AgentEvent::TurnStart => Self::TurnStart,
-            AgentEvent::Truncated => Self::Truncated,
-            AgentEvent::ReasoningDelta(text) => Self::ReasoningDelta(text.to_owned()),
-            AgentEvent::TextDelta(text) => Self::TextDelta(text.to_owned()),
-            AgentEvent::Text(text) => Self::Text(text.to_owned()),
-            AgentEvent::TurnEnd(usage) => Self::TurnEnd(TokenUsage::from_genai(usage?)),
-            AgentEvent::TaskUsage(usage) => Self::TaskUsage(TokenUsage::from_genai(usage)),
-            AgentEvent::Retry {
-                attempt,
-                delay,
-                reason,
-            } => Self::Retry {
-                attempt,
-                delay,
-                reason: reason.to_owned(),
-            },
-            AgentEvent::ToolCall(call) => Self::ToolCall {
-                name: call.fn_name.clone(),
-                args: call.fn_arguments.to_string(),
-            },
-            AgentEvent::ToolOutput(chunk) => Self::ToolOutput(chunk.to_owned()),
-            AgentEvent::ToolResult(resp, details) => Self::ToolResult {
-                content: resp.content.clone(),
-                details: details.cloned(),
-            },
-            AgentEvent::Compacting { context_tokens } => Self::Compacting(context_tokens),
-            AgentEvent::Compacted { before, .. } => Self::Compacted(before),
-            AgentEvent::CompactFailed(err) => Self::CompactFailed(err.to_owned()),
-            AgentEvent::Pruned(count) => Self::Pruned(count),
-            AgentEvent::Steered(text) => Self::Steered(text.to_owned()),
-        })
     }
 }
 
@@ -1719,369 +1637,6 @@ fn parse_slash(input: &str) -> Option<Result<SlashCommand, String>> {
         "/help" => Ok(SlashCommand::Help),
         _ => Err(cmd.to_owned()),
     })
-}
-
-fn format_tool_call(name: &str, args: &str, theme: Theme) -> Line<'static> {
-    let parsed: Option<Value> = serde_json::from_str(args).ok();
-    let detail = parsed.as_ref().and_then(|v| match name {
-        READ_TOOL => {
-            let path = v["path"].as_str()?;
-            match v["offset"].as_u64() {
-                Some(offset) => Some(format!("{path}:{offset}")),
-                None => Some(path.to_owned()),
-            }
-        }
-        WRITE_TOOL | EDIT_TOOL => v["path"].as_str().map(str::to_owned),
-        BASH_TOOL => v["command"].as_str().map(summary),
-        GREP_TOOL => {
-            let pat = v["pattern"].as_str()?;
-            match v["path"].as_str() {
-                Some(path) if !path.is_empty() => Some(format!("{pat} {path}")),
-                _ => Some(pat.to_owned()),
-            }
-        }
-        FIND_TOOL => {
-            let pat = v["pattern"].as_str()?;
-            match v["path"].as_str() {
-                Some(path) if !path.is_empty() => Some(format!("{pat} {path}")),
-                _ => Some(pat.to_owned()),
-            }
-        }
-        LS_TOOL => Some(v["path"].as_str().unwrap_or(".").to_owned()),
-        "ask_user" => v["question"].as_str().map(summary),
-        "web_fetch" => {
-            let url = v["url"].as_str()?;
-            match v["offset"].as_u64() {
-                Some(offset) => Some(format!("{url} @{offset}")),
-                None => Some(url.to_owned()),
-            }
-        }
-        "web_search" => v["query"].as_str().map(summary),
-        "skill" => v["name"].as_str().map(str::to_owned),
-        "task" => v["prompt"].as_str().map(summary),
-        _ => None,
-    });
-    let detail = detail.unwrap_or_else(|| summary(args));
-    Line::from(vec![
-        Span::styled(name.to_owned(), theme.tool_name),
-        Span::raw(" "),
-        Span::styled(detail, theme.tool_arg),
-    ])
-}
-
-fn format_tool_result(
-    tool: Option<&str>,
-    content: &str,
-    details: Option<&ToolDetails>,
-    theme: Theme,
-    out: &mut Vec<Line<'static>>,
-) {
-    let parsed: Option<Value> = serde_json::from_str(content).ok();
-    if let Some(err) = parsed.as_ref().and_then(|v| v["error"].as_str()) {
-        out.push(Line::styled(format!("  error: {err}"), theme.error));
-        return;
-    }
-
-    if let Some(ToolDetails::Edit(diff)) = details {
-        render_diff(diff, MAX_DIFF_PREVIEW_LINES, theme, out);
-        return;
-    }
-
-    let Some(v) = parsed else {
-        out.push(Line::styled(format!("  {}", summary(content)), theme.muted));
-        return;
-    };
-
-    match tool {
-        Some(BASH_TOOL) => {
-            if let Some(output) = v["output"].as_str() {
-                let mut lines = output.lines();
-                for line in lines.by_ref().take(MAX_BASH_PREVIEW_LINES) {
-                    out.push(tool_line(line, theme.muted));
-                }
-                let extra = lines.count();
-                if extra > 0 {
-                    out.push(Line::styled(
-                        format!("  … +{extra} more lines"),
-                        theme.muted,
-                    ));
-                }
-            }
-            if let Some(code) = v["exit_code"].as_i64().filter(|&c| c != 0) {
-                out.push(Line::styled(format!("  exit {code}"), theme.error));
-            }
-            if v["timed_out"].as_bool() == Some(true) {
-                out.push(Line::styled("  timed out", theme.error));
-            }
-            if let Some(path) = v["output_file"].as_str() {
-                out.push(Line::styled(format!("  full output: {path}"), theme.muted));
-            }
-        }
-        Some(READ_TOOL) => {
-            let total = v["total_lines"].as_u64().unwrap_or(0);
-            let suffix = truncated_suffix(&v);
-            out.push(Line::styled(
-                format!("  {total} lines{suffix}"),
-                theme.muted,
-            ));
-        }
-        Some(WRITE_TOOL) => {
-            let bytes = v["bytes_written"].as_u64().unwrap_or(0);
-            out.push(Line::styled(format!("  wrote {bytes} bytes"), theme.muted));
-        }
-        Some(LS_TOOL) => {
-            let count = v["entries"].as_array().map_or(0, Vec::len);
-            out.push(Line::styled(format!("  {count} entries"), theme.muted));
-        }
-        Some(FIND_TOOL) => {
-            let total = v["total"].as_u64().unwrap_or(0);
-            out.push(Line::styled(format!("  {total} files"), theme.muted));
-        }
-        Some(GREP_TOOL) => {
-            let matches = v["matches"].as_u64().unwrap_or(0);
-            let suffix = truncated_suffix(&v);
-            out.push(Line::styled(
-                format!("  {matches} matches{suffix}"),
-                theme.muted,
-            ));
-        }
-        Some("web_fetch") => {
-            let total = v["total_bytes"].as_u64().unwrap_or(0);
-            let suffix = truncated_suffix(&v);
-            out.push(Line::styled(
-                format!("  {total} bytes{suffix}"),
-                theme.muted,
-            ));
-        }
-        Some("web_search") => {
-            let count = v["results"].as_array().map_or(0, Vec::len);
-            out.push(Line::styled(format!("  {count} results"), theme.muted));
-        }
-        Some("skill") => {
-            let suffix = truncated_suffix(&v);
-            out.push(Line::styled(
-                format!("  instructions loaded{suffix}"),
-                theme.muted,
-            ));
-        }
-        Some("ask_user" | "task") => {
-            let answer = v["answer"].as_str().unwrap_or_default();
-            out.push(Line::styled(
-                format!("  answer: {}", summary(answer)),
-                theme.muted,
-            ));
-        }
-        _ => {
-            out.push(Line::styled(format!("  {}", summary(content)), theme.muted));
-        }
-    }
-}
-
-fn truncated_suffix(v: &Value) -> &'static str {
-    if v["truncated"].as_bool() == Some(true) {
-        " (truncated)"
-    } else {
-        ""
-    }
-}
-
-/// The whole output of `run`: its call, then the full diff or the text the
-/// tool returned.
-fn format_full_output(run: &ToolRun, theme: Theme, out: &mut Vec<Line<'static>>) {
-    if let Some(call) = &run.call {
-        out.push(format_tool_call(&call.name, &call.args, theme));
-    }
-    if let Some(ToolDetails::Edit(diff)) = &run.details {
-        render_diff(diff, usize::MAX, theme, out);
-        return;
-    }
-    let parsed: Option<Value> = serde_json::from_str(&run.content).ok();
-    let style = match &parsed {
-        Some(v) if v.get("error").is_some() => theme.error,
-        _ => theme.muted,
-    };
-    let text = parsed
-        .as_ref()
-        .and_then(output_text)
-        .unwrap_or(Cow::Borrowed(&run.content));
-    out.extend(text.lines().map(|line| tool_line(line, style)));
-}
-
-/// The text a tool result carries: its error, output or content, its
-/// entries or paths one per line, or else the whole result as indented JSON.
-fn output_text(v: &Value) -> Option<Cow<'_, str>> {
-    if let Some(text) = ["error", "output", "content"]
-        .iter()
-        .find_map(|k| v[k].as_str())
-    {
-        return Some(Cow::Borrowed(text));
-    }
-    if let Some(items) = ["entries", "paths"].iter().find_map(|k| v[k].as_array()) {
-        let items: Vec<&str> = items.iter().filter_map(Value::as_str).collect();
-        return Some(Cow::Owned(items.join("\n")));
-    }
-    serde_json::to_string_pretty(v).ok().map(Cow::Owned)
-}
-
-/// Show up to `max_lines` lines of `diff`, each with its line number: the
-/// old one for removed lines, the new one otherwise.
-pub(crate) fn render_diff(
-    diff: &Diff,
-    max_lines: usize,
-    theme: Theme,
-    out: &mut Vec<Line<'static>>,
-) {
-    let last_line = diff
-        .hunks
-        .iter()
-        .map(|h| (h.old_start + h.old_lines).max(h.new_start + h.new_lines) - 1)
-        .max()
-        .unwrap_or(0);
-    let width = last_line.to_string().len();
-    let mut emitted = 0usize;
-    let mut omitted = 0usize;
-    let mut push = |line: Line<'static>| {
-        if emitted < max_lines {
-            out.push(line);
-            emitted += 1;
-        } else {
-            omitted += 1;
-        }
-    };
-    for (i, hunk) in diff.hunks.iter().enumerate() {
-        if i > 0 {
-            push(Line::styled(format!("  {:>width$}", "⋮"), theme.diff_hunk));
-        }
-        let mut old_line = hunk.old_start;
-        let mut new_line = hunk.new_start;
-        for line in &hunk.lines {
-            let (number, sign, text, style) = match line {
-                DiffLine::Context(s) => {
-                    old_line += 1;
-                    (post_increment(&mut new_line), ' ', s, theme.muted)
-                }
-                DiffLine::Removed(s) => (post_increment(&mut old_line), '-', s, theme.diff_remove),
-                DiffLine::Added(s) => (post_increment(&mut new_line), '+', s, theme.diff_add),
-            };
-            push(Line::from(vec![
-                Span::styled(format!("  {number:>width$} "), theme.muted),
-                Span::styled(format!("{sign}{}", expand_tabs(text)), style),
-            ]));
-        }
-    }
-    if omitted > 0 {
-        out.push(Line::styled(
-            format!("  … +{omitted} more diff lines"),
-            theme.muted,
-        ));
-    } else if diff.truncated {
-        out.push(Line::styled("  … diff truncated", theme.muted));
-    }
-}
-
-/// Return `n`, then add one to it.
-fn post_increment(n: &mut usize) -> usize {
-    *n += 1;
-    *n - 1
-}
-
-/// Columns between the tab stops of tool output.
-const TAB_WIDTH: usize = 4;
-
-/// A line of tool output, indented under its call.
-fn tool_line(text: &str, style: Style) -> Line<'static> {
-    Line::styled(format!("  {}", expand_tabs(text)), style)
-}
-
-/// `text` with its tabs turned into spaces, as the terminal drops them.
-fn expand_tabs(text: &str) -> Cow<'_, str> {
-    if !text.contains('\t') {
-        return Cow::Borrowed(text);
-    }
-    let mut out = String::with_capacity(text.len() + TAB_WIDTH);
-    let mut col = 0;
-    for ch in text.chars() {
-        if ch == '\t' {
-            let spaces = TAB_WIDTH - col % TAB_WIDTH;
-            out.extend(std::iter::repeat_n(' ', spaces));
-            col += spaces;
-        } else {
-            out.push(ch);
-            col += char_width(ch);
-        }
-    }
-    Cow::Owned(out)
-}
-
-/// A tool call, with its arguments as JSON text.
-struct ToolCall {
-    name: String,
-    args: String,
-}
-
-/// A finished tool call and its result.
-struct ToolRun {
-    /// Unknown for a restored result whose call is missing.
-    call: Option<ToolCall>,
-    content: String,
-    details: Option<ToolDetails>,
-}
-
-/// Bounded ring buffer of live stdout/stderr lines from a running tool,
-/// handling `\r` progress-bar overwrites without unbounded growth.
-#[derive(Default)]
-struct ToolPreview {
-    lines: VecDeque<String>,
-    current: String,
-    cr_pending: bool,
-}
-
-impl ToolPreview {
-    fn is_empty(&self) -> bool {
-        self.lines.is_empty() && self.current.is_empty()
-    }
-
-    fn clear(&mut self) {
-        self.lines.clear();
-        self.current.clear();
-        self.cr_pending = false;
-    }
-
-    fn push(&mut self, chunk: &str) {
-        for ch in chunk.chars() {
-            match ch {
-                '\n' => {
-                    self.cr_pending = false;
-                    let line = std::mem::take(&mut self.current);
-                    if self.lines.len() >= MAX_LIVE_ROWS as usize {
-                        self.lines.pop_front();
-                    }
-                    self.lines.push_back(line);
-                }
-                '\r' => self.cr_pending = true,
-                _ => {
-                    if self.cr_pending {
-                        self.current.clear();
-                        self.cr_pending = false;
-                    }
-                    if self.current.len() < MAX_TOOL_PREVIEW_LINE_BYTES {
-                        self.current.push(ch);
-                    }
-                }
-            }
-        }
-    }
-
-    fn render_lines(&self, style: Style) -> Vec<Line<'static>> {
-        let mut out = Vec::with_capacity(self.lines.len() + usize::from(!self.current.is_empty()));
-        for line in &self.lines {
-            out.push(tool_line(line, style));
-        }
-        if !self.current.is_empty() {
-            out.push(tool_line(&self.current, style));
-        }
-        out
-    }
 }
 
 fn format_elapsed(secs: u64) -> String {
