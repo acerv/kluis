@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::front_matter::{clean_description, list_dir, split_front_matter, valid_name, NAME_RULE};
-use crate::prompt::read_capped;
+use crate::private_file::read_capped;
 use crate::tools::ToolError;
 
 /// Name of the tool loading a skill.

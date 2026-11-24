@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use crate::front_matter::{clean_description, list_dir, split_front_matter, valid_name, NAME_RULE};
-use crate::prompt::read_capped;
+use crate::private_file::read_capped;
 
 /// What `$ARGUMENTS` in a template is replaced with.
 pub const ARGUMENTS: &str = "$ARGUMENTS";
