@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use common::p;
-use harness_exec::{ReadTool, DEFAULT_READ_LIMIT, MAX_IMAGE_BYTES, MAX_READ_BYTES};
+use harness_exec::{Image, ReadTool, DEFAULT_READ_LIMIT, MAX_IMAGE_BYTES, MAX_READ_BYTES};
 
 fn call(path: &Path, offset: Option<usize>, limit: Option<usize>) -> ReadTool {
     ReadTool {
@@ -451,4 +451,20 @@ async fn image_too_large_is_an_error() {
 
     let err = call(&f, None, None).run().await.unwrap_err();
     assert!(err.to_string().contains("image larger than"), "{err}");
+}
+
+#[test]
+fn image_from_bytes_takes_only_images_the_providers_take() {
+    let image = Image::from_bytes(PNG).unwrap();
+    assert_eq!(image.mime, "image/png");
+    assert_eq!(image.data, "iVBORw0KGgoAAAANSUhEUg==");
+    let webp = b"RIFF\0\0\0\0WEBPVP8 ";
+    assert_eq!(Image::from_bytes(webp).unwrap().mime, "image/webp");
+
+    let err = Image::from_bytes(b"plain text").unwrap_err();
+    assert!(err.contains("not a PNG"), "{err}");
+    let mut big = PNG.to_vec();
+    big.resize(MAX_IMAGE_BYTES as usize + 1, 0);
+    let err = Image::from_bytes(&big).unwrap_err();
+    assert!(err.contains("image larger than"), "{err}");
 }
