@@ -35,7 +35,7 @@ use harness_core::tools::{
 };
 use harness_core::{
     provider_name, Agent, AuthConfig, CredentialSource, Error, Event, SessionData, SessionStore,
-    Thinking, TokenUsage,
+    Skill, Thinking, TokenUsage,
 };
 use harness_sandbox::{GitGuard, NetworkAccess};
 use harness_tui::{
@@ -383,7 +383,8 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
     let adapters = auth.configured_adapters();
     let oauth = auth.oauth_logins();
     let agents = harness_core::find_agents_files(&cwd, config::agents_path().as_deref());
-    let system = harness_core::system_prompt(&cwd, &agents, &[]);
+    let skills = harness_core::find_skills(&cwd, config::skills_dir().as_deref());
+    let system = harness_core::system_prompt(&cwd, &agents, &skills.skills);
     let store = (!args.no_session)
         .then(config::sessions_dir)
         .flatten()
@@ -487,6 +488,7 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
     } else {
         Vec::new()
     };
+    warnings.extend(skills.warnings);
     if !args.no_sandbox {
         warnings.extend(sandbox::secrets_warning(&args, &cwd));
         warnings.extend(sandbox::remote_warnings(&args, &cwd));
@@ -544,7 +546,7 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
             BannerLine::new(format!("kluis v{}", env!("CARGO_PKG_VERSION"))),
             auth_line(&model, credential),
             BannerLine::new(sandbox_details(&args, &cwd)),
-            BannerLine::new(context_line(&agents)),
+            BannerLine::new(context_line(&agents, &skills.skills)),
             BannerLine::new(session_line(session.as_ref(), agent.history().len())),
         ];
         banner.extend(warnings.into_iter().map(BannerLine::warning));
@@ -754,12 +756,19 @@ fn auth_line(model: &str, credential: Option<(AdapterKind, CredentialSource)>) -
     }
 }
 
-fn context_line(agents: &[PathBuf]) -> String {
-    if agents.is_empty() {
-        return format!("context: no {}", harness_core::AGENTS_FILE);
+fn context_line(agents: &[PathBuf], skills: &[Skill]) -> String {
+    let mut line = if agents.is_empty() {
+        format!("context: no {}", harness_core::AGENTS_FILE)
+    } else {
+        let paths: Vec<_> = agents.iter().map(|p| tilde(p)).collect();
+        format!("context: {}", paths.join(", "))
+    };
+    match skills.len() {
+        0 => {}
+        1 => line.push_str(" · 1 skill"),
+        n => line.push_str(&format!(" · {n} skills")),
     }
-    let paths: Vec<_> = agents.iter().map(|p| tilde(p)).collect();
-    format!("context: {}", paths.join(", "))
+    line
 }
 
 fn session_line(session: Option<&Session>, messages: usize) -> String {
