@@ -32,7 +32,7 @@ use genai::chat::ChatMessage;
 use harness_core::oauth::flow::Login;
 use harness_core::oauth::{OAuthProvider, OAuthStore};
 use harness_core::tools::{
-    is_read_only, run_worker, Engine, Executor, OutputFiles, Searcher, ToolContext, WebClient,
+    run_worker, Engine, Executor, OutputFiles, Searcher, ToolContext, WebClient,
 };
 use harness_core::{
     provider_name, Agent, AuthConfig, Command, CredentialSource, Error, Event, SessionData,
@@ -40,8 +40,8 @@ use harness_core::{
 };
 use harness_sandbox::{GitGuard, NetworkAccess};
 use harness_tui::{
-    after_commands, check_git_guard, printable, pruned_notice, retry_notice, summary, BannerLine,
-    History, PromptSaver, RunOptions, Session, Status, TRUNCATED_NOTICE,
+    after_commands, printable, pruned_notice, retry_notice, summary, BannerLine, History,
+    PromptSaver, PromptStats, RunOptions, Session, Status, TRUNCATED_NOTICE,
 };
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
@@ -704,57 +704,29 @@ async fn prompt_and_persist(
     keep_jobs: bool,
 ) -> Result<Done, Error> {
     let mut saver = PromptSaver::new(session, agent.history());
-    let mut usage = TokenUsage::default();
-    let mut context = 0;
-    let mut in_compact = false;
-    let mut changed_files = false;
-    let mut last_text = String::new();
+    let mut stats = PromptStats::default();
     let res = agent
         .prompt(text, |event| {
             saver.on_event(&event);
-            let suppress_stdout =
-                in_compact && matches!(event, Event::TextDelta(_) | Event::Text(_));
-            match event {
-                Event::TurnEnd(Some(u)) => {
-                    let turn = TokenUsage::from_genai(u);
-                    usage += turn;
-                    context = turn.prompt();
-                    in_compact = false;
-                }
-                Event::TurnEnd(None) | Event::CompactFailed(_) => {
-                    in_compact = false;
-                }
-                Event::TaskUsage(u) => usage += TokenUsage::from_genai(u),
-                Event::Compacting { .. } => {
-                    in_compact = true;
-                }
-                Event::Compacted { .. } => {
-                    in_compact = false;
-                    context = 0;
-                }
-                Event::ToolCall(call) if !is_read_only(&call.fn_name) => {
-                    changed_files = true;
-                }
-                Event::Text(text) if !in_compact => last_text = text.to_owned(),
-                _ => {}
-            }
-            if !suppress_stdout {
+            // The summary of a compaction is not an answer to print.
+            let summary =
+                stats.compacting() && matches!(event, Event::TextDelta(_) | Event::Text(_));
+            stats.on_event(&event);
+            if !summary {
                 output(event);
             }
         })
         .await;
-    // Before the git check: a program left running could recreate a
-    // repository right after it.
-    let jobs = agent.stop_background(keep_jobs).await;
-    if let Err(err) = saver.finish(agent.history(), usage, context) {
+    let notices = after_commands(agent, git_guard, stats.changed_files, keep_jobs).await;
+    if let Err(err) = saver.finish(agent.history(), stats.usage, stats.context) {
         eprintln!("warning: could not save session: {err}");
     }
-    for notice in check_git_guard(git_guard, changed_files || jobs) {
+    for notice in notices {
         eprintln!("{}", printable(&notice));
     }
     res.map(|_| Done {
-        text: last_text,
-        usage,
+        text: stats.text,
+        usage: stats.usage,
     })
 }
 
