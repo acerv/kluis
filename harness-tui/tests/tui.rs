@@ -2275,6 +2275,38 @@ fn skill_shows_its_name() {
 }
 
 #[test]
+fn task_shows_its_prompt_the_work_of_the_subagent_and_the_answer() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    app.start_prompt("go");
+    app.apply_update(AgentUpdate::ToolCall {
+        name: "task".into(),
+        args: r#"{"prompt":"find the parser\nand say where it is"}"#.into(),
+    });
+    app.apply_update(AgentUpdate::ToolOutput(
+        "grep {\"pattern\":\"parse\"}\n".into(),
+    ));
+    let mut term = inline_terminal_with(80, 14, app.viewport_height(80));
+    term.draw(|f| app.render(f)).unwrap();
+    let screen = render_text(&term);
+    assert!(screen.contains("Running task…"), "{screen}");
+    assert!(screen.contains(r#"grep {"pattern":"parse"}"#), "{screen}");
+
+    app.apply_update(AgentUpdate::ToolResult {
+        content: r#"{"answer":"in src/parse.rs\nline 10"}"#.into(),
+        details: None,
+    });
+    let lines = scrollback_lines(&mut app);
+    assert!(
+        lines.contains(&"task find the parser".to_owned()),
+        "{lines:?}"
+    );
+    assert!(
+        lines.contains(&"  answer: in src/parse.rs".to_owned()),
+        "{lines:?}"
+    );
+}
+
+#[test]
 fn terminal_title_follows_the_activity() {
     let mut app = App::new("model", status(), Theme::new(false));
     assert_eq!(app.title(), "kl");
