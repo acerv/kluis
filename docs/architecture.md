@@ -22,6 +22,11 @@ The agent is a plain state machine. It keeps the conversation as a
 tool calls through an `Executor`, local or sandboxed. This keeps the UI and
 persistence out of the core loop.
 
+A subagent, started by the `task` tool, is a second agent with an empty
+conversation that shares the `Executor` of the first: its tool calls run in
+the same worker and sandbox. Its history is dropped once it answered, and
+only the answer joins the conversation that is saved.
+
 ## Design choices
 
 - Linux only, sandboxed by default.
