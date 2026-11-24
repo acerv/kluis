@@ -54,9 +54,10 @@ The sandbox cannot vet what the model writes. Build scripts, Makefiles,
 `.cargo/config.toml`, `package.json` scripts and editor settings run as you
 when you build, test or open the project. Review the changes like any patch.
 
-Two tools run outside the sandbox because they need the user or the network:
-`ask_user` and `web_fetch`. `web_fetch` is offered only with `--network` (or
-`network = true`) or `--no-sandbox`.
+Three tools run outside the sandbox because they need the user or the
+network: `ask_user`, `web_fetch` and `web_search`. `web_fetch` and
+`web_search` are offered only with `--network` (or `network = true`) or
+`--no-sandbox`.
 
 Running a file of unknown format makes the kernel run `modprobe` for a
 `binfmt-XXXX` module, outside the sandbox. Only a host setting can stop it:

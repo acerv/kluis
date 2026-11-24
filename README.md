@@ -23,7 +23,7 @@
 K-Luis is a minimal harness. It has what you need and nothing more:
 
 - Everything a coding agent needs: read, search and edit files, run commands,
-  fetch web pages, and ask you questions. See [Features](docs/features.md).
+  search the web, fetch pages, and ask you questions. See [Features](docs/features.md).
 - A small terminal UI with sessions, model switching and streaming replies.
 - One short config file, and an option for each setting.
 - Any provider supported by `genai`, plus a Claude subscription login.
