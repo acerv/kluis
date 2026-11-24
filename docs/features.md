@@ -25,8 +25,8 @@
 
 ## Tools
 
-`read`, `write`, `edit`, `ls`, `find`, `grep`, `bash`, `todo`, `ask_user`,
-`web_fetch`, `web_search` and `skill`.
+`read`, `write`, `edit`, `ls`, `find`, `grep`, `bash`, `todo`, `task`,
+`ask_user`, `web_fetch`, `web_search` and `skill`.
 
 - `read` hands PNG, JPEG, GIF and WebP images (up to 3.5 MB) to the model.
   They are not saved in the session.
@@ -36,6 +36,13 @@
   across prompts: its output goes to a file, and it is stopped when `kl`
   exits.
 - `todo` keeps the plan of a multi-step task.
+- `task` hands a part of the work, such as a wide search, to a subagent: a
+  conversation of its own with the same model, tools and sandbox, starting
+  from the prompt the model writes. Only its answer comes back, so what it
+  read along the way does not fill the main conversation. Subagents run one
+  at a time, start no subagent, and have no `todo` nor `ask_user`. The
+  tool calls of a subagent show while it works, and its tokens count in
+  `/status`.
 - `ask_user` asks you a question mid-task, with suggested answers to pick from
   or your own text (interactive mode only).
 - `web_fetch` reads a web page as Markdown (or raw with `raw: true`), 24 KB at
@@ -69,8 +76,9 @@
 - `@path` in a prompt attaches the file, read as the `read` tool reads it
   (images included); typing `@` offers the files of the folder.
 - Shift+Tab switches plan mode: the model only looks around (`read`, `ls`,
-  `find`, `grep`, `todo`, `web_fetch`, `web_search`, `skill`) and answers
-  with a plan; other tools are refused. Switch back and send a message to have the plan carried out.
+  `find`, `grep`, `todo`, `web_fetch`, `web_search`, `skill`, and `task`,
+  whose subagents are in plan mode too) and answers with a plan; other
+  tools are refused. Switch back and send a message to have the plan carried out.
 - `!<command>` runs a shell command as the `bash` tool does, in the sandbox
   when the tools run there, without adding it to the conversation.
 - `/output` shows the whole output of the last tool call.
@@ -91,8 +99,9 @@
   line mode included, and 2 on a wrong command line.
 - `--output-format stream` prints one JSON object per line as the prompt
   runs, each with a `type`: `text` (once per turn), `tool_call` and
-  `tool_result` (paired by `id`), `usage` (per turn), `retry`, `truncated`,
-  `compacting`, `compacted`, `compact_failed` and `pruned`. The last line
+  `tool_result` (paired by `id`), `usage` (per turn, with `subagent: true`
+  for the turns of a subagent), `retry`, `truncated`, `compacting`,
+  `compacted`, `compact_failed` and `pruned`. The last line
   is the `json` object, with a type of `result` or `error`.
 - Both imply `-p`.
 
