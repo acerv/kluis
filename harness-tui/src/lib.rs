@@ -10,6 +10,7 @@
 compile_error!("harness-tui only supports Linux");
 
 mod app;
+mod changes;
 mod clipboard;
 mod complete;
 mod history;
@@ -37,6 +38,10 @@ use tokio::time::{interval_at, Instant, MissedTickBehavior};
 pub use app::{
     printable, pruned_notice, retry_notice, summary, Action, AgentUpdate, App, BannerLine,
     SlashCommand, TRUNCATED_NOTICE, VIEWPORT_HEIGHT,
+};
+pub use changes::{
+    ChangeKind, ChangesUpdate, FileChange, Snapshot, Watcher, MAX_FILES, MAX_SNAPSHOT_BYTES,
+    MAX_TEXT_BYTES,
 };
 pub use clipboard::{last_assistant_text, osc52_sequence};
 pub use complete::is_builtin;
