@@ -188,21 +188,25 @@ pub fn hides_skills(args: &Args, cwd: &Path) -> bool {
     let Some(dir) = crate::config::kluis_dir().and_then(|d| std::fs::canonicalize(d).ok()) else {
         return false;
     };
-    args.allow_read
+    shown_folders(args, cwd)
         .iter()
-        .chain(&args.allow_write)
-        .chain([&cwd.to_path_buf()])
         .filter_map(|path| std::fs::canonicalize(path).ok())
         .any(|path| dir.starts_with(path))
+}
+
+/// The folders `args` show to commands in `cwd`, readable or writable.
+fn shown_folders(args: &Args, cwd: &Path) -> Vec<PathBuf> {
+    let allowed = args.allow_read.iter().chain(&args.allow_write);
+    [cwd.to_path_buf()]
+        .into_iter()
+        .chain(allowed.cloned())
+        .collect()
 }
 
 /// Warning about the credentials below the paths `args` show in `cwd`: they
 /// stay hidden, but a path holding them shows more than commands need.
 pub fn secrets_warning(args: &Args, cwd: &Path) -> Option<String> {
-    let mut shown = args.allow_read.clone();
-    shown.extend_from_slice(&args.allow_write);
-    shown.push(cwd.to_path_buf());
-    let hidden: Vec<_> = harness_sandbox::hidden_secrets(&shown)
+    let hidden: Vec<_> = harness_sandbox::hidden_secrets(&shown_folders(args, cwd))
         .iter()
         .map(|path| path.display().to_string())
         .collect();
@@ -218,11 +222,8 @@ pub fn secrets_warning(args: &Args, cwd: &Path) -> Option<String> {
 /// Warnings about the folders shown to commands that sit on a filesystem
 /// that could reach the network, such as a cloud drive.
 pub fn remote_warnings(args: &Args, cwd: &Path) -> Vec<String> {
-    let mut shown = vec![cwd];
-    shown.extend(args.allow_read.iter().map(PathBuf::as_path));
-    shown.extend(args.allow_write.iter().map(PathBuf::as_path));
-    shown
-        .into_iter()
+    shown_folders(args, cwd)
+        .iter()
         .filter_map(|path| {
             let fstype = harness_sandbox::remote_filesystem(path)?;
             Some(format!(
