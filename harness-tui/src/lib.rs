@@ -27,8 +27,8 @@ use genai::adapter::AdapterKind;
 use genai::chat::ChatMessage;
 use harness_core::tools::{is_read_only, Question};
 use harness_core::{
-    Agent, Error, Event, ModelInfo, ModelList, SessionData, SessionStore, SessionSummary,
-    SessionWriter, Steering, Thinking, TokenUsage,
+    expand_command, Agent, Command, Error, Event, ModelInfo, ModelList, SessionData, SessionStore,
+    SessionSummary, SessionWriter, Steering, Thinking, TokenUsage,
 };
 use harness_sandbox::GitGuard;
 use tokio::sync::mpsc;
@@ -39,6 +39,7 @@ pub use app::{
     SlashCommand, TRUNCATED_NOTICE, VIEWPORT_HEIGHT,
 };
 pub use clipboard::{last_assistant_text, osc52_sequence};
+pub use complete::is_builtin;
 pub use history::{History, MAX_HISTORY};
 pub use markdown::code_theme;
 pub use style::Theme;
@@ -247,6 +248,8 @@ pub struct RunOptions {
     pub git_guard: Option<GitGuard>,
     /// Colors of code blocks, instead of the default theme.
     pub code_theme: Option<CodeTheme>,
+    /// The custom commands `/<name>` runs.
+    pub commands: Vec<Command>,
 }
 
 /// Disable the git repositories commands created during a prompt that
@@ -307,6 +310,7 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
         banner,
         mut git_guard,
         code_theme,
+        commands,
     } = opts;
     let mut models = ModelCatalog {
         adapters,
@@ -319,7 +323,7 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
     if let Some(theme) = code_theme {
         app.set_code_theme(theme);
     }
-    app.set_skills(agent.skills());
+    app.set_custom(&commands, agent.skills());
     if let Ok(cwd) = std::env::current_dir() {
         app.set_workspace(cwd);
     }
@@ -422,6 +426,7 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
                 if let Some(ref mut h) = history {
                     let _ = h.record(&prompt);
                 }
+                let prompt = expand_command(&commands, &prompt).unwrap_or(prompt);
                 app.start_prompt(&prompt);
                 draw(&mut term, &mut app)?;
                 let turn = run_turn(

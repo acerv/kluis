@@ -123,8 +123,9 @@ const THINKING_LEVELS: &[(Thinking, &str)] = &[
     (Thinking::Max, "maximum reasoning effort"),
 ];
 
-/// Whether `/<name>` is a command of kl, which a skill cannot replace.
-fn is_command(name: &str) -> bool {
+/// Whether `/<name>` is a command of kl, which a skill or custom command
+/// cannot replace.
+pub fn is_builtin(name: &str) -> bool {
     name == "exit" || COMMANDS.iter().any(|cmd| cmd.name[1..] == *name)
 }
 
@@ -141,6 +142,7 @@ pub(crate) fn help_text() -> String {
         "  {:<19}run a shell command in the sandbox",
         "!<command>"
     );
+    let _ = writeln!(out, "  {:<19}run a custom command", "/<command> [args]");
     let _ = writeln!(out, "  {:<19}use a skill", "/<skill> [task]");
     let _ = writeln!(out, "  {:<19}attach a file to the prompt", "@<path>");
     out.push_str(
@@ -179,6 +181,8 @@ pub(crate) struct CommandCompletion {
     files: Option<Vec<String>>,
     /// Thinking levels the model takes, when its provider says.
     thinking_levels: Option<Vec<Thinking>>,
+    /// Names and descriptions of the custom commands `/<name>` runs.
+    commands: Vec<(String, String)>,
     /// Names and descriptions of the skills `/<name>` asks for.
     skills: Vec<(String, String)>,
 }
@@ -223,16 +227,27 @@ impl CommandCompletion {
         self.files = None;
     }
 
-    /// Offer `/<name>` for each of `skills`, given as names and
-    /// descriptions, but for the ones a command of kl hides.
-    pub(crate) fn set_skills(&mut self, skills: Vec<(String, String)>) {
+    /// Offer `/<name>` for each of `commands` and `skills`, given as names
+    /// and descriptions, but for the ones another command hides.
+    pub(crate) fn set_custom(
+        &mut self,
+        mut commands: Vec<(String, String)>,
+        mut skills: Vec<(String, String)>,
+    ) {
+        commands.retain(|(name, _)| !is_builtin(name));
+        skills.retain(|(name, _)| {
+            !is_builtin(name) && !commands.iter().any(|(command, _)| command == name)
+        });
+        self.commands = commands;
         self.skills = skills;
-        self.skills.retain(|(name, _)| !is_command(name));
     }
 
-    /// Whether `/<name>` asks for a skill.
-    pub(crate) fn is_skill(&self, name: &str) -> bool {
-        self.skills.iter().any(|(skill, _)| skill == name)
+    /// Whether `/<name>` runs a custom command or asks for a skill.
+    pub(crate) fn is_custom(&self, name: &str) -> bool {
+        self.commands
+            .iter()
+            .chain(&self.skills)
+            .any(|(custom, _)| custom == name)
     }
 
     pub(crate) fn thinking_levels(&self) -> Option<&[Thinking]> {
@@ -309,10 +324,12 @@ impl CommandCompletion {
             }
         }
         let prefix = &prefix[1..];
-        for (name, description) in &self.skills {
+        let commands = self.commands.iter().map(|c| (c, "[args]"));
+        let skills = self.skills.iter().map(|s| (s, "[task]"));
+        for ((name, description), arg) in commands.chain(skills) {
             if name.starts_with(prefix) {
                 self.items.push(CompletionItem {
-                    label: format!("/{name} [task]"),
+                    label: format!("/{name} {arg}"),
                     insert: format!("/{name} "),
                     description: Cow::Owned(description.clone()),
                 });

@@ -13,6 +13,7 @@ use genai::chat::Tool;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::front_matter::{clean_description, split_front_matter, valid_name, NAME_RULE};
 use crate::prompt::read_capped;
 use crate::tools::ToolError;
 
@@ -24,12 +25,6 @@ pub const MAX_SKILL_BYTES: usize = 64 * 1024;
 
 /// File describing a skill, in its folder.
 pub const SKILL_FILE: &str = "SKILL.md";
-
-/// Longest skill name.
-const MAX_NAME_CHARS: usize = 64;
-
-/// Longest description kept, in characters.
-const MAX_DESCRIPTION_CHARS: usize = 1024;
 
 /// Bytes read from the start of a `SKILL.md` to find its front matter.
 const MAX_HEADER_BYTES: usize = 8 * 1024;
@@ -114,92 +109,13 @@ pub fn find_skills(dir: &Path) -> Skills {
 
 /// The name and description in the front matter of a `SKILL.md`.
 fn parse_skill(text: &str) -> Result<(String, String), &'static str> {
-    let mut lines = text.strip_prefix('\u{feff}').unwrap_or(text).lines();
-    if lines.next().map(str::trim_end) != Some("---") {
-        return Err("no front matter");
-    }
-    let (mut name, mut description) = (None, None);
-    // The value that indented lines continue.
-    let mut current: Option<&mut Option<String>> = None;
-    let mut closed = false;
-    for line in lines {
-        if line.trim_end() == "---" {
-            closed = true;
-            break;
-        }
-        if line.starts_with([' ', '\t']) {
-            if let Some(Some(value)) = current.as_deref_mut() {
-                if !value.is_empty() {
-                    value.push(' ');
-                }
-                value.push_str(line.trim());
-            }
-            continue;
-        }
-        let Some((key, value)) = line.split_once(':') else {
-            current = None;
-            continue;
-        };
-        let value = value.trim();
-        let value = match value {
-            // A block scalar: the text is on the indented lines below.
-            ">" | ">-" | "|" | "|-" => "",
-            _ => unquote(value),
-        };
-        let slot = match key.trim() {
-            "name" => &mut name,
-            "description" => &mut description,
-            _ => {
-                current = None;
-                continue;
-            }
-        };
-        *slot = Some(value.to_owned());
-        current = Some(slot);
-    }
-    if !closed {
-        return Err("unterminated front matter");
-    }
-    let name = name.filter(|n| valid_name(n)).ok_or(
-        "the name must be 1 to 64 lowercase letters, digits or hyphens, \
-         not starting or ending with a hyphen",
-    )?;
-    // Without control characters, which could drive the terminal showing
-    // it.
-    let mut description: String = description
-        .unwrap_or_default()
-        .chars()
-        .filter(|c| !c.is_control())
-        .collect();
+    let (front, _) = split_front_matter(text)?.ok_or("no front matter")?;
+    let name = front.name.filter(|n| valid_name(n)).ok_or(NAME_RULE)?;
+    let description = clean_description(front.description.as_deref().unwrap_or_default());
     if description.is_empty() {
         return Err("no description");
     }
-    if let Some((end, _)) = description.char_indices().nth(MAX_DESCRIPTION_CHARS) {
-        description.truncate(end);
-        description.push('…');
-    }
     Ok((name, description))
-}
-
-fn unquote(value: &str) -> &str {
-    for quote in ['"', '\''] {
-        if let Some(inner) = value
-            .strip_prefix(quote)
-            .and_then(|v| v.strip_suffix(quote))
-        {
-            return inner;
-        }
-    }
-    value
-}
-
-fn valid_name(name: &str) -> bool {
-    (1..=MAX_NAME_CHARS).contains(&name.len())
-        && !name.starts_with('-')
-        && !name.ends_with('-')
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 /// A call of the `skill` tool.
