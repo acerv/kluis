@@ -4,20 +4,18 @@
 //! The agent loop.
 
 use std::borrow::Cow;
-use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use futures_util::StreamExt;
 use genai::adapter::AdapterKind;
 use genai::chat::{
     Binary, CacheControl, ChatMessage, ChatOptions, ChatRequest, ChatRole, ChatStreamEvent,
-    ContentPart, MessageContent, ReasoningEffort, StopReason, ToolCall, ToolResponse, Usage,
+    ContentPart, MessageContent, StopReason, ToolCall, ToolResponse, Usage,
 };
 use genai::{Client, ModelIden};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
 
@@ -32,6 +30,10 @@ use crate::tools::{
     WebClient,
 };
 use crate::{Event, Skill};
+
+mod thinking;
+
+pub use thinking::Thinking;
 
 /// Error returned by the agent.
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -49,84 +51,6 @@ const MAX_REPEATED_CALLS: usize = 3;
 
 /// Characters shown of a tool call a subagent makes.
 const MAX_TASK_LINE: usize = 200;
-
-/// Thinking / reasoning effort sent to models that support it.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Thinking {
-    /// Leave the provider's default reasoning behavior untouched.
-    #[default]
-    Default,
-    /// Disable reasoning where the provider supports turning it off.
-    Off,
-    Low,
-    Medium,
-    High,
-    /// Extra-high effort, for models that take it.
-    XHigh,
-    /// Maximum effort, for models that take it.
-    Max,
-}
-
-impl Thinking {
-    /// Every level, in increasing effort after `Default`.
-    pub const ALL: [Self; 7] = [
-        Self::Default,
-        Self::Off,
-        Self::Low,
-        Self::Medium,
-        Self::High,
-        Self::XHigh,
-        Self::Max,
-    ];
-
-    /// Lowercase effort name (`"default"`, `"off"`, `"low"`, ... `"max"`).
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Default => "default",
-            Self::Off => "off",
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-            Self::XHigh => "xhigh",
-            Self::Max => "max",
-        }
-    }
-
-    fn reasoning_effort(self) -> Option<ReasoningEffort> {
-        match self {
-            Self::Default => None,
-            Self::Off => Some(ReasoningEffort::Zero),
-            Self::Low => Some(ReasoningEffort::Low),
-            Self::Medium => Some(ReasoningEffort::Medium),
-            Self::High => Some(ReasoningEffort::High),
-            Self::XHigh => Some(ReasoningEffort::XHigh),
-            Self::Max => Some(ReasoningEffort::Max),
-        }
-    }
-}
-
-impl fmt::Display for Thinking {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl FromStr for Thinking {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let trimmed = s.trim();
-        Self::ALL
-            .into_iter()
-            .find(|level| level.as_str().eq_ignore_ascii_case(trimmed))
-            .ok_or_else(|| {
-                format!(
-                    "invalid thinking effort '{s}' (expected default, off, low, medium, high, xhigh, or max)"
-                )
-            })
-    }
-}
 
 /// A conversation with a model that can use the tools.
 ///
