@@ -3,17 +3,15 @@
 
 //! Tests of `kl --print` and `kl --output-format` against a local mock server.
 
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::process::{Command, Output, Stdio};
+mod common;
+
+use std::io::Write;
+use std::net::TcpListener;
+use std::process::{Output, Stdio};
 use std::thread::{self, JoinHandle};
 
+use common::{delta, kl, read_request, tempdir, write_sse};
 use serde_json::{json, Value};
-use tempfile::TempDir;
-
-fn tempdir() -> TempDir {
-    tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap()
-}
 
 /// Start a server that answers one request with `status`, and with a
 /// streamed "done" when it is 200. It returns the user message it got.
@@ -32,26 +30,15 @@ fn start_mock_llm(status: u16) -> (u16, JoinHandle<String>) {
             .map(|m| m["content"].as_str().unwrap_or_default().to_owned())
             .unwrap_or_default();
         if status == 200 {
-            let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
-                        connection: close\r\n\r\n";
-            stream.write_all(head.as_bytes()).unwrap();
-            for (delta, finish) in [
-                (json!({ "content": "done" }), None),
-                (json!({}), Some("stop")),
-            ] {
-                let chunk = json!({
-                    "id": "chatcmpl-test",
-                    "object": "chat.completion.chunk",
-                    "created": 0,
-                    "model": "test-model",
-                    "choices": [{ "index": 0, "delta": delta, "finish_reason": finish }],
-                    "usage": { "prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15 }
-                });
-                stream
-                    .write_all(format!("data: {chunk}\n\n").as_bytes())
-                    .unwrap();
+            let usage = json!({ "prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15 });
+            let mut chunks = [
+                delta(json!({ "content": "done" }), None),
+                delta(json!({}), Some("stop")),
+            ];
+            for chunk in &mut chunks {
+                chunk["usage"] = usage.clone();
             }
-            stream.write_all(b"data: [DONE]\n\n").unwrap();
+            write_sse(stream, &chunks);
         } else {
             let body = r#"{"error":{"message":"bad key"}}"#;
             let reply = format!(
@@ -60,32 +47,11 @@ fn start_mock_llm(status: u16) -> (u16, JoinHandle<String>) {
                 body.len()
             );
             stream.write_all(reply.as_bytes()).unwrap();
+            stream.flush().unwrap();
         }
-        stream.flush().unwrap();
         user
     });
     (port, handle)
-}
-
-fn read_request(stream: &TcpStream) -> Value {
-    let mut reader = BufReader::new(stream);
-    let mut length = 0;
-    loop {
-        let mut line = String::new();
-        reader.read_line(&mut line).unwrap();
-        let line = line.trim_end();
-        if line.is_empty() {
-            break;
-        }
-        if let Some((name, value)) = line.split_once(':') {
-            if name.eq_ignore_ascii_case("content-length") {
-                length = value.trim().parse().unwrap();
-            }
-        }
-    }
-    let mut body = vec![0; length];
-    reader.read_exact(&mut body).unwrap();
-    serde_json::from_slice(&body).unwrap()
 }
 
 /// Run `kl` with `args`, `stdin` as its standard input, against a server
@@ -96,14 +62,12 @@ fn run_kl(args: &[&str], stdin: &str, status: u16) -> (Output, JoinHandle<String
     let (port, server) = start_mock_llm(status);
     let home = tempdir();
     let cwd = tempdir();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_kl"))
+    let mut child = kl(home.path())
         .args(["--model", "genai_1::test-model", "--no-session"])
         .args(args)
         .current_dir(cwd.path())
-        .env("HOME", home.path())
         .env("GENAI_1_ENDPOINT", format!("http://127.0.0.1:{port}/v1/"))
         .env("GENAI_1_API_KEY", "test-key")
-        .env_remove("HARNESS_CONFIG")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

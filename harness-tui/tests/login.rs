@@ -1,28 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
+mod common;
+
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Output, Stdio};
+
+use common::{kl, stderr, stdout};
 
 /// Run the harness with `home` as `$HOME` and no input.
 fn run_cli(home: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_kl"))
+    kl(home)
         .args(args)
-        .env("HOME", home)
-        .env_remove("HARNESS_CONFIG")
         .env_remove("ANTHROPIC_API_KEY")
         .stdin(Stdio::null())
         .output()
         .unwrap()
-}
-
-fn stdout(out: &Output) -> String {
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
-
-fn stderr(out: &Output) -> String {
-    String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
 /// Save an Anthropic login in `home` with `mode` permissions.

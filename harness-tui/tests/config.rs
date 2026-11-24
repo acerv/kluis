@@ -1,26 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
+mod common;
+
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Output, Stdio};
 
-use tempfile::TempDir;
-
-/// A folder below the target folder: outside `/tmp`, which is private in
-/// the container, and outside the current folder, which it shows.
-fn tempdir() -> TempDir {
-    tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap()
-}
+use common::{kl, stderr, tempdir};
 
 /// Run the harness with `home` as `$HOME`.
 fn run_cli(home: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_kl"))
-        .args(args)
-        .env("HOME", home)
-        .env_remove("HARNESS_CONFIG")
-        .stdin(Stdio::null())
-        .output()
-        .unwrap()
+    kl(home).args(args).stdin(Stdio::null()).output().unwrap()
 }
 
 /// Write `text` as the default config file of `home`.
@@ -30,10 +20,6 @@ fn write_default(home: &Path, text: &str) -> PathBuf {
     let path = dir.join("config.toml");
     std::fs::write(&path, text).unwrap();
     path
-}
-
-fn stderr(out: &Output) -> String {
-    String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
 #[test]
@@ -226,11 +212,9 @@ fn file_in_current_folder_works() {
     std::fs::create_dir(&sub).unwrap();
     std::fs::write(sub.join("config.toml"), "[sandbox]\nenv = [\"CC\"]\n").unwrap();
 
-    let out = Command::new(env!("CARGO_BIN_EXE_kl"))
+    let out = kl(home.path())
         .args(["--config", "sub/config.toml"])
         .current_dir(cwd.path())
-        .env("HOME", home.path())
-        .env_remove("HARNESS_CONFIG")
         .stdin(Stdio::null())
         .output()
         .unwrap();
@@ -272,10 +256,8 @@ fn file_behind_unmounted_link_works() {
 fn no_sandbox_uses_given_config() {
     let home = tempdir();
     let missing = home.path().join("explicit.toml");
-    let out = Command::new(env!("CARGO_BIN_EXE_kl"))
+    let out = kl(home.path())
         .args(["--no-sandbox", "--config", missing.to_str().unwrap()])
-        .env("HOME", home.path())
-        .env_remove("HARNESS_CONFIG")
         .stdin(Stdio::null())
         .output()
         .unwrap();
