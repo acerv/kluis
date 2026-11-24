@@ -1584,6 +1584,7 @@ fn format_tool_call(name: &str, args: &str, theme: Theme) -> Line<'static> {
                 None => Some(url.to_owned()),
             }
         }
+        "web_search" => v["query"].as_str().map(summary),
         _ => None,
     });
     let detail = detail.unwrap_or_else(|| summary(args));
@@ -1677,6 +1678,10 @@ fn format_tool_result(
                 format!("  {total} bytes{suffix}"),
                 theme.muted,
             ));
+        }
+        Some("web_search") => {
+            let count = v["results"].as_array().map_or(0, Vec::len);
+            out.push(Line::styled(format!("  {count} results"), theme.muted));
         }
         Some("ask_user") => {
             let answer = v["answer"].as_str().unwrap_or_default();
