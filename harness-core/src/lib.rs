@@ -10,6 +10,7 @@
 mod agent;
 mod ask;
 mod auth;
+mod commands;
 mod error;
 mod event;
 mod fetch;
@@ -27,6 +28,9 @@ pub mod tools;
 
 pub use agent::{Agent, Error, Steering, Thinking, DEFAULT_AUTO_COMPACT_TOKENS, DEFAULT_MAX_TURNS};
 pub use auth::{AuthConfig, CredentialSource, ProviderAuth};
+pub use commands::{
+    expand_command, find_commands, Command, Commands, ARGUMENTS, MAX_COMMANDS, MAX_COMMAND_BYTES,
+};
 pub use event::Event;
 pub use models::{
     discover_models, discover_models_with_timeout, is_chat_model, provider_name, thinking_levels,
