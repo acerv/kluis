@@ -11,7 +11,6 @@ pub use harness_exec::{
 };
 
 use genai::chat::{ToolCall, ToolResponse};
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -21,6 +20,7 @@ pub use crate::ask::{AskOutput, AskTool, Asker, Question, ASK_TOOL, MAX_ASK_OPTI
 pub use crate::fetch::{
     FetchOutput, FetchTool, FETCH_TIMEOUT, FETCH_TOOL, MAX_FETCH_BODY_BYTES, MAX_FETCH_BYTES,
 };
+pub use crate::net::{is_public, WebClient};
 pub use crate::search::{
     Engine, SearchOutput, SearchResult, SearchTool, Searcher, DUCKDUCKGO_URL, MAX_SEARCH_RESULTS,
     SEARCH_TOOL,
@@ -31,7 +31,7 @@ pub use crate::skills::{SkillOutput, SkillTool, MAX_SKILL_BYTES, SKILL_TOOL};
 #[derive(Debug, Default)]
 pub(crate) struct HostTools {
     pub asker: Option<Asker>,
-    pub fetcher: Option<Client>,
+    pub fetcher: Option<WebClient>,
     pub searcher: Option<Searcher>,
     pub skills: Vec<Skill>,
 }

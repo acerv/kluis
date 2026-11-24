@@ -31,7 +31,7 @@ use genai::chat::ChatMessage;
 use harness_core::oauth::flow::Login;
 use harness_core::oauth::{OAuthProvider, OAuthStore};
 use harness_core::tools::{
-    is_read_only, run_worker, Engine, Executor, OutputFiles, Searcher, ToolContext,
+    is_read_only, run_worker, Engine, Executor, OutputFiles, Searcher, ToolContext, WebClient,
 };
 use harness_core::{
     provider_name, Agent, AuthConfig, Command, CredentialSource, Error, Event, SessionData,
@@ -502,7 +502,8 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
             Some(url) => Searcher::new(Engine::Searxng, url)?,
             None => Searcher::duckduckgo()?,
         };
-        agent = agent.with_web_fetch()?.with_web_search(searcher);
+        let fetcher = WebClient::new::<&str>(&[])?;
+        agent = agent.with_web_fetch(fetcher).with_web_search(searcher);
     }
 
     // Commands can write a repository only in a writable folder.

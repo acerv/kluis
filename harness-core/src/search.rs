@@ -11,12 +11,12 @@
 use genai::chat::Tool;
 use htmd::node::Node;
 use htmd::HtmlToMarkdown;
-use reqwest::{Client, Url};
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::error::chain;
-use crate::fetch::{is_web, read_body, FetchTool};
+use crate::fetch::{is_web, read_body};
+use crate::net::WebClient;
 use crate::tools::ToolError;
 
 /// Name of the tool.
@@ -62,14 +62,15 @@ pub enum Engine {
 /// Where and how the tool searches.
 #[derive(Debug, Clone)]
 pub struct Searcher {
-    client: Client,
+    client: WebClient,
     engine: Engine,
     endpoint: Url,
 }
 
 impl Searcher {
     /// A searcher asking `engine` at `endpoint`: the results page for
-    /// DuckDuckGo, the instance URL for SearXNG.
+    /// DuckDuckGo, the instance URL for SearXNG. The endpoint is chosen by
+    /// the user, not the model, so it may be a private address.
     pub fn new(engine: Engine, endpoint: &str) -> Result<Self, ToolError> {
         let mut endpoint = Url::parse(endpoint)
             .map_err(|e| ToolError::new(format!("search URL {endpoint}: {e}")))?;
@@ -83,7 +84,7 @@ impl Searcher {
                 .map_err(|e| ToolError::new(e.to_string()))?;
         }
         Ok(Self {
-            client: FetchTool::client()?,
+            client: WebClient::new(&[endpoint.host_str().unwrap_or_default()])?,
             engine,
             endpoint,
         })
@@ -136,12 +137,7 @@ impl SearchTool {
         if searcher.engine == Engine::Searxng {
             url.query_pairs_mut().append_pair("format", "json");
         }
-        let resp = searcher
-            .client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| chain(&e))?;
+        let resp = searcher.client.get(url).await?;
         // DuckDuckGo answers 202 with a challenge when it takes the client
         // for a bot: only 200 carries results.
         let status = resp.status();

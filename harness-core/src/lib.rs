@@ -17,6 +17,7 @@ mod fetch;
 mod front_matter;
 mod mention;
 mod models;
+mod net;
 pub mod oauth;
 mod private_file;
 mod prompt;

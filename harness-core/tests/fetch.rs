@@ -6,7 +6,7 @@ mod common;
 use common::web::{Reply, WebServer};
 use common::{text, MockModel};
 use harness_core::tools::{
-    FetchOutput, FetchTool, FETCH_TOOL, MAX_FETCH_BODY_BYTES, MAX_FETCH_BYTES,
+    FetchOutput, FetchTool, WebClient, FETCH_TOOL, MAX_FETCH_BODY_BYTES, MAX_FETCH_BYTES,
 };
 use harness_core::Agent;
 use serde_json::Value;
@@ -33,7 +33,8 @@ async fn fetch(
     tool: impl FnOnce(String) -> FetchTool,
 ) -> Result<FetchOutput, String> {
     let server = WebServer::serve(vec![reply]).await;
-    let client = FetchTool::client().unwrap();
+    // The server is on loopback, which only a listed host may reach.
+    let client = WebClient::new(&["127.0.0.1"]).unwrap();
     tool(server.url("/page"))
         .run(Some(&client))
         .await
@@ -134,7 +135,7 @@ async fn http_error() {
 
 #[tokio::test]
 async fn only_http_urls() {
-    let client = FetchTool::client().unwrap();
+    let client = WebClient::new::<&str>(&[]).unwrap();
     for url in ["file:///etc/passwd", "ftp://example.com/", "not a url"] {
         let err = call(url.into()).run(Some(&client)).await.unwrap_err();
         assert!(err.message.starts_with(url), "{err}");
@@ -216,7 +217,8 @@ async fn offered_only_when_enabled() {
 
     let mut agent = Agent::with_client(model.client(), "test-model");
     agent.prompt("hi", |_| {}).await.unwrap();
-    let mut agent = agent.with_web_fetch().unwrap().with_web_fetch().unwrap();
+    let client = WebClient::new::<&str>(&[]).unwrap();
+    let mut agent = agent.with_web_fetch(client.clone()).with_web_fetch(client);
     agent.prompt("hi", |_| {}).await.unwrap();
 
     let names = |request: &Value| -> Vec<String> {

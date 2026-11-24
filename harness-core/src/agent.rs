@@ -26,7 +26,7 @@ use crate::retry::{is_too_large, EndedEarly, RetryPolicy};
 use crate::session::TokenUsage;
 use crate::tools::{
     self, error_response, AskTool, Asker, BashTool, Executor, FetchTool, HostTools, Image,
-    ReadOutput, SearchTool, Searcher, SkillTool, ToolContext, ToolDetails,
+    ReadOutput, SearchTool, Searcher, SkillTool, ToolContext, ToolDetails, WebClient,
 };
 use crate::{Event, Skill};
 
@@ -257,13 +257,13 @@ impl Agent {
         self
     }
 
-    /// Offer the `web_fetch` tool, which reaches the network from the host.
-    pub fn with_web_fetch(mut self) -> Result<Self, Error> {
-        if self.host.fetcher.is_none() {
-            self.host.fetcher = Some(FetchTool::client()?);
+    /// Offer the `web_fetch` tool, which reaches the network from the host
+    /// through `client`.
+    pub fn with_web_fetch(mut self, client: WebClient) -> Self {
+        if self.host.fetcher.replace(client).is_none() {
             self.req = self.req.append_tool(FetchTool::definition());
         }
-        Ok(self)
+        self
     }
 
     /// Offer the `web_search` tool, which reaches the network from the host

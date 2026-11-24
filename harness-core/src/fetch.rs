@@ -14,11 +14,12 @@ use genai::chat::Tool;
 use htmd::element_handler::{Element, Handlers};
 use htmd::HtmlToMarkdown;
 use reqwest::header::CONTENT_TYPE;
-use reqwest::{Client, Response, Url};
+use reqwest::{Response, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::error::chain;
+use crate::net::WebClient;
 use crate::tools::ToolError;
 
 /// Name of the tool.
@@ -107,22 +108,14 @@ impl FetchTool {
             .with_schema(Self::schema())
     }
 
-    /// The HTTP client the tool uses.
-    pub fn client() -> Result<Client, ToolError> {
-        Client::builder()
-            .timeout(FETCH_TIMEOUT)
-            .user_agent(concat!("kluis/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .map_err(|e| ToolError::new(chain(&e)))
-    }
-
     /// Fetch the page with `client`, `None` meaning network access is off.
     ///
-    /// Only `http` and `https` URLs are allowed. HTML is converted to
+    /// Only `http` and `https` URLs the client may reach are allowed (see
+    /// [`WebClient`]). HTML is converted to
     /// Markdown unless `raw`; other text is returned as is, and binary
     /// content is an error. At most [`MAX_FETCH_BYTES`] of text starting at
     /// `offset` are returned, ending at a line break when there is one.
-    pub async fn run(self, client: Option<&Client>) -> Result<FetchOutput, ToolError> {
+    pub async fn run(self, client: Option<&WebClient>) -> Result<FetchOutput, ToolError> {
         let client = client.ok_or_else(|| {
             ToolError::new("web_fetch needs network access, which the user has not allowed")
         })?;
@@ -131,12 +124,9 @@ impl FetchTool {
             .map_err(|e| ToolError::new(format!("{}: {e}", self.url)))
     }
 
-    async fn fetch(&self, client: &Client) -> Result<FetchOutput, String> {
+    async fn fetch(&self, client: &WebClient) -> Result<FetchOutput, String> {
         let url = Url::parse(&self.url).map_err(|e| e.to_string())?;
-        if !is_web(&url) {
-            return Err("only http and https URLs are allowed".into());
-        }
-        let resp = client.get(url).send().await.map_err(|e| chain(&e))?;
+        let resp = client.get(url).await?;
         let status = resp.status();
         if !status.is_success() {
             return Err(format!("HTTP {status}"));
