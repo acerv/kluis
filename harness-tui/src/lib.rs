@@ -479,7 +479,7 @@ async fn after_commands(
 ) -> Vec<String> {
     // Before the git check: a program left running could recreate a
     // repository right after it.
-    agent.stop_background().await;
+    agent.stop_background(false).await;
     check_git_guard(guard, changed_files)
 }
 

@@ -344,7 +344,7 @@ async fn worker_that_does_not_stop_background_is_replaced() {
 
     // The mock never answers, as a worker a command stopped: the wait
     // ends, and the next call gets a new worker, which saw no cancel.
-    exec.stop_background().await;
+    exec.stop_background(false).await;
     assert_eq!(cancels().await, r#"{"cancels":0}"#);
 }
 
@@ -408,4 +408,90 @@ async fn replaced_worker_program_is_not_restarted() {
         let (refused, _) = exec.execute(&call("p2", "ping", json!({})), |_| {}).await;
         assert!(refused.content.contains("replaced"), "{}", refused.content);
     }
+}
+
+fn group_alive(pid: u64) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", "--", &format!("-{pid}")])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success()
+}
+
+/// Wait up to 5 seconds for `done`.
+async fn eventually(mut done: impl FnMut() -> bool) -> bool {
+    let start = Instant::now();
+    while !done() {
+        if start.elapsed() > Duration::from_secs(5) {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    true
+}
+
+/// The pid of the command a `bash` call started in the background.
+fn job_pid(content: &str) -> u64 {
+    let out: serde_json::Value = serde_json::from_str(content).unwrap();
+    out["pid"].as_u64().expect(content)
+}
+
+#[tokio::test]
+async fn local_executor_keeps_jobs_until_asked() {
+    let exec = Executor::default();
+    let job = call(
+        "j",
+        "bash",
+        json!({ "command": "sleep 30", "background": true }),
+    );
+    let (resp, _) = exec.execute(&job, |_| {}).await;
+    let pid = job_pid(&resp.content);
+
+    assert!(exec.stop_background(true).await);
+    assert!(group_alive(pid));
+    assert!(exec.stop_background(false).await);
+    assert!(eventually(|| !group_alive(pid)).await);
+    assert!(!exec.stop_background(false).await);
+}
+
+#[tokio::test]
+async fn worker_keeps_jobs_until_asked_and_stops_them_on_exit() {
+    let (mut host_write, worker_read) = tokio::io::duplex(64 * 1024);
+    let (worker_write, host_read) = tokio::io::duplex(64 * 1024);
+    let worker = tokio::spawn(run_worker_io(
+        worker_read,
+        worker_write,
+        ToolContext::default(),
+        false,
+    ));
+    let mut lines = BufReader::new(host_read).lines();
+    let mut send = async |req: Request| {
+        let mut raw = serde_json::to_vec(&req).unwrap();
+        raw.push(b'\n');
+        host_write.write_all(&raw).await.unwrap();
+        loop {
+            let line = lines.next_line().await.unwrap().unwrap();
+            if let Response::Result { content, .. } = serde_json::from_str(&line).unwrap() {
+                return content;
+            }
+        }
+    };
+    let job = |id| Request::Call {
+        id,
+        name: "bash".into(),
+        args: json!({ "command": "sleep 30", "background": true }),
+    };
+    let stop = |id, keep_jobs| Request::StopBackground { id, keep_jobs };
+
+    let kept = job_pid(&send(job(1)).await);
+    assert_eq!(send(stop(2, true)).await, r#"{"jobs":true}"#);
+    assert!(group_alive(kept));
+    assert_eq!(send(stop(3, false)).await, r#"{"jobs":true}"#);
+    assert!(eventually(|| !group_alive(kept)).await);
+
+    let left = job_pid(&send(job(4)).await);
+    drop(host_write);
+    worker.await.unwrap().unwrap();
+    assert!(eventually(|| !group_alive(left)).await);
 }

@@ -30,10 +30,13 @@ pub enum Request {
     Cancel {
         id: u64,
     },
-    /// Stop what commands left running in the background, answered by an
-    /// empty result once they are gone.
+    /// Stop what commands left running in the background, but the
+    /// commands started in the background with `keep_jobs`. Answered once
+    /// they are gone by `{"jobs": true}` when such commands were running.
     StopBackground {
         id: u64,
+        #[serde(default)]
+        keep_jobs: bool,
     },
 }
 

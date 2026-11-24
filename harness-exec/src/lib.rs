@@ -90,10 +90,16 @@ impl Executor {
     }
 
     /// Stop what commands left running in the background, in the sandbox
-    /// only: elsewhere they may be the user's own processes.
-    pub async fn stop_background(&self) {
-        if let Self::Sandbox(sandbox) = self {
-            sandbox.stop_background().await;
+    /// only: elsewhere they may be the user's own processes. With
+    /// `keep_jobs`, the commands the `bash` tool started in the background
+    /// keep running; they are stopped anywhere otherwise.
+    ///
+    /// Returns whether such commands were running, as they may have
+    /// changed files since, or when this is not known.
+    pub async fn stop_background(&self, keep_jobs: bool) -> bool {
+        match self {
+            Self::Local(ctx) => ctx.bash.jobs.stop_unless(keep_jobs),
+            Self::Sandbox(sandbox) => sandbox.stop_background(keep_jobs).await,
         }
     }
 }

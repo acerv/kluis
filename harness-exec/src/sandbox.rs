@@ -169,13 +169,17 @@ impl SandboxExecutor {
     }
 
     /// Stop what commands left running in the background, such as a program
-    /// started with `setsid`, and wait until it is gone. Call it when no
-    /// call runs.
+    /// started with `setsid`, and wait until it is gone. With `keep_jobs`,
+    /// the commands the `bash` tool started in the background keep
+    /// running. Call it when no call runs.
+    ///
+    /// Returns whether such commands were running, as they may have
+    /// changed files since, or when this is not known.
     ///
     /// A worker that does not answer in time, as one a command stopped
     /// with `SIGSTOP`, is killed with its container: the next call starts
     /// a new one.
-    pub async fn stop_background(&self) {
+    pub async fn stop_background(&self, keep_jobs: bool) -> bool {
         let alive = self.worker.lock().is_ok_and(|guard| {
             guard
                 .as_ref()
@@ -183,22 +187,31 @@ impl SandboxExecutor {
         });
         // A dead worker took its container down with it.
         if !alive {
-            return;
+            return true;
         }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let Ok((_, mut rx)) = self.send_call(id, &Request::StopBackground { id }) else {
-            return;
+        let req = Request::StopBackground { id, keep_jobs };
+        let Ok((_, mut rx)) = self.send_call(id, &req) else {
+            return true;
         };
         let stopped = async {
             while let Some(resp) = rx.recv().await {
-                if matches!(resp, Response::Result { .. }) {
-                    break;
+                if let Response::Result { content, .. } = resp {
+                    let jobs = serde_json::from_str::<serde_json::Value>(&content)
+                        .ok()
+                        .and_then(|v| v["jobs"].as_bool());
+                    return jobs.unwrap_or(true);
                 }
             }
+            true
         };
-        if tokio::time::timeout(STOP_TIMEOUT, stopped).await.is_err() {
-            if let Ok(mut guard) = self.worker.lock() {
-                guard.take();
+        match tokio::time::timeout(STOP_TIMEOUT, stopped).await {
+            Ok(jobs) => jobs,
+            Err(_) => {
+                if let Ok(mut guard) = self.worker.lock() {
+                    guard.take();
+                }
+                true
             }
         }
     }
