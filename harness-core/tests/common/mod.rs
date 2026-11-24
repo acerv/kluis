@@ -17,6 +17,7 @@ use genai::{Client, ModelIden, ServiceTarget};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Barrier;
 
 /// Characters per streamed piece of text.
 const PIECE: usize = 3;
@@ -42,6 +43,18 @@ pub enum Reply {
     Hang,
     /// An HTTP error: status, extra headers and body.
     Status(u16, Vec<(&'static str, String)>, String),
+    /// A reply sent only once all the requests sharing the barrier came.
+    Gated(Arc<Barrier>, Box<Reply>),
+}
+
+/// `replies`, each sent only once all of them have been asked for: the
+/// requests getting them must be made at the same time.
+pub fn together(replies: Vec<Reply>) -> Vec<Reply> {
+    let barrier = Arc::new(Barrier::new(replies.len()));
+    replies
+        .into_iter()
+        .map(|reply| Reply::Gated(barrier.clone(), Box::new(reply)))
+        .collect()
 }
 
 /// A reply with only text.
@@ -265,7 +278,11 @@ async fn serve(
         .push(serde_json::from_slice(&body).unwrap());
 
     let reply = replies.lock().unwrap().pop_front();
-    let reply = reply.expect("no reply left for this request");
+    let mut reply = reply.expect("no reply left for this request");
+    if let Reply::Gated(barrier, inner) = reply {
+        barrier.wait().await;
+        reply = *inner;
+    }
     let out = stream.get_mut();
     match reply {
         Reply::Hang => return std::future::pending().await,
@@ -344,7 +361,7 @@ async fn serve(
                 send(out, delta(json!({ "content": piece }), None)).await;
             }
         }
-        (_, Reply::Hang | Reply::Status(..)) => unreachable!(),
+        (_, Reply::Hang | Reply::Status(..) | Reply::Gated(..)) => unreachable!(),
     }
 }
 
