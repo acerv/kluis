@@ -13,6 +13,7 @@ mod app;
 mod changes;
 mod clipboard;
 mod complete;
+mod diff_view;
 mod history;
 mod input;
 mod markdown;
@@ -334,6 +335,9 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
     }
     app.set_custom(&commands, agent.skills());
     if let Ok(cwd) = std::env::current_dir() {
+        if let Err(err) = app.watch_changes(cwd.clone()) {
+            app.push_info(format!("[/diff unavailable: {err}]"));
+        }
         app.set_workspace(cwd);
     }
     if let Some(ref h) = history {
@@ -366,7 +370,15 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
         let action = match next_prompt.take() {
             Some(prompt) => Action::Submit(prompt),
             None => {
-                let Some(next) = events.next().await else {
+                let next = tokio::select! {
+                    next = events.next() => next,
+                    update = app.next_changes() => {
+                        app.apply_changes(update);
+                        draw(&mut term, &mut app)?;
+                        continue;
+                    }
+                };
+                let Some(next) = next else {
                     break;
                 };
                 handle_event_batch(next?, &mut events, &mut app)?
@@ -613,6 +625,7 @@ async fn handle_slash(
             app.push_info(app.status_text(label, messages));
         }
         SlashCommand::Output => app.show_tool_output(),
+        SlashCommand::Diff => app.toggle_diff(),
         SlashCommand::Copy => match clipboard::last_assistant_text(agent.history()) {
             None => app.push_info("[nothing to copy]"),
             Some(text) => match clipboard::copy(&text) {
@@ -948,6 +961,10 @@ async fn drive_agent(
                 Some(asked) = questions.recv() => {
                     app.ask(&asked.text, &asked.options);
                     question = Some(asked);
+                    draw(term, app)?;
+                }
+                update = app.next_changes() => {
+                    app.apply_changes(update);
                     draw(term, app)?;
                 }
                 res = &mut fut => {

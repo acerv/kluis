@@ -4,12 +4,13 @@
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
+use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use genai::chat::{ChatMessage, ChatRole, ContentPart};
-use harness_core::tools::{Diff, DiffLine, Todo, TodoStatus, TodoTool, TODO_TOOL};
+use harness_core::tools::{is_read_only, Diff, DiffLine, Todo, TodoStatus, TodoTool, TODO_TOOL};
 use harness_core::{
     Command, Event as AgentEvent, ModelInfo, SessionSummary, Skill, Thinking, TokenUsage,
     ToolDetails,
@@ -24,7 +25,9 @@ use serde_json::Value;
 use tui_markdown::CodeTheme;
 use unicode_width::UnicodeWidthStr;
 
+use crate::changes::ChangesUpdate;
 use crate::complete::CommandCompletion;
+use crate::diff_view::DiffView;
 use crate::input::Input;
 use crate::markdown::{render_markdown, MarkdownStream, MarkdownStyle};
 use crate::picker::{Picker, PickerKind, PickerOutcome};
@@ -66,6 +69,9 @@ const MAX_TODO_ROWS: usize = 8;
 
 /// Maximum visible rows inside the framed multiline editor before scrolling.
 const MAX_EDITOR_ROWS: u16 = 8;
+
+/// Columns the terminal needs to show the `/diff` panel.
+pub const MIN_SPLIT_WIDTH: u16 = 60;
 
 /// Default width used for soft-wrapping before the first terminal size is seen.
 const DEFAULT_WIDTH: u16 = 80;
@@ -194,6 +200,7 @@ pub enum SlashCommand {
     Status,
     Output,
     Copy,
+    Diff,
     New,
     Quit,
     Help,
@@ -269,6 +276,8 @@ pub struct App {
     completion: CommandCompletion,
     /// The plan of the `todo` tool, shown above the editor.
     todos: Vec<Todo>,
+    /// The changes `/diff` shows.
+    diff: DiffView,
     scrollback: Vec<Line<'static>>,
 }
 
@@ -306,6 +315,7 @@ impl App {
             picker: None,
             completion: CommandCompletion::default(),
             todos: Vec::new(),
+            diff: DiffView::default(),
             scrollback: Vec::new(),
         }
     }
@@ -500,6 +510,9 @@ impl App {
         self.todos.clear();
         self.last_tool = None;
         self.notice = None;
+        if let Err(err) = self.diff.restart() {
+            self.push_info(format!("[diff error: {err}]"));
+        }
     }
 
     /// Cumulative token usage recorded for the current conversation.
@@ -539,6 +552,37 @@ impl App {
     /// Offer the files of `root` when completing `@` in the editor.
     pub fn set_workspace(&mut self, root: PathBuf) {
         self.completion.set_root(root);
+    }
+
+    /// Take a snapshot of `root`, for `/diff` to show what the session
+    /// changes there.
+    pub fn watch_changes(&mut self, root: PathBuf) -> io::Result<()> {
+        self.diff.watch(root)
+    }
+
+    /// Whether the `/diff` panel is open.
+    pub fn is_diff_open(&self) -> bool {
+        self.diff.is_open()
+    }
+
+    /// Open or close the `/diff` panel.
+    pub fn toggle_diff(&mut self) {
+        self.diff.toggle();
+        if self.diff.is_open() && self.width.get() < MIN_SPLIT_WIDTH {
+            self.notice = Some(format!(
+                "/diff needs a terminal of {MIN_SPLIT_WIDTH} columns at least"
+            ));
+        }
+    }
+
+    /// What the watcher of the changes found next; never, without one.
+    pub async fn next_changes(&mut self) -> ChangesUpdate {
+        self.diff.next().await
+    }
+
+    /// Show what the watcher of the changes found.
+    pub fn apply_changes(&mut self, update: ChangesUpdate) {
+        self.diff.apply(update);
     }
 
     /// Multi-line summary of the active model, session, context, and token
@@ -713,6 +757,7 @@ impl App {
         if self.busy {
             self.spinner = (self.spinner + 1) % SPINNER.len();
         }
+        self.diff.tick(self.active_tool.is_some());
     }
 
     /// Override the elapsed time of the activity and of the prompt (useful
@@ -831,6 +876,9 @@ impl App {
                 let call = self.active_tool.take();
                 self.tool_preview.clear();
                 self.activity_started = Some(Instant::now());
+                if call.as_ref().is_some_and(|c| !is_read_only(&c.name)) {
+                    self.diff.refresh();
+                }
                 if call.as_ref().is_some_and(|c| c.name == TODO_TOOL) {
                     self.set_todos(&content, details, None);
                     return;
@@ -890,6 +938,7 @@ impl App {
         self.active_tool = None;
         self.clear_live();
         self.drop_finished_plan();
+        self.diff.refresh();
         if let Err(err) = outcome {
             self.scrollback
                 .push(Line::styled(format!("error: {err}"), self.theme.error));
@@ -922,6 +971,7 @@ impl App {
         self.clear_live();
         // The work was dropped; the model sends the plan again to go on.
         self.todos.clear();
+        self.diff.refresh();
         self.scrollback
             .push(Line::styled("[cancelled]", self.theme.muted));
         self.scrollback.push(Line::raw(String::new()));
@@ -1020,6 +1070,22 @@ impl App {
             _ => {}
         }
 
+        if self.diff.is_open() {
+            let select = key
+                .modifiers
+                .intersects(KeyModifiers::ALT | KeyModifiers::CONTROL);
+            let moved = match key.code {
+                KeyCode::Up if select => Some(self.diff.select(-1)),
+                KeyCode::Down if select => Some(self.diff.select(1)),
+                KeyCode::PageUp => Some(self.diff.scroll_page(false)),
+                KeyCode::PageDown => Some(self.diff.scroll_page(true)),
+                _ => None,
+            };
+            if let Some(moved) = moved {
+                return if moved { Action::Redraw } else { Action::None };
+            }
+        }
+
         if key.code == KeyCode::BackTab && !self.busy {
             self.plan = !self.plan;
             self.notice = Some(
@@ -1079,6 +1145,16 @@ impl App {
                     }
                     self.input.set_text(&insert);
                 }
+            }
+            // The only command that does not wait for the prompt to end.
+            if matches!(
+                parse_slash(self.input.text().trim()),
+                Some(Ok(SlashCommand::Diff))
+            ) {
+                self.input.submit();
+                self.completion.clear();
+                self.toggle_diff();
+                return Action::Redraw;
             }
             // Commands wait for the prompt to end.
             if self.busy && self.input.text().trim_start().starts_with(['/', '!']) {
@@ -1299,8 +1375,17 @@ impl App {
     }
 
     pub fn render(&self, frame: &mut Frame<'_>) {
+        self.render_in(frame, frame.area());
+    }
+
+    /// Draw the `/diff` panel in `area`.
+    pub fn render_diff_panel(&self, frame: &mut Frame<'_>, area: Rect) {
+        self.diff.render(frame, area, self.theme);
+    }
+
+    /// Draw the viewport in `area` of the frame.
+    pub fn render_in(&self, frame: &mut Frame<'_>, area: Rect) {
         self.cursor.set(None);
-        let area = frame.area();
         if area.width > 0 {
             self.width.set(area.width);
         }
@@ -1625,6 +1710,7 @@ fn parse_slash(input: &str) -> Option<Result<SlashCommand, String>> {
         "/status" => Ok(SlashCommand::Status),
         "/output" => Ok(SlashCommand::Output),
         "/copy" => Ok(SlashCommand::Copy),
+        "/diff" => Ok(SlashCommand::Diff),
         "/new" => Ok(SlashCommand::New),
         "/quit" | "/exit" => Ok(SlashCommand::Quit),
         "/help" => Ok(SlashCommand::Help),
@@ -1836,7 +1922,12 @@ fn output_text(v: &Value) -> Option<Cow<'_, str>> {
 
 /// Show up to `max_lines` lines of `diff`, each with its line number: the
 /// old one for removed lines, the new one otherwise.
-fn render_diff(diff: &Diff, max_lines: usize, theme: Theme, out: &mut Vec<Line<'static>>) {
+pub(crate) fn render_diff(
+    diff: &Diff,
+    max_lines: usize,
+    theme: Theme,
+    out: &mut Vec<Line<'static>>,
+) {
     let last_line = diff
         .hunks
         .iter()
