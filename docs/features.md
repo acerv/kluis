@@ -84,6 +84,11 @@
   and `--json` prints one object with `result`, `usage` and `session`, or
   `error`. kl exits with 1 when a prompt failed, line mode included, and 2
   on a wrong command line.
+- `--json-stream` prints one JSON object per line as the prompt runs, each
+  with a `type`: `text` (once per turn), `tool_call` and `tool_result`
+  (paired by `id`), `usage` (per turn), `retry`, `truncated`, `compacting`,
+  `compacted`, `compact_failed` and `pruned`. The last line is the `--json`
+  object, with a type of `result` or `error`.
 
 ## Skills
 
