@@ -30,7 +30,9 @@ use genai::adapter::AdapterKind;
 use genai::chat::ChatMessage;
 use harness_core::oauth::flow::Login;
 use harness_core::oauth::{OAuthProvider, OAuthStore};
-use harness_core::tools::{is_read_only, run_worker, Executor, OutputFiles, ToolContext};
+use harness_core::tools::{
+    is_read_only, run_worker, Engine, Executor, OutputFiles, Searcher, ToolContext,
+};
 use harness_core::{
     provider_name, Agent, AuthConfig, CredentialSource, Error, Event, SessionData, SessionStore,
     Thinking, TokenUsage,
@@ -115,6 +117,10 @@ pub struct Args {
     /// Allow any network, to commands too.
     #[arg(long)]
     network: bool,
+
+    /// Search the web with this SearXNG instance instead of DuckDuckGo.
+    #[arg(long, value_name = "URL")]
+    searxng_url: Option<String>,
 
     /// Processes and threads the harness and its commands may run at once
     /// [default: 1024].
@@ -309,6 +315,7 @@ fn apply_config(args: &mut Args) -> Result<Option<String>, Error> {
     args.allow_write.extend(config.sandbox.write);
     args.deny_read.extend(config.sandbox.deny);
     args.allow_connect.extend(config.sandbox.connect);
+    args.searxng_url = args.searxng_url.take().or(config.generic.searxng_url);
     args.network |= config.sandbox.network;
     args.max_processes = args.max_processes.or(config.sandbox.max_processes);
     args.tmp_size = args.tmp_size.or(config.sandbox.tmp_size);
@@ -447,10 +454,14 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
     if let Some(tokens) = args.auto_compact_tokens {
         agent = agent.with_auto_compact(Some(tokens));
     }
-    // Fetching runs on the host: only when the model may reach the network
-    // anyway, which is always the case without the sandbox.
+    // Fetching and searching run on the host: only when the model may reach
+    // the network anyway, which is always the case without the sandbox.
     if args.network || args.no_sandbox {
-        agent = agent.with_web_fetch()?;
+        let searcher = match &args.searxng_url {
+            Some(url) => Searcher::new(Engine::Searxng, url)?,
+            None => Searcher::duckduckgo()?,
+        };
+        agent = agent.with_web_fetch()?.with_web_search(searcher);
     }
 
     // Commands can write a repository only in a writable folder.

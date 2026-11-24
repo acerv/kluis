@@ -417,3 +417,29 @@ fn model_and_thinking_defaults_are_loaded_and_overridden() {
         stderr(&out)
     );
 }
+
+#[test]
+fn searxng_url_is_accepted_and_validated() {
+    let home = tempdir();
+    write_default(
+        home.path(),
+        "[generic]\nsearxng_url = \"https://searx.example.org\"\n",
+    );
+    let out = run_cli(home.path(), &["--network"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    // Checked only when the tool is offered: with network access.
+    write_default(home.path(), "[generic]\nsearxng_url = \"nope\"\n");
+    let out = run_cli(home.path(), &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let out = run_cli(home.path(), &["--network"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("nope"), "{}", stderr(&out));
+
+    // The flag wins over the file.
+    let out = run_cli(
+        home.path(),
+        &["--network", "--searxng-url", "http://localhost:8888"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+}
