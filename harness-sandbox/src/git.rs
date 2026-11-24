@@ -5,13 +5,17 @@
 
 use std::collections::HashSet;
 use std::io;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use rustix::fs::{renameat_with, RenameFlags, CWD};
+use nix::unistd::Uid;
+use rustix::fs::{access, renameat_with, Access, RenameFlags, CWD};
 use rustix::io::Errno;
+use walkdir::WalkDir;
 
 use crate::mountinfo::{read_mountinfo, remote_points};
-use crate::{checked, collect_git, resolve_denied, GitScan, Hidden, Sandbox, SandboxError};
+use crate::mounts::{checked, path_or_canon_denied, resolve_denied, Hidden};
+use crate::{Sandbox, SandboxError};
 
 /// Name a disabled `.git` gets, with a number when it is taken.
 const DISABLED: &str = ".git.kl-disabled";
@@ -156,4 +160,103 @@ fn disable(git: &Path) -> io::Result<PathBuf> {
         }
     }
     unreachable!("names run out")
+}
+
+/// What [`collect_git`] found in the writable folders.
+#[derive(Debug, Default)]
+pub(crate) struct GitScan {
+    /// `.git` folders and files.
+    pub found: Vec<PathBuf>,
+    /// The first folder it could not look into, where a command could hide
+    /// one.
+    pub unchecked: Option<SandboxError>,
+}
+
+impl GitScan {
+    /// The `.git` entries, or an error if a folder could not be checked.
+    pub fn complete(self) -> Result<Vec<PathBuf>, SandboxError> {
+        match self.unchecked {
+            Some(err) => Err(err),
+            None => Ok(self.found),
+        }
+    }
+}
+
+/// Add to `scan` the `.git` folders and files inside `root`, unless
+/// already covered by `writable`, or below `denied` paths or `hidden`
+/// mounts, which commands cannot reach.
+///
+/// Commands can make a folder unreadable (`chmod 300`) and still use a
+/// `.git` inside it by name, so a folder that cannot be read is reported,
+/// not skipped.
+pub(crate) fn collect_git(
+    root: &Path,
+    canon_root: &Path,
+    writable: &[&PathBuf],
+    denied: &[Hidden],
+    hidden: &[PathBuf],
+    scan: &mut GitScan,
+) {
+    if !std::fs::metadata(root).is_ok_and(|m| m.is_dir()) {
+        return;
+    }
+    let mut it = WalkDir::new(root).into_iter();
+    while let Some(entry) = it.next() {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                let path = err.path().unwrap_or(root);
+                // The first one is enough to act on: commands could create
+                // any number of them.
+                if scan.unchecked.is_none() && writable_by_commands(path) {
+                    let cause = err
+                        .io_error()
+                        .map_or_else(|| err.to_string(), ToString::to_string);
+                    scan.unchecked = Some(SandboxError::at(
+                        path,
+                        format_args!(
+                            "{cause}: a command could hide a .git there; make it \
+                             readable or hide it"
+                        ),
+                    ));
+                }
+                continue;
+            }
+        };
+        if entry.depth() == 0 {
+            continue;
+        }
+        let path = entry.path();
+        if entry.file_name() == ".git" {
+            if path.exists() && !writable.iter().any(|w| w.starts_with(path)) {
+                scan.found.push(path.to_path_buf());
+            }
+            if entry.file_type().is_dir() {
+                it.skip_current_dir();
+            }
+            continue;
+        }
+        // Real directories (not symlinks) have canonical paths under
+        // `canon_root` without needing another syscall.
+        if entry.file_type().is_dir()
+            && (hidden.iter().any(|mount| mount == path)
+                || !denied.is_empty()
+                    && path.strip_prefix(root).is_ok_and(|rel| {
+                        let canon = canon_root.join(rel);
+                        path_or_canon_denied(path, &canon, denied)
+                    }))
+        {
+            it.skip_current_dir();
+        }
+    }
+}
+
+/// Whether commands could have written into `path`, which could not be
+/// read. Only a folder of another user that they cannot write to is safe
+/// to leave unchecked, such as the data folder of a database container:
+/// commands, running as this user, could make one of theirs unreadable.
+fn writable_by_commands(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).map_or(true, |meta| {
+        meta.uid() == Uid::effective().as_raw() || access(path, Access::WRITE_OK).is_ok()
+    })
 }
