@@ -52,6 +52,9 @@ const MAX_REPEATED_CALLS: usize = 3;
 /// Characters shown of a tool call a subagent makes.
 const MAX_TASK_LINE: usize = 200;
 
+/// Read-only subagents running at the same time.
+const MAX_PARALLEL_TASKS: usize = 4;
+
 /// A conversation with a model that can use the tools.
 ///
 /// The history is kept across [`Agent::prompt`] calls.
@@ -658,24 +661,39 @@ impl Agent {
         let mut idx = 0;
         while idx < calls.len() {
             // Consecutive calls that change nothing (`read`, `ls`, `find`,
-            // `grep`) run together; their events and results keep the
-            // order of the calls.
+            // `grep`, and up to `MAX_PARALLEL_TASKS` read-only tasks) run
+            // together; their results keep the order of the calls.
+            let mut tasks = 0;
             let together = calls[idx..]
                 .iter()
-                .take_while(|call| !refused.all() && tools::is_read_only(&call.fn_name))
+                .take_while(|call| {
+                    if refused.all() {
+                        false
+                    } else if sub.is_some() && is_read_only_task(call) {
+                        tasks += 1;
+                        tasks <= MAX_PARALLEL_TASKS
+                    } else {
+                        tools::is_read_only(&call.fn_name)
+                    }
+                })
                 .count();
             if together > 1 {
                 let batch = &calls[idx..idx + together];
-                let results =
-                    join_all(
-                        batch.iter().enumerate().map(|(off, call)| {
-                            let refusal = refusal(idx + off, call);
-                            async move {
-                                answer(host, executor, call, refusal, None, "", &mut |_| {}).await
-                            }
-                        }),
-                    )
-                    .await;
+                // What the subagents report meanwhile, each line tagged
+                // with the number of its task.
+                let events = Mutex::new(&mut *on_event);
+                let results = join_all(batch.iter().enumerate().map(|(off, call)| {
+                    let refusal = refusal(idx + off, call);
+                    let events = &events;
+                    async move {
+                        let tag = format!("[{}] ", off + 1);
+                        let mut report = |event: Event<'_>| {
+                            (events.lock().unwrap_or_else(|err| err.into_inner()))(event)
+                        };
+                        answer(host, executor, call, refusal, sub, &tag, &mut report).await
+                    }
+                }))
+                .await;
                 for (call, result) in batch.iter().zip(results) {
                     on_event(Event::ToolCall(call));
                     pending.answer(result, on_event);
@@ -719,6 +737,12 @@ const PLAN_OFF: &str = "[Plan mode is off: you may now change files and run comm
 
 /// Result of a tool call of a read-only subagent that would change something.
 const READ_ONLY_REFUSAL: &str = "read-only task: only tools that change nothing may run";
+
+/// Whether `call` asks for a read-only task.
+fn is_read_only_task(call: &ToolCall) -> bool {
+    call.fn_name == tools::TASK_TOOL
+        && TaskTool::deserialize(&call.fn_arguments).is_ok_and(|task| task.read_only)
+}
 
 /// Result of a tool call that would change something in plan mode.
 const PLAN_REFUSAL: &str =
