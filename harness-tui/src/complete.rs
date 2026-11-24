@@ -4,6 +4,7 @@
 //! Inline autocomplete popup for slash commands (`/`) and their fixed
 //! arguments, and for the files a prompt names with `@`.
 
+use std::borrow::Cow;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
@@ -122,6 +123,11 @@ const THINKING_LEVELS: &[(Thinking, &str)] = &[
     (Thinking::Max, "maximum reasoning effort"),
 ];
 
+/// Whether `/<name>` is a command of kl, which a skill cannot replace.
+fn is_command(name: &str) -> bool {
+    name == "exit" || COMMANDS.iter().any(|cmd| cmd.name[1..] == *name)
+}
+
 /// Build the multi-line `/help` text from [`COMMANDS`] so help and
 /// autocomplete never drift out of sync.
 pub(crate) fn help_text() -> String {
@@ -135,6 +141,7 @@ pub(crate) fn help_text() -> String {
         "  {:<19}run a shell command in the sandbox",
         "!<command>"
     );
+    let _ = writeln!(out, "  {:<19}use a skill", "/<skill> [task]");
     let _ = writeln!(out, "  {:<19}attach a file to the prompt", "@<path>");
     out.push_str(
         "\nKeys:\n\
@@ -155,7 +162,7 @@ pub(crate) fn help_text() -> String {
 pub(crate) struct CompletionItem {
     pub(crate) label: String,
     pub(crate) insert: String,
-    pub(crate) description: &'static str,
+    pub(crate) description: Cow<'static, str>,
 }
 
 /// Active completion state.
@@ -172,6 +179,8 @@ pub(crate) struct CommandCompletion {
     files: Option<Vec<String>>,
     /// Thinking levels the model takes, when its provider says.
     thinking_levels: Option<Vec<Thinking>>,
+    /// Names and descriptions of the skills `/<name>` asks for.
+    skills: Vec<(String, String)>,
 }
 
 impl CommandCompletion {
@@ -212,6 +221,18 @@ impl CommandCompletion {
     pub(crate) fn set_root(&mut self, root: PathBuf) {
         self.root = Some(root);
         self.files = None;
+    }
+
+    /// Offer `/<name>` for each of `skills`, given as names and
+    /// descriptions, but for the ones a command of kl hides.
+    pub(crate) fn set_skills(&mut self, skills: Vec<(String, String)>) {
+        self.skills = skills;
+        self.skills.retain(|(name, _)| !is_command(name));
+    }
+
+    /// Whether `/<name>` asks for a skill.
+    pub(crate) fn is_skill(&self, name: &str) -> bool {
+        self.skills.iter().any(|(skill, _)| skill == name)
     }
 
     pub(crate) fn thinking_levels(&self) -> Option<&[Thinking]> {
@@ -266,7 +287,7 @@ impl CommandCompletion {
                     self.items.push(CompletionItem {
                         label: format!("/thinking {level}"),
                         insert: format!("/thinking {level}"),
-                        description: desc,
+                        description: Cow::Borrowed(desc),
                     });
                 }
             }
@@ -283,7 +304,17 @@ impl CommandCompletion {
                 self.items.push(CompletionItem {
                     label: cmd.label(),
                     insert: cmd.insert(),
-                    description: cmd.description,
+                    description: Cow::Borrowed(cmd.description),
+                });
+            }
+        }
+        let prefix = &prefix[1..];
+        for (name, description) in &self.skills {
+            if name.starts_with(prefix) {
+                self.items.push(CompletionItem {
+                    label: format!("/{name} [task]"),
+                    insert: format!("/{name} "),
+                    description: Cow::Owned(description.clone()),
                 });
             }
         }
@@ -314,7 +345,7 @@ impl CommandCompletion {
             .map(|(_, path)| CompletionItem {
                 label: format!("@{path}"),
                 insert: format!("{before}@{path} "),
-                description: "",
+                description: Cow::Borrowed(""),
             })
             .collect();
     }
@@ -378,7 +409,7 @@ impl CommandCompletion {
                 spans.push(Span::raw(" ".repeat(pad)));
                 let desc_budget = width - marker_w - label_col;
                 spans.push(Span::styled(
-                    truncate_width(item.description, desc_budget),
+                    truncate_width(&item.description, desc_budget),
                     desc_style,
                 ));
             } else {

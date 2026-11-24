@@ -563,6 +563,7 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
                 banner,
                 git_guard,
                 code_theme,
+                skills: skills.skills,
             },
         )
         .await?;

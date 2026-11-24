@@ -4,7 +4,7 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use genai::chat::{ChatMessage, ChatRole, ContentPart, MessageContent, ToolCall, ToolResponse};
 use harness_core::tools::{Diff, DiffHunk, DiffLine};
-use harness_core::{Event as AgentEvent, SessionStore, Thinking, TokenUsage, ToolDetails};
+use harness_core::{Event as AgentEvent, SessionStore, Skill, Thinking, TokenUsage, ToolDetails};
 use harness_tui::{
     code_theme, flush_scrollback, last_assistant_text, osc52_sequence, Action, AgentUpdate, App,
     BannerLine, PromptSaver, Session, SlashCommand, Status, Theme, TRUNCATED_NOTICE,
@@ -759,6 +759,38 @@ fn thinking_effort_slash_and_footer() {
         assert_eq!(buf[(0, footer_y)].symbol(), "d");
         assert_eq!(buf[(0, footer_y)].fg, expected_fg, "level: {level}");
     }
+}
+
+#[test]
+fn skills_are_completed_and_sent_to_the_model() {
+    let skill = |name: &str, description: &str| Skill {
+        name: name.to_owned(),
+        description: description.to_owned(),
+        path: format!("/skills/{name}/SKILL.md").into(),
+    };
+    let mut app = App::new("m", status(), Theme::new(false));
+    // A skill cannot replace a command.
+    app.set_skills(&[skill("review", "Review a patch"), skill("model", "hidden")]);
+
+    type_str(&mut app, "/re");
+    let mut term = inline_terminal_with(80, 24, app.viewport_height(80));
+    term.draw(|f| app.render(f)).unwrap();
+    let screen = render_text(&term);
+    assert!(screen.contains("/resume [id]"), "{screen}");
+    assert!(screen.contains("/review [task]"), "{screen}");
+    assert!(screen.contains("Review a patch"), "{screen}");
+
+    // The model reads the message as it is.
+    app.handle_event(Event::Paste("view the last commit".into()));
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Submit("/review the last commit".into())
+    );
+    app.handle_event(Event::Paste("/model".into()));
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Slash(SlashCommand::Model(None))
+    );
 }
 
 #[test]
