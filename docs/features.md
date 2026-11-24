@@ -9,9 +9,9 @@
 - `AGENTS.md` instructions are loaded from `~/.kluis/AGENTS.md`, the
   repository root, and the current folder. Project ones must not be symlinks,
   which could point at files the sandbox hides.
-- Skills: folders with a `SKILL.md` in `~/.agents/skills` or in the
-  `.agents/skills` of the repository root down to the current folder, the
-  layout other agents share. Only each skill's name and description are in
+- Skills: folders with a `SKILL.md` in `~/.agents/skills`, `~/.kluis/skills`
+  or the `.agents/skills` of the repository root down to the current
+  folder. Only each skill's name and description are in
   the system prompt; the model reads the rest when a task needs it. See
   [Skills](#skills).
 - Live model discovery across configured providers, with a per-provider
@@ -68,7 +68,7 @@
   when the tools run there, without adding it to the conversation.
 - `/output` shows the whole output of the last tool call.
 - `/<skill> [task]` asks the model to use a skill; typing `/` offers them
-  with the commands.
+  with the commands. See [Using skills](#using-skills).
 - Slash commands: `/model`, `/thinking`, `/resume`, `/copy`, `/output`,
   `/retry`, `/compact`, `/status`, `/new`, `/help`, `/quit`.
 - `/retry` sends the last prompt again, dropping what it led to.
@@ -95,12 +95,44 @@ description: Write release notes from the git log. Use when asked for a changelo
 Run `scripts/collect.sh <tag>` and group the commits by crate...
 ```
 
-The name is up to 64 lowercase letters, digits and hyphens. A skill in
-`.agents/skills` of the current folder replaces one of the same name in the
-repository root, which replaces one in `~/.agents/skills`. Up to 100 skills
-are listed; `kl` warns at start about the ones it cannot use.
+The name is up to 64 lowercase letters, digits and hyphens. Skills are
+looked up in this order, a later one replacing one of the same name:
 
-`~/.agents/skills` is shown read-only in the sandbox, so the model can read
-a skill and run its scripts there. As for `AGENTS.md`, skill folders and
+1. `~/.agents/skills`, shared with other agents
+2. `~/.kluis/skills`, for `kl` only
+3. `.agents/skills` of the repository root, down to the current folder
+
+Up to 100 skills are listed; `kl` warns at start about the ones it cannot
+use.
+
+Both global folders are shown read-only in the sandbox, so the model can
+read a skill and run its scripts there; the rest of `~/.kluis` stays hidden.
+When a folder shown to commands holds `~/.kluis`, such as `$HOME`, all of it
+stays hidden and its skills are left out, with a warning. As for `AGENTS.md`, skill folders and
 their `SKILL.md` must not be symlinks, which could point at files the
 sandbox hides.
+
+### Using skills
+
+Install a skill by putting its folder in one of the skills folders, then
+start `kl`. The banner counts the skills it found:
+
+```sh
+mkdir -p ~/.kluis/skills
+cp -r release-notes ~/.kluis/skills/
+kl
+```
+
+The model picks a skill by itself when a request matches its description:
+
+```text
+> write the release notes for v0.2
+```
+
+Or ask for one by name, with the task after it:
+
+```text
+> /release-notes since v0.1, only user-visible changes
+```
+
+With `-p`, `kl -p "/release-notes since v0.1"` does the same.
