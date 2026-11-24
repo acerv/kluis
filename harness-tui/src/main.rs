@@ -118,6 +118,11 @@ pub struct Args {
     #[arg(long)]
     network: bool,
 
+    /// Let web_fetch reach only this host and its subdomains, private
+    /// addresses included (repeatable).
+    #[arg(long, value_name = "HOST")]
+    web_host: Vec<String>,
+
     /// Search the web with this SearXNG instance instead of DuckDuckGo.
     #[arg(long, value_name = "URL")]
     searxng_url: Option<String>,
@@ -328,6 +333,7 @@ fn apply_config(args: &mut Args) -> Result<Option<String>, Error> {
     args.allow_connect.extend(config.sandbox.connect);
     args.searxng_url = args.searxng_url.take().or(config.generic.searxng_url);
     args.network |= config.sandbox.network;
+    args.web_host.extend(config.sandbox.web_hosts);
     args.background_commands |= config.sandbox.background_commands;
     args.max_processes = args.max_processes.or(config.sandbox.max_processes);
     args.tmp_size = args.tmp_size.or(config.sandbox.tmp_size);
@@ -502,7 +508,7 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
             Some(url) => Searcher::new(Engine::Searxng, url)?,
             None => Searcher::duckduckgo()?,
         };
-        let fetcher = WebClient::new::<&str>(&[])?;
+        let fetcher = WebClient::new(&args.web_host)?;
         agent = agent.with_web_fetch(fetcher).with_web_search(searcher);
     }
 
