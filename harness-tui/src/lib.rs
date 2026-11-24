@@ -16,6 +16,7 @@ mod complete;
 mod diff_view;
 mod history;
 mod input;
+pub mod json_lines;
 mod markdown;
 mod picker;
 mod style;

@@ -19,7 +19,6 @@
 //! is given. Settings may also come from a config file (see `config.rs`).
 
 mod config;
-mod json_lines;
 mod sandbox;
 
 use std::io::{self, IsTerminal, Write};
@@ -560,7 +559,7 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
         let output: fn(Event<'_>) = match args.output_format {
             OutputFormat::Text => print_event,
             OutputFormat::Json => |_| {},
-            OutputFormat::Stream => json_lines::print_event,
+            OutputFormat::Stream => harness_tui::json_lines::print_event,
         };
         let res = prompt_and_persist(
             &mut agent,
@@ -578,7 +577,7 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
         let mut out = match res {
             Ok(done) => serde_json::json!({
                 "result": done.text,
-                "usage": json_lines::usage_json(done.usage),
+                "usage": harness_tui::json_lines::usage_json(done.usage),
             }),
             Err(err) => serde_json::json!({ "error": err.to_string() }),
         };
