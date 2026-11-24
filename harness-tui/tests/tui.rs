@@ -2144,3 +2144,21 @@ fn shift_tab_switches_plan_mode() {
     term.draw(|f| app.render(f)).unwrap();
     assert!(!render_text(&term).contains("plan mode"));
 }
+
+#[test]
+fn web_search_shows_query_and_result_count() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    run_tool(
+        &mut app,
+        "web_search",
+        r#"{"query":"rust sandbox"}"#,
+        r#"{"results":[{"title":"A","url":"https://a.example/"},{"title":"B","url":"https://b.example/"}]}"#,
+        None,
+    );
+    let lines = scrollback_lines(&mut app);
+    assert!(
+        lines.contains(&"web_search rust sandbox".to_owned()),
+        "{lines:?}"
+    );
+    assert!(lines.contains(&"  2 results".to_owned()), "{lines:?}");
+}
