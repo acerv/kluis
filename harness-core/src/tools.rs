@@ -4,10 +4,10 @@
 //! The tools offered to the model and the dispatch of its calls.
 
 pub use harness_exec::{
-    definitions, execute, execute_streaming, is_read_only, run, run_with, run_worker, BashContext,
-    BashTool, Diff, DiffHunk, DiffLine, ExecError, Executor, Image, OutputFiles, PreExec,
-    ReadOutput, SandboxConfig, SandboxExecutor, Todo, TodoOutput, TodoStatus, TodoTool,
-    ToolContext, ToolDetails, ToolError, TODO_TOOL,
+    count_lines, definitions, diff_lines, execute, execute_streaming, is_read_only, run, run_with,
+    run_worker, BashContext, BashTool, Diff, DiffHunk, DiffLine, ExecError, Executor, Image,
+    OutputFiles, PreExec, ReadOutput, SandboxConfig, SandboxExecutor, Todo, TodoOutput, TodoStatus,
+    TodoTool, ToolContext, ToolDetails, ToolError, TODO_TOOL,
 };
 
 use genai::chat::{ToolCall, ToolResponse};

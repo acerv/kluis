@@ -5,7 +5,7 @@ use std::fmt;
 use std::ops::Range;
 
 use serde::{Deserialize, Serialize};
-use similar::{Algorithm, ChangeTag, DiffOp, TextDiff};
+use similar::{Algorithm, ChangeTag, DiffOp, DiffTag, TextDiff};
 
 use crate::edit::Match;
 
@@ -114,9 +114,7 @@ pub(crate) fn from_matches(lf: &str, matches: &[Match<'_>]) -> Diff {
 
         let old_slice = &lf[win.start..win.end];
         let new_window = apply_window(lf, &win, matches);
-        let text_diff = TextDiff::configure()
-            .algorithm(Algorithm::Histogram)
-            .diff_lines(old_slice, &new_window);
+        let text_diff = line_diff(old_slice, &new_window);
 
         for group in text_diff.grouped_ops(DIFF_CONTEXT_LINES) {
             builder.push_group(&text_diff, &group, old_line_offset, new_line_offset);
@@ -133,6 +131,39 @@ pub(crate) fn from_matches(lf: &str, matches: &[Match<'_>]) -> Diff {
     }
 
     builder.diff
+}
+
+/// Diff `new` against `old` line by line, up to [`MAX_DIFF_BYTES`].
+pub fn diff_lines(old: &str, new: &str) -> Diff {
+    let text_diff = line_diff(old, new);
+    let mut builder = DiffBuilder::default();
+    for group in text_diff.grouped_ops(DIFF_CONTEXT_LINES) {
+        builder.push_group(&text_diff, &group, 0, 0);
+        if builder.diff.truncated {
+            break;
+        }
+    }
+    builder.diff
+}
+
+/// How many lines `new` adds to `old` and removes from it.
+pub fn count_lines(old: &str, new: &str) -> (usize, usize) {
+    line_diff(old, new)
+        .ops()
+        .iter()
+        .fold((0, 0), |(added, removed), op| {
+            let (tag, old_range, new_range) = op.as_tag_tuple();
+            match tag {
+                DiffTag::Equal => (added, removed),
+                _ => (added + new_range.len(), removed + old_range.len()),
+            }
+        })
+}
+
+fn line_diff<'a>(old: &'a str, new: &'a str) -> TextDiff<'a, 'a, str> {
+    TextDiff::configure()
+        .algorithm(Algorithm::Histogram)
+        .diff_lines(old, new)
 }
 
 #[derive(Default)]
