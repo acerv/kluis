@@ -2242,3 +2242,21 @@ fn web_search_shows_query_and_result_count() {
     );
     assert!(lines.contains(&"  2 results".to_owned()), "{lines:?}");
 }
+
+#[test]
+fn skill_shows_its_name() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    run_tool(
+        &mut app,
+        "skill",
+        r#"{"name":"review"}"#,
+        r#"{"folder":"/s/review","instructions":"---\nname: review\n---\n"}"#,
+        None,
+    );
+    let lines = scrollback_lines(&mut app);
+    assert!(lines.contains(&"skill review".to_owned()), "{lines:?}");
+    assert!(
+        lines.contains(&"  instructions loaded".to_owned()),
+        "{lines:?}"
+    );
+}

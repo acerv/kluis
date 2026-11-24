@@ -487,7 +487,8 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
         .with_thinking(args.thinking.unwrap_or_default())
         .with_system(system)
         .with_history(history)
-        .with_executor(executor);
+        .with_executor(executor)
+        .with_skills(skills.skills);
     if args.background_commands {
         agent = agent.with_background_commands();
     }
@@ -571,7 +572,7 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
             BannerLine::new(format!("kluis v{}", env!("CARGO_PKG_VERSION"))),
             auth_line(&model, credential),
             BannerLine::new(sandbox_details(&args, &cwd)),
-            BannerLine::new(context_line(&agents, &commands.commands, &skills.skills)),
+            BannerLine::new(context_line(&agents, &commands.commands, agent.skills())),
             BannerLine::new(session_line(session.as_ref(), agent.history().len())),
         ];
         banner.extend(warnings.into_iter().map(BannerLine::warning));
@@ -589,7 +590,6 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
                 git_guard,
                 code_theme,
                 commands: commands.commands,
-                skills: skills.skills,
             },
         )
         .await?;

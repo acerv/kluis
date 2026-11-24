@@ -26,9 +26,9 @@ use crate::retry::{is_too_large, EndedEarly, RetryPolicy};
 use crate::session::TokenUsage;
 use crate::tools::{
     self, error_response, AskTool, Asker, BashTool, Executor, FetchTool, HostTools, Image,
-    ReadOutput, SearchTool, Searcher, ToolContext, ToolDetails,
+    ReadOutput, SearchTool, Searcher, SkillTool, ToolContext, ToolDetails,
 };
-use crate::Event;
+use crate::{Event, Skill};
 
 /// Error returned by the agent.
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -273,6 +273,20 @@ impl Agent {
             self.req = self.req.append_tool(SearchTool::definition());
         }
         self
+    }
+
+    /// Offer the `skill` tool, loading one of `skills`.
+    pub fn with_skills(mut self, skills: Vec<Skill>) -> Self {
+        if self.host.skills.is_empty() && !skills.is_empty() {
+            self.req = self.req.append_tool(SkillTool::definition(&skills));
+            self.host.skills = skills;
+        }
+        self
+    }
+
+    /// The skills the `skill` tool loads.
+    pub fn skills(&self) -> &[Skill] {
+        &self.host.skills
     }
 
     /// Set when failed model requests are retried.
@@ -1022,7 +1036,13 @@ const PLAN_REFUSAL: &str =
 /// Whether the tool `name` may run in plan mode: it changes nothing.
 fn allowed_in_plan(name: &str) -> bool {
     tools::is_read_only(name)
-        || [tools::TODO_TOOL, tools::FETCH_TOOL, tools::SEARCH_TOOL].contains(&name)
+        || [
+            tools::TODO_TOOL,
+            tools::FETCH_TOOL,
+            tools::SEARCH_TOOL,
+            tools::SKILL_TOOL,
+        ]
+        .contains(&name)
 }
 
 /// Result of a tool call whose arguments could not be read.

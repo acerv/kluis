@@ -1601,6 +1601,7 @@ fn format_tool_call(name: &str, args: &str, theme: Theme) -> Line<'static> {
             }
         }
         "web_search" => v["query"].as_str().map(summary),
+        "skill" => v["name"].as_str().map(str::to_owned),
         _ => None,
     });
     let detail = detail.unwrap_or_else(|| summary(args));
@@ -1698,6 +1699,13 @@ fn format_tool_result(
         Some("web_search") => {
             let count = v["results"].as_array().map_or(0, Vec::len);
             out.push(Line::styled(format!("  {count} results"), theme.muted));
+        }
+        Some("skill") => {
+            let suffix = truncated_suffix(&v);
+            out.push(Line::styled(
+                format!("  instructions loaded{suffix}"),
+                theme.muted,
+            ));
         }
         Some("ask_user") => {
             let answer = v["answer"].as_str().unwrap_or_default();

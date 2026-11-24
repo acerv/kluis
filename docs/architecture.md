@@ -14,7 +14,8 @@ inside the container. The host agent and the worker talk over an async NDJSON
 protocol on stdio, supporting parallel tool calls and per-call cancellation.
 Commands and file access therefore never run in the host process. Only
 `ask_user`, `web_fetch` and `web_search` run there, as they need the user and
-the network.
+the network, and `skill`, which only reads the `SKILL.md` files of
+`~/.kluis/skills` found at start.
 
 The agent is a plain state machine. It keeps the conversation as a
 `ChatRequest`, reports progress through a borrowed `Event` callback, and runs

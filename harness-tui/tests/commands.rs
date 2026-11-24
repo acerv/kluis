@@ -474,8 +474,11 @@ fn global_skills_listed_and_read_only_in_sandbox() {
         )
     });
 
-    let listed = format!("- deploy: about deploy ({})", file.display());
-    assert!(result.system.contains(&listed), "{}", result.system);
+    assert!(
+        result.system.contains("- deploy: about deploy"),
+        "{}",
+        result.system
+    );
     assert!(!result.system.contains("review"), "{}", result.system);
     assert!(!result.system.contains("project"), "{}", result.system);
     let output = &result.output;

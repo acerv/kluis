@@ -10,9 +10,8 @@
   repository root, and the current folder. Project ones must not be symlinks,
   which could point at files the sandbox hides.
 - Skills: folders with a `SKILL.md` in `~/.kluis/skills`. Only each
-  skill's name and description are in the system prompt; the model reads
-  the rest when a task needs it. See
-  [Skills](#skills).
+  skill's name and description are in the system prompt; the model loads
+  the rest with the `skill` tool when a task needs it. See [Skills](#skills).
 - Live model discovery across configured providers, with a per-provider
   timeout.
 - Sessions are persisted as JSONL per workspace, appended to as they go and
@@ -27,7 +26,7 @@
 ## Tools
 
 `read`, `write`, `edit`, `ls`, `find`, `grep`, `bash`, `todo`, `ask_user`,
-`web_fetch` and `web_search`.
+`web_fetch`, `web_search` and `skill`.
 
 - `read` hands PNG, JPEG, GIF and WebP images (up to 3.5 MB) to the model.
   They are not saved in the session.
@@ -45,6 +44,8 @@
 - `web_search` returns the titles, URLs and snippets of up to 10 results. It
   asks DuckDuckGo, or the SearXNG instance set with `--searxng-url` (or
   `searxng_url`), and is offered when `web_fetch` is.
+- `skill` returns the `SKILL.md` of a skill and its folder, up to 64 KB. It
+  is offered when there are skills.
 - Tool results are bounded JSON, with `{"error": "..."}` responses so the
   model recovers instead of derailing.
 
@@ -61,8 +62,8 @@
 - `@path` in a prompt attaches the file, read as the `read` tool reads it
   (images included); typing `@` offers the files of the folder.
 - Shift+Tab switches plan mode: the model only looks around (`read`, `ls`,
-  `find`, `grep`, `todo`, `web_fetch`, `web_search`) and answers with a plan; other tools
-  are refused. Switch back and send a message to have the plan carried out.
+  `find`, `grep`, `todo`, `web_fetch`, `web_search`, `skill`) and answers
+  with a plan; other tools are refused. Switch back and send a message to have the plan carried out.
 - `!<command>` runs a shell command as the `bash` tool does, in the sandbox
   when the tools run there, without adding it to the conversation.
 - `/output` shows the whole output of the last tool call.
@@ -101,8 +102,9 @@ only from `~/.kluis/skills`, which you control: projects cannot bring their
 own. Up to 100 skill folders are read; `kl` warns at start about the skills
 it cannot use.
 
-`~/.kluis/skills` is shown read-only in the sandbox, so the model can read
-a skill and run its scripts there; the rest of `~/.kluis` stays hidden.
+The `skill` tool reads a `SKILL.md` on the host. `~/.kluis/skills` is also
+shown read-only in the sandbox, so the model can read the other files of a
+skill and run its scripts there; the rest of `~/.kluis` stays hidden.
 When a folder shown to commands holds `~/.kluis`, such as `$HOME`, all of it
 stays hidden and its skills are left out, with a warning. Neither
 `~/.kluis/skills`, a skill folder nor its `SKILL.md` may be a symlink, so
@@ -119,7 +121,8 @@ cp -r release-notes ~/.kluis/skills/
 kl
 ```
 
-The model picks a skill by itself when a request matches its description:
+The model loads a skill with the `skill` tool when a request matches its
+description:
 
 ```text
 > write the release notes for v0.2

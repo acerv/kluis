@@ -1,15 +1,27 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
-//! Skill discovery: folders holding a `SKILL.md` whose front matter names
-//! and describes the skill. Only the name, description and path go into the
-//! system prompt; the model reads the rest when a task needs it.
+//! Skills: folders holding a `SKILL.md` whose front matter names and
+//! describes the skill. Only the names and descriptions go into the system
+//! prompt; the model loads a skill with the `skill` tool when a task needs
+//! it.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use genai::chat::Tool;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+
 use crate::front_matter::{clean_description, split_front_matter, valid_name, NAME_RULE};
 use crate::prompt::read_capped;
+use crate::tools::ToolError;
+
+/// Name of the tool loading a skill.
+pub const SKILL_TOOL: &str = "skill";
+
+/// Maximum bytes of a `SKILL.md` the tool returns.
+pub const MAX_SKILL_BYTES: usize = 64 * 1024;
 
 /// File describing a skill, in its folder.
 pub const SKILL_FILE: &str = "SKILL.md";
@@ -104,4 +116,53 @@ fn parse_skill(text: &str) -> Result<(String, String), &'static str> {
         return Err("no description");
     }
     Ok((name, description))
+}
+
+/// A call of the `skill` tool.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillTool {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillOutput {
+    /// The folder of the skill, which paths in it start from.
+    pub folder: PathBuf,
+    /// Its `SKILL.md`.
+    pub instructions: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
+}
+
+impl SkillTool {
+    /// The `skill` tool, as sent to the model, taking one of `skills`.
+    pub fn definition(skills: &[Skill]) -> Tool {
+        let names: Vec<_> = skills.iter().map(|s| s.name.as_str()).collect();
+        let schema: Value = json!({
+            "type": "object",
+            "properties": { "name": { "type": "string", "enum": names } },
+            "required": ["name"]
+        });
+        Tool::new(SKILL_TOOL)
+            .with_description(
+                "Load the instructions of a skill from the system prompt. Use it \
+                 before a task the skill is for, then follow them.",
+            )
+            .with_schema(schema)
+    }
+
+    /// The `SKILL.md` of the skill named in the call, among `skills`.
+    pub fn run(self, skills: &[Skill]) -> Result<SkillOutput, ToolError> {
+        let skill = skills
+            .iter()
+            .find(|s| s.name == self.name)
+            .ok_or_else(|| ToolError::new(format!("no skill named {}", self.name)))?;
+        let (bytes, truncated) = read_capped(&skill.path, MAX_SKILL_BYTES)
+            .ok_or_else(|| ToolError::new(format!("cannot read {}", skill.path.display())))?;
+        Ok(SkillOutput {
+            folder: skill.path.parent().unwrap_or(&skill.path).to_path_buf(),
+            instructions: String::from_utf8_lossy(&bytes).into_owned(),
+            truncated,
+        })
+    }
 }
