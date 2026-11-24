@@ -410,7 +410,7 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
                     &command,
                 )
                 .await?;
-                let notices = after_commands(&agent, git_guard.as_mut(), true).await;
+                let notices = after_commands(&agent, git_guard.as_mut(), true, !quit).await;
                 if quit {
                     quit_with(term, &notices);
                     return Ok(());
@@ -433,7 +433,9 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
                     &prompt,
                 )
                 .await?;
-                let notices = after_commands(&agent, git_guard.as_mut(), turn.changed_files).await;
+                let notices =
+                    after_commands(&agent, git_guard.as_mut(), turn.changed_files, !turn.quit)
+                        .await;
                 if turn.quit {
                     quit_with(term, &notices);
                     return Ok(());
@@ -451,6 +453,8 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
             }
         }
     }
+    let notices = after_commands(&agent, git_guard.as_mut(), false, false).await;
+    quit_with(term, &notices);
     Ok(())
 }
 
@@ -469,18 +473,21 @@ fn retry(agent: &mut Agent, app: &mut App, session: Option<&mut Session>) -> Opt
     Some(prompt)
 }
 
-/// Stop what commands left running in the background, then disable the git
+/// Stop what commands left running in the background, but the commands
+/// started in the background with `keep_jobs`, then disable the git
 /// repositories they created when they may have changed files, returning
 /// what to tell the user.
-async fn after_commands(
+pub async fn after_commands(
     agent: &Agent,
     guard: Option<&mut GitGuard>,
     changed_files: bool,
+    keep_jobs: bool,
 ) -> Vec<String> {
     // Before the git check: a program left running could recreate a
-    // repository right after it.
-    agent.stop_background(false).await;
-    check_git_guard(guard, changed_files)
+    // repository right after it. One kept running still can, until the
+    // check after the next prompt, or the last one.
+    let jobs = agent.stop_background(keep_jobs).await;
+    check_git_guard(guard, changed_files || jobs)
 }
 
 /// Leave the TUI, printing `notices` once the screen is back.
