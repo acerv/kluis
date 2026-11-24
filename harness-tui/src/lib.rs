@@ -45,7 +45,7 @@ pub use changes::{
     ChangeKind, ChangesUpdate, FileChange, Snapshot, Watcher, MAX_FILES, MAX_SNAPSHOT_BYTES,
     MAX_TEXT_BYTES,
 };
-pub use clipboard::{last_assistant_text, osc52_sequence};
+pub use clipboard::{last_assistant_text, osc52_sequence, paste_image};
 pub use complete::is_builtin;
 pub use history::{History, MAX_HISTORY};
 pub use markdown::code_theme;
