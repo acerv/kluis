@@ -39,8 +39,8 @@ use harness_core::{
 };
 use harness_sandbox::{GitGuard, NetworkAccess};
 use harness_tui::{
-    check_git_guard, printable, pruned_notice, retry_notice, summary, BannerLine, History,
-    PromptSaver, RunOptions, Session, Status, TRUNCATED_NOTICE,
+    after_commands, check_git_guard, printable, pruned_notice, retry_notice, summary, BannerLine,
+    History, PromptSaver, RunOptions, Session, Status, TRUNCATED_NOTICE,
 };
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
@@ -491,6 +491,7 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
             git_guard.as_mut(),
             &text,
             !args.json,
+            false,
         )
         .await;
         if !args.json {
@@ -563,6 +564,9 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
 
         let Some(line) = lines.next_line().await? else {
             println!();
+            for notice in after_commands(&agent, git_guard.as_mut(), false, false).await {
+                eprintln!("{}", printable(&notice));
+            }
             // Scripts feeding prompts learn that one failed.
             return Ok(if failed {
                 ExitCode::FAILURE
@@ -576,8 +580,15 @@ async fn run(mut args: Args, config_model: Option<String>) -> Result<ExitCode, E
         }
 
         // Keep the session alive on failures such as network errors.
-        let res =
-            prompt_and_persist(&mut agent, session.as_mut(), git_guard.as_mut(), line, true).await;
+        let res = prompt_and_persist(
+            &mut agent,
+            session.as_mut(),
+            git_guard.as_mut(),
+            line,
+            true,
+            true,
+        )
+        .await;
         if let Err(err) = res {
             eprintln!("error: {}", printable(&err.to_string()));
             failed = true;
@@ -606,12 +617,14 @@ struct Done {
 }
 
 /// Run a prompt, printing its events when `print` is set, and save it.
+/// Commands started in the background keep running with `keep_jobs`.
 async fn prompt_and_persist(
     agent: &mut Agent,
     session: Option<&mut Session>,
     git_guard: Option<&mut GitGuard>,
     text: &str,
     print: bool,
+    keep_jobs: bool,
 ) -> Result<Done, Error> {
     let mut saver = PromptSaver::new(session, agent.history());
     let mut usage = TokenUsage::default();
@@ -654,11 +667,11 @@ async fn prompt_and_persist(
         .await;
     // Before the git check: a program left running could recreate a
     // repository right after it.
-    agent.stop_background(false).await;
+    let jobs = agent.stop_background(keep_jobs).await;
     if let Err(err) = saver.finish(agent.history(), usage, context) {
         eprintln!("warning: could not save session: {err}");
     }
-    for notice in check_git_guard(git_guard, changed_files) {
+    for notice in check_git_guard(git_guard, changed_files || jobs) {
         eprintln!("{}", printable(&notice));
     }
     res.map(|_| Done {

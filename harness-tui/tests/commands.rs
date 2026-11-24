@@ -980,3 +980,101 @@ fn notices_send_no_escape_sequences() {
         result.stderr
     );
 }
+
+/// Start a mock OpenAI SSE server that answers each prompt with a `bash`
+/// call of the next of `calls`, then `"done"`, and returns what each call
+/// gave.
+fn start_scripted_llm(calls: Vec<Value>) -> (u16, JoinHandle<Vec<String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let handle = thread::spawn(move || {
+        let mut results = Vec::new();
+        for (i, args) in calls.into_iter().enumerate() {
+            let (stream, _) = listener.accept().unwrap();
+            read_request(&stream);
+            let call = json!({
+                "index": 0,
+                "id": format!("call_{i}"),
+                "type": "function",
+                "function": { "name": "bash", "arguments": args.to_string() }
+            });
+            write_sse(
+                stream,
+                &[
+                    delta(json!({ "tool_calls": [call] }), None),
+                    delta(json!({}), Some("tool_calls")),
+                ],
+            );
+            let (stream, _) = listener.accept().unwrap();
+            let req = read_request(&stream);
+            let result = req["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .rfind(|m| m["role"] == "tool")
+                .and_then(|m| m["content"].as_str())
+                .unwrap()
+                .to_owned();
+            results.push(result);
+            write_sse(
+                stream,
+                &[
+                    delta(json!({ "content": "done" }), None),
+                    delta(json!({}), Some("stop")),
+                ],
+            );
+        }
+        results
+    });
+    (port, handle)
+}
+
+/// Lines of `file`, or 0 when it is missing.
+fn line_count(file: &Path) -> usize {
+    std::fs::read_to_string(file).map_or(0, |text| text.lines().count())
+}
+
+#[test]
+fn background_commands_outlive_the_prompt_until_kl_exits() {
+    let home = tempdir();
+    let cwd = tempdir();
+    let (port, server) = start_scripted_llm(vec![
+        json!({
+            "command": "while :; do echo tick >> ticks; sleep 0.02; done",
+            "background": true,
+        }),
+        json!({
+            "command": "a=$(wc -l < ticks); sleep 0.5; b=$(wc -l < ticks); \
+                        [ \"$b\" -gt \"$a\" ] && echo growing",
+        }),
+    ]);
+    let out = Command::new(env!("CARGO_BIN_EXE_kl"))
+        .args(["--model", "genai_1::test-model"])
+        .current_dir(cwd.path())
+        .env("HOME", home.path())
+        .env("GENAI_1_ENDPOINT", format!("http://127.0.0.1:{port}/v1/"))
+        .env("GENAI_1_API_KEY", "secret-genai-key-12345")
+        .env_remove("HARNESS_CONFIG")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut kl| {
+            kl.stdin.take().unwrap().write_all(b"start\ncheck\n")?;
+            kl.wait_with_output()
+        })
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let results = server.join().unwrap();
+    assert!(results[0].contains(r#""pid":"#), "{}", results[0]);
+    assert!(results[1].contains("growing"), "{}", results[1]);
+    let ticks = cwd.path().join("ticks");
+    let at_exit = line_count(&ticks);
+    thread::sleep(std::time::Duration::from_millis(200));
+    assert_eq!(line_count(&ticks), at_exit);
+}
