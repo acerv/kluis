@@ -83,6 +83,25 @@ pub fn executor(args: &Args, cwd: &Path) -> Result<(Executor, GitGuard), Error> 
     if apparmor::userns_blocked() {
         return Err(apparmor_help(&exe).into());
     }
+    let sandbox = profile(args, cwd, &exe);
+    let env = harness_sandbox::command_env(std::env::vars_os(), &args.pass_env)
+        .into_iter()
+        .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
+        .collect();
+
+    let git_guard = GitGuard::new(&sandbox)?;
+    let executor = Executor::sandbox(SandboxConfig {
+        sandbox,
+        program: exe,
+        args: worker_args(args),
+        cwd: cwd.to_path_buf(),
+        env,
+    })?;
+    Ok((executor, git_guard))
+}
+
+/// What `args` let the commands of the worker `exe` see and reach in `cwd`.
+fn profile(args: &Args, cwd: &Path, exe: &Path) -> Sandbox {
     let mut read = args.allow_read.clone();
     let mut write = args.allow_write.clone();
     let mut deny = args.deny_read.clone();
@@ -140,12 +159,16 @@ pub fn executor(args: &Args, cwd: &Path) -> Result<(Executor, GitGuard), Error> 
         max_processes: args.max_processes,
         tmp_size: args.tmp_size,
     })
-    .allow_read(&exe);
+    .allow_read(exe);
     if let Some(config) = pin_config {
         sandbox = sandbox.keep_read_only(config);
     }
+    sandbox
+}
 
-    let mut worker_args = vec!["--tool-executor".to_owned()];
+/// The arguments `kl` starts its worker with for `args`.
+fn worker_args(args: &Args) -> Vec<String> {
+    let mut worker = vec!["--tool-executor".to_owned()];
     // Decides the sockets commands may create: no Unix ones, which lead to
     // programs of the host, unless any network is allowed anyway, and no
     // UDP ones when only some TCP ports are.
@@ -156,29 +179,15 @@ pub fn executor(args: &Args, cwd: &Path) -> Result<(Executor, GitGuard), Error> 
     } else {
         "ports"
     };
-    worker_args.extend(["--network-access".to_owned(), access.to_owned()]);
+    worker.extend(["--network-access".to_owned(), access.to_owned()]);
     if args.background_commands {
-        worker_args.push("--background-commands".to_owned());
+        worker.push("--background-commands".to_owned());
     }
     if let Some(bytes) = args.max_memory {
-        worker_args.push("--max-memory".to_owned());
-        worker_args.push(bytes.to_string());
+        worker.push("--max-memory".to_owned());
+        worker.push(bytes.to_string());
     }
-
-    let env = harness_sandbox::command_env(std::env::vars_os(), &args.pass_env)
-        .into_iter()
-        .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
-        .collect();
-
-    let git_guard = GitGuard::new(&sandbox)?;
-    let executor = Executor::sandbox(SandboxConfig {
-        sandbox,
-        program: exe,
-        args: worker_args,
-        cwd: cwd.to_path_buf(),
-        env,
-    })?;
-    Ok((executor, git_guard))
+    worker
 }
 
 /// Whether a folder shown to commands holds `~/.kluis`, which then stays
