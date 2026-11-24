@@ -132,11 +132,14 @@ async fn dispatch(
         "ls" => plain(&LsTool::deserialize(args)?.run_in(cwd).await?),
         "find" => plain(&FindTool::deserialize(args)?.run_in(cwd).await?),
         "grep" => plain(&GrepTool::deserialize(args)?.run_in(cwd).await?),
-        "bash" => plain(
-            &BashTool::deserialize(args)?
-                .run_in_streaming(cwd, &ctx.bash, on_output)
-                .await?,
-        ),
+        "bash" => {
+            let tool = BashTool::deserialize(args)?;
+            if tool.background {
+                plain(&tool.start_in(cwd, &ctx.bash).await?)
+            } else {
+                plain(&tool.run_in_streaming(cwd, &ctx.bash, on_output).await?)
+            }
+        }
         "todo" => {
             let out = TodoTool::deserialize(args)?.run()?;
             Ok((

@@ -14,6 +14,7 @@ fn call(command: &str, timeout: Option<u64>) -> BashTool {
     BashTool {
         command: command.into(),
         timeout,
+        background: false,
     }
 }
 
@@ -399,4 +400,114 @@ async fn missing_cwd_is_reported() {
         "{err}"
     );
     assert!(err.message.contains("No such file or directory"), "{err}");
+}
+
+fn job(command: &str) -> BashTool {
+    BashTool {
+        background: true,
+        ..call(command, None)
+    }
+}
+
+/// Wait up to 5 seconds for `done`.
+async fn eventually(mut done: impl FnMut() -> bool) -> bool {
+    let start = Instant::now();
+    while !done() {
+        if start.elapsed() > Duration::from_secs(5) {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    true
+}
+
+fn group_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", "--", &format!("-{pid}")])
+        .status()
+        .unwrap()
+        .success()
+}
+
+#[tokio::test]
+async fn background_command_returns_at_once_and_logs_its_output() {
+    let ctx = BashContext::default();
+    let start = Instant::now();
+    let out = job("printf '\\033[31mred\\033[0m\\n'; sleep 30")
+        .start_in(Path::new("."), &ctx)
+        .await
+        .unwrap();
+    assert!(start.elapsed() < Duration::from_secs(5));
+    assert_eq!(ctx.jobs.pids(), [out.pid]);
+    let file = Path::new(&out.output_file);
+    assert!(eventually(|| std::fs::read_to_string(file).unwrap() == "red\n").await);
+
+    ctx.jobs.stop();
+    assert!(ctx.jobs.pids().is_empty());
+    assert!(eventually(|| !group_alive(out.pid)).await);
+    std::fs::remove_file(file).unwrap();
+}
+
+#[tokio::test]
+async fn background_command_that_ends_leaves_the_jobs() {
+    let ctx = BashContext::default();
+    let out = job("echo done")
+        .start_in(Path::new("."), &ctx)
+        .await
+        .unwrap();
+    assert!(eventually(|| ctx.jobs.pids().is_empty()).await);
+    let file = Path::new(&out.output_file);
+    assert_eq!(std::fs::read_to_string(file).unwrap(), "done\n");
+    std::fs::remove_file(file).unwrap();
+}
+
+#[tokio::test]
+async fn background_commands_stop_with_the_last_context() {
+    let ctx = BashContext {
+        output_files: Some(OutputFiles::default()),
+        ..BashContext::default()
+    };
+    let out = job("sleep 30 & sleep 30")
+        .start_in(Path::new("."), &ctx)
+        .await
+        .unwrap();
+    assert!(group_alive(out.pid));
+    drop(ctx.clone());
+    assert!(group_alive(out.pid));
+    drop(ctx);
+    assert!(eventually(|| !group_alive(out.pid)).await);
+    assert!(!Path::new(&out.output_file).exists());
+}
+
+#[tokio::test]
+async fn background_output_file_restarts_when_full() {
+    let ctx = BashContext {
+        output_files: Some(OutputFiles::default()),
+        ..BashContext::default()
+    };
+    let size = MAX_BASH_LOG_BYTES + 100;
+    let out = job(&format!(
+        "head -c {size} /dev/zero | tr '\\0' a; echo; echo end"
+    ))
+    .start_in(Path::new("."), &ctx)
+    .await
+    .unwrap();
+    assert!(eventually(|| ctx.jobs.pids().is_empty()).await);
+    let text = std::fs::read_to_string(&out.output_file).unwrap();
+    assert!(
+        text.starts_with("[earlier output dropped]\n"),
+        "{}",
+        &text[..40]
+    );
+    assert!(text.ends_with("a\nend\n"));
+    assert!(text.len() as u64 <= MAX_BASH_LOG_BYTES);
+}
+
+#[test]
+fn background_is_left_out_unless_set() {
+    let json = serde_json::to_value(call("true", None)).unwrap();
+    assert_eq!(json, serde_json::json!({ "command": "true" }));
+    let tool: BashTool =
+        serde_json::from_value(serde_json::json!({ "command": "x", "background": true })).unwrap();
+    assert!(tool.background);
 }

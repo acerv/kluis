@@ -3,11 +3,12 @@
 
 use std::ffi::OsString;
 use std::fmt;
-use std::io::{self, Write};
+use std::fs::File;
+use std::io::{self, Seek, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{ExitStatus, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use anstyle_parse::{Parser, Perform};
@@ -53,6 +54,50 @@ pub type PreExec = Arc<dyn Fn() -> io::Result<()> + Send + Sync>;
 #[derive(Clone, Debug, Default)]
 pub struct OutputFiles(Arc<Mutex<Vec<TempPath>>>);
 
+/// Commands started in the background, by the pid of their process
+/// group; the groups still running are killed once the last clone is
+/// dropped.
+#[derive(Clone, Debug, Default)]
+pub struct Jobs(Arc<JobList>);
+
+#[derive(Debug, Default)]
+struct JobList {
+    pids: Mutex<Vec<u32>>,
+}
+
+impl Drop for JobList {
+    fn drop(&mut self) {
+        if let Ok(pids) = self.pids.get_mut() {
+            pids.drain(..).for_each(|pid| kill_group(Some(pid)));
+        }
+    }
+}
+
+impl Jobs {
+    /// The process groups of the commands still running, which are also
+    /// their sessions.
+    pub fn pids(&self) -> Vec<u32> {
+        self.0.pids.lock().map(|p| p.clone()).unwrap_or_default()
+    }
+
+    /// Kill every command still running.
+    pub fn stop(&self) {
+        if let Ok(mut pids) = self.0.pids.lock() {
+            pids.drain(..).for_each(|pid| kill_group(Some(pid)));
+        }
+    }
+
+    /// Kill every command still running unless `keep`, and return whether
+    /// any was.
+    pub fn stop_unless(&self, keep: bool) -> bool {
+        let running = !self.pids().is_empty();
+        if !keep {
+            self.stop();
+        }
+        running
+    }
+}
+
 /// How the host wants commands to run.
 #[derive(Clone, Default)]
 pub struct BashContext {
@@ -66,6 +111,8 @@ pub struct BashContext {
     /// Removes the files of cut outputs once dropped, when set; they stay
     /// for good otherwise.
     pub output_files: Option<OutputFiles>,
+    /// Commands started in the background.
+    pub jobs: Jobs,
 }
 
 impl BashContext {
@@ -94,6 +141,7 @@ impl fmt::Debug for BashContext {
             .field("pre_exec", &self.pre_exec.is_some())
             .field("env", &env)
             .field("output_files", &self.output_files.is_some())
+            .field("jobs", &self.jobs.pids())
             .finish()
     }
 }
@@ -105,6 +153,10 @@ pub struct BashTool {
     /// Time limit in seconds; [`DEFAULT_BASH_TIMEOUT`] when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<u64>,
+    /// Keep the command running after the call, without time limit; see
+    /// [`start_in`](Self::start_in).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,6 +178,16 @@ pub struct BashOutput {
     pub timed_out: bool,
 }
 
+/// A command started in the background.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobOutput {
+    /// Its process group, which also is its session.
+    pub pid: u32,
+    /// File with its cleaned output, restarted once it reaches
+    /// [`MAX_BASH_LOG_BYTES`].
+    pub output_file: String,
+}
+
 impl BashTool {
     /// JSON Schema of the tool input.
     pub fn schema() -> Value {
@@ -133,7 +195,8 @@ impl BashTool {
             "type": "object",
             "properties": {
                 "command": { "type": "string" },
-                "timeout": { "type": "integer", "minimum": 1 }
+                "timeout": { "type": "integer", "minimum": 1 },
+                "background": { "type": "boolean" }
             },
             "required": ["command"]
         })
@@ -144,7 +207,9 @@ impl BashTool {
         Tool::new("bash")
             .with_description(format!(
                 "Run a bash command and return its exit code and output. \
-                 Optionally set timeout in seconds (default {DEFAULT_BASH_TIMEOUT})."
+                 Optionally set timeout in seconds (default {DEFAULT_BASH_TIMEOUT}). \
+                 Set background to keep it running, as a server: you get its \
+                 pid and a file with its output; stop it with `kill -- -PID`."
             ))
             .with_schema(Self::schema())
     }
@@ -182,15 +247,7 @@ impl BashTool {
         if self.timeout == Some(0) {
             return Err(ToolError::new("timeout must be >= 1"));
         }
-        // Spawning in a missing folder fails like a missing bash would.
-        match tokio::fs::metadata(cwd).await {
-            Ok(meta) if meta.is_dir() => {}
-            Ok(_) => {
-                let cwd = cwd.display();
-                return Err(ToolError::new(format!("{cwd}: not a directory")));
-            }
-            Err(e) => return Err(ToolError::io(&cwd.display().to_string(), e)),
-        }
+        check_dir(cwd).await?;
         // A timeout too large to represent means no limit.
         let deadline = Instant::now().checked_add(Duration::from_secs(
             self.timeout.unwrap_or(DEFAULT_BASH_TIMEOUT),
@@ -252,6 +309,87 @@ impl BashTool {
             output_file: output_file.and_then(|path| ctx.keep(path)),
             timed_out,
         })
+    }
+
+    /// Start the command in `cwd` and return at once, leaving it running
+    /// in its own session, without time limit, until it ends, the host
+    /// kills it, or the last clone of `ctx.jobs` is dropped. Its cleaned
+    /// output goes to a file. `timeout` does not apply.
+    pub async fn start_in(self, cwd: &Path, ctx: &BashContext) -> Result<JobOutput, ToolError> {
+        check_dir(cwd).await?;
+        let file = Builder::new()
+            .prefix("harness-job-")
+            .suffix(".log")
+            .tempfile()
+            .map_err(bash_error)?;
+        let (child, pipe) = spawn(&self.command, cwd, ctx).map_err(bash_error)?;
+        let pid = child
+            .id()
+            .ok_or_else(|| ToolError::new("bash: exited at once"))?;
+        let (file, path) = file.into_parts();
+        let Some(output_file) = ctx.keep(path) else {
+            kill_group(Some(pid));
+            return Err(ToolError::new("bash: cannot keep the output file"));
+        };
+        if let Ok(mut pids) = ctx.jobs.0.pids.lock() {
+            pids.push(pid);
+        }
+        tokio::spawn(log_job(child, pipe, file, Arc::downgrade(&ctx.jobs.0)));
+        Ok(JobOutput { pid, output_file })
+    }
+}
+
+/// Write the cleaned output of a background command to `file` until it
+/// ends, then take it off `jobs`.
+async fn log_job(mut child: Child, mut pipe: Receiver, mut file: File, jobs: Weak<JobList>) {
+    let pid = child.id();
+    let log = async {
+        let mut filter = Filter::default();
+        let mut text = Tail::default();
+        let mut chunk = [0u8; 8192];
+        let mut written = 0;
+        let mut failed = false;
+        while let Ok(n @ 1..) = pipe.read(&mut chunk).await {
+            filter.clean(&chunk[..n], &mut text);
+            if !failed {
+                failed = append(&mut file, &mut written, &text.buf).is_err();
+            }
+            text.buf.clear();
+        }
+    };
+    let _ = tokio::join!(log, child.wait());
+    if let Some(jobs) = jobs.upgrade() {
+        if let Ok(mut pids) = jobs.pids.lock() {
+            pids.retain(|&p| Some(p) != pid);
+        }
+    }
+}
+
+/// Append `data` to `file`, which holds `written` bytes, starting it again
+/// when it would grow past [`MAX_BASH_LOG_BYTES`].
+fn append(file: &mut File, written: &mut u64, data: &[u8]) -> io::Result<()> {
+    const RESTARTED: &[u8] = b"[earlier output dropped]\n";
+    if *written + data.len() as u64 > MAX_BASH_LOG_BYTES {
+        file.set_len(0)?;
+        file.rewind()?;
+        file.write_all(RESTARTED)?;
+        *written = RESTARTED.len() as u64;
+    }
+    // A single chunk is far below the limit.
+    file.write_all(data)?;
+    *written += data.len() as u64;
+    Ok(())
+}
+
+/// Fail like a missing bash would when `cwd` is not a folder.
+async fn check_dir(cwd: &Path) -> Result<(), ToolError> {
+    match tokio::fs::metadata(cwd).await {
+        Ok(meta) if meta.is_dir() => Ok(()),
+        Ok(_) => {
+            let cwd = cwd.display();
+            Err(ToolError::new(format!("{cwd}: not a directory")))
+        }
+        Err(e) => Err(ToolError::io(&cwd.display().to_string(), e)),
     }
 }
 
@@ -329,11 +467,16 @@ struct Filter {
 }
 
 impl Filter {
-    fn clean_into(&mut self, input: &[u8], tail: &mut Tail, on_output: &mut impl FnMut(&str)) {
-        let start = tail.buf.len();
+    /// Append the cleaned `input` to `tail`, without trimming it.
+    fn clean(&mut self, input: &[u8], tail: &mut Tail) {
         for &byte in input {
             self.parser.advance(tail, byte);
         }
+    }
+
+    fn clean_into(&mut self, input: &[u8], tail: &mut Tail, on_output: &mut impl FnMut(&str)) {
+        let start = tail.buf.len();
+        self.clean(input, tail);
         if tail.buf.len() > start {
             if let Ok(text) = std::str::from_utf8(&tail.buf[start..]) {
                 on_output(text);

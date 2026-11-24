@@ -34,8 +34,8 @@ mod write;
 use genai::chat::{ToolCall, ToolResponse};
 
 pub use bash::{
-    BashContext, BashOutput, BashTool, OutputFiles, PreExec, DEFAULT_BASH_TIMEOUT, MAX_BASH_LINES,
-    MAX_BASH_LOG_BYTES, MAX_BASH_OUTPUT,
+    BashContext, BashOutput, BashTool, JobOutput, Jobs, OutputFiles, PreExec, DEFAULT_BASH_TIMEOUT,
+    MAX_BASH_LINES, MAX_BASH_LOG_BYTES, MAX_BASH_OUTPUT,
 };
 pub use diff::{Diff, DiffHunk, DiffLine, DIFF_CONTEXT_LINES, MAX_DIFF_BYTES};
 pub use dispatch::{
