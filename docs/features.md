@@ -40,7 +40,9 @@
   or your own text (interactive mode only).
 - `web_fetch` reads a web page as Markdown (or raw with `raw: true`), 24 KB at
   a time. It runs outside the sandbox, so it is offered only with `--network`
-  (or `network = true`) or `--no-sandbox`.
+  (or `network = true`) or `--no-sandbox`. It reaches only public addresses,
+  or only the hosts set with `--web-host` (or `web_hosts`): see
+  [Web tools](sandbox.md#web-tools).
 - `web_search` returns the titles, URLs and snippets of up to 10 results. It
   asks DuckDuckGo, or the SearXNG instance set with `--searxng-url` (or
   `searxng_url`), and is offered when `web_fetch` is.
