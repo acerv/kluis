@@ -51,7 +51,7 @@ pub use style::Theme;
 pub use terminal::flush_scrollback;
 pub use tui_markdown::CodeTheme;
 
-use drive::{draw, handle_event_batch, restore_queued, run_shell, run_turn};
+use drive::{handle_event_batch, restore_queued, run_shell, run_turn, Ui};
 use slash::{check_thinking, handle_slash, resume_session, switch_model, ModelCatalog};
 use terminal::{EventReader, InlineTerminal};
 
@@ -128,7 +128,7 @@ fn check_git_guard(guard: Option<&mut GitGuard>, changed_files: bool) -> Vec<Str
 
 /// Run the interactive inline TUI until the user quits (`Ctrl-D` or `/quit`).
 pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), Error> {
-    let (asker, mut questions) = mpsc::unbounded_channel();
+    let (asker, questions) = mpsc::unbounded_channel();
     let mut agent = agent.with_asker(asker);
     let RunOptions {
         mut session,
@@ -143,7 +143,7 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
         notify,
     } = opts;
     let mut models = ModelCatalog::new(adapters);
-    let mut term = InlineTerminal::enter(VIEWPORT_HEIGHT)?;
+    let term = InlineTerminal::enter(VIEWPORT_HEIGHT)?;
     let mut app = App::new(agent.model().to_owned(), status, Theme::from_env());
     app.set_width(term.width());
     app.set_thinking(agent.thinking());
@@ -171,9 +171,15 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
     } else if !picker_entries.is_empty() {
         app.open_picker(picker_entries, None);
     }
-    let mut events = EventReader::spawn();
+    let events = EventReader::spawn();
 
-    draw(&mut term, &mut app)?;
+    let mut ui = Ui {
+        term,
+        app,
+        events,
+        questions,
+    };
+    ui.draw()?;
 
     // A prompt to send next, without waiting for the user.
     let mut next_prompt = None;
@@ -182,24 +188,24 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
     loop {
         if checked_model != agent.model() {
             checked_model = agent.model().to_owned();
-            check_thinking(&mut agent, &mut app).await;
-            draw(&mut term, &mut app)?;
+            check_thinking(&mut agent, &mut ui.app).await;
+            ui.draw()?;
         }
         let action = match next_prompt.take() {
             Some(prompt) => Action::Submit(prompt),
             None => {
                 let next = tokio::select! {
-                    next = events.next() => next,
-                    update = app.next_changes() => {
-                        app.apply_changes(update);
-                        draw(&mut term, &mut app)?;
+                    next = ui.events.next() => next,
+                    update = ui.app.next_changes() => {
+                        ui.app.apply_changes(update);
+                        ui.draw()?;
                         continue;
                     }
                 };
                 let Some(next) = next else {
                     break;
                 };
-                handle_event_batch(next?, &mut events, &mut app)?
+                handle_event_batch(next?, &mut ui.events, &mut ui.app)?
             }
         };
         // Only for the picker shown at startup, until anything else is done.
@@ -209,16 +215,13 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
         };
         match action {
             Action::None | Action::Cancel | Action::Answer(_) => {}
-            Action::Redraw => draw(&mut term, &mut app)?,
+            Action::Redraw => ui.draw()?,
             Action::Quit => break,
             Action::Slash(cmd) => {
                 if handle_slash(
+                    &mut ui,
                     cmd,
-                    &mut term,
                     &mut agent,
-                    &mut app,
-                    &mut events,
-                    &mut questions,
                     session.as_mut(),
                     &mut models,
                     &mut next_prompt,
@@ -227,70 +230,53 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
                 {
                     break;
                 }
-                draw(&mut term, &mut app)?;
+                ui.draw()?;
             }
             Action::ResumeSession(id) => {
-                resume_session(&id, model, &mut agent, &mut app, session.as_mut());
-                draw(&mut term, &mut app)?;
+                resume_session(&id, model, &mut agent, &mut ui.app, session.as_mut());
+                ui.draw()?;
             }
             Action::SelectModel(name) => {
-                switch_model(&name, &mut agent, &mut app, session.as_mut());
-                draw(&mut term, &mut app)?;
+                switch_model(&name, &mut agent, &mut ui.app, session.as_mut());
+                ui.draw()?;
             }
             Action::SetPlan(plan) => {
                 agent.set_plan(plan);
-                draw(&mut term, &mut app)?;
+                ui.draw()?;
             }
             Action::Shell(command) => {
                 if let Some(ref mut h) = history {
                     let _ = h.record(&format!("!{command}"));
                 }
-                let quit = run_shell(
-                    &mut term,
-                    &mut app,
-                    &agent,
-                    &mut events,
-                    &mut questions,
-                    &command,
-                )
-                .await?;
+                let quit = run_shell(&mut ui, &agent, &command).await?;
                 let notices = after_commands(&agent, git_guard.as_mut(), true, !quit).await;
                 if quit {
-                    quit_with(term, &notices);
+                    quit_with(ui.term, &notices);
                     return Ok(());
                 }
-                show_notices(&mut term, &mut app, &notices)?;
+                show_notices(&mut ui, &notices)?;
             }
             Action::Submit(prompt) => {
                 if let Some(ref mut h) = history {
                     let _ = h.record(&prompt);
                 }
                 let prompt = expand_command(&commands, &prompt).unwrap_or(prompt);
-                app.start_prompt(&prompt);
-                draw(&mut term, &mut app)?;
-                let turn = run_turn(
-                    &mut term,
-                    &mut app,
-                    &mut agent,
-                    &mut events,
-                    &mut questions,
-                    session.as_mut(),
-                    &prompt,
-                )
-                .await?;
+                ui.app.start_prompt(&prompt);
+                ui.draw()?;
+                let turn = run_turn(&mut ui, &mut agent, session.as_mut(), &prompt).await?;
                 let notices =
                     after_commands(&agent, git_guard.as_mut(), turn.changed_files, !turn.quit)
                         .await;
                 if turn.quit {
-                    quit_with(term, &notices);
+                    quit_with(ui.term, &notices);
                     return Ok(());
                 }
-                show_notices(&mut term, &mut app, &notices)?;
+                show_notices(&mut ui, &notices)?;
                 // Messages queued as the prompt ended make the next one; a
                 // cancelled prompt leaves them in the editor.
                 if turn.cancelled {
-                    restore_queued(&agent, &mut app);
-                    draw(&mut term, &mut app)?;
+                    restore_queued(&agent, &mut ui.app);
+                    ui.draw()?;
                 } else {
                     let queued = agent.steering().take().join("\n\n");
                     next_prompt = (!queued.is_empty()).then_some(queued);
@@ -299,7 +285,7 @@ pub async fn run(agent: Agent, status: Status, opts: RunOptions) -> Result<(), E
         }
     }
     let notices = after_commands(&agent, git_guard.as_mut(), false, false).await;
-    quit_with(term, &notices);
+    quit_with(ui.term, &notices);
     Ok(())
 }
 
@@ -328,10 +314,10 @@ fn quit_with(term: InlineTerminal, notices: &[String]) {
     }
 }
 
-fn show_notices(term: &mut InlineTerminal, app: &mut App, notices: &[String]) -> Result<(), Error> {
+fn show_notices(ui: &mut Ui, notices: &[String]) -> Result<(), Error> {
     if notices.is_empty() {
         return Ok(());
     }
-    notices.iter().for_each(|notice| app.push_info(notice));
-    draw(term, app)
+    notices.iter().for_each(|notice| ui.app.push_info(notice));
+    ui.draw()
 }
