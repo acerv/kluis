@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use crate::prompt::{project_dirs, read_capped};
 
-/// Folder holding the skills, below a project folder or the home folder.
+/// Folder holding the skills of a project, below any of its folders.
 pub const SKILLS_DIR: &str = ".agents/skills";
 
 /// File describing a skill, in its folder.
@@ -45,30 +45,35 @@ pub struct Skills {
     pub warnings: Vec<String>,
 }
 
-/// Discover the skills in the `global` folders (e.g. `~/.agents/skills`),
-/// then in the [`SKILLS_DIR`] of every folder from the git repository root
-/// down to `cwd`. A skill found later replaces one of the same name.
+/// Discover the skills in `global` (e.g. `~/.kluis/skills`) and in the
+/// [`SKILLS_DIR`] of every folder from the git repository root down to
+/// `cwd`. A more specific skill replaces a broader one of the same name.
 ///
 /// Neither a skill folder nor its `SKILL.md` may be a symlink: the
 /// sandboxed model can write the project folders, and could link them to
 /// files the sandbox hides for the host to read. Nor may anything on the
-/// way from a project folder to its [`SKILLS_DIR`]. A `global` folder,
-/// which only the user writes, may be one.
-pub fn find_skills(cwd: &Path, global: &[PathBuf]) -> Skills {
+/// way from a project folder to its [`SKILLS_DIR`]. `global`, which only
+/// the user writes, may be one.
+pub fn find_skills(cwd: &Path, global: Option<&Path>) -> Skills {
     let mut found = BTreeMap::new();
     let mut warnings = Vec::new();
     // Each folder to look in, with its canonical path to skip it when seen.
     let mut roots: Vec<(PathBuf, PathBuf)> = Vec::new();
-    let global = global
-        .iter()
-        .filter_map(|dir| Some((dir.clone(), std::fs::canonicalize(dir).ok()?)));
-    let project = project_dirs(cwd).into_iter().filter_map(|dir| {
+    if let Some(global) = global {
+        if let Ok(canon) = std::fs::canonicalize(global) {
+            roots.push((global.to_path_buf(), canon));
+        }
+    }
+    for dir in project_dirs(cwd) {
         let root = dir.join(SKILLS_DIR);
         // Only a real folder, with no symlink on the way from `dir`.
-        let canon = std::fs::canonicalize(dir).ok()?.join(SKILLS_DIR);
-        (std::fs::canonicalize(&root).ok()? == canon).then_some((root, canon))
-    });
-    for (root, canon) in global.chain(project) {
+        let Some(canon) = std::fs::canonicalize(dir)
+            .ok()
+            .map(|canon| canon.join(SKILLS_DIR))
+            .filter(|canon| std::fs::canonicalize(&root).is_ok_and(|c| &c == canon))
+        else {
+            continue;
+        };
         if !roots.iter().any(|(_, seen)| *seen == canon) {
             roots.push((root, canon));
         }
