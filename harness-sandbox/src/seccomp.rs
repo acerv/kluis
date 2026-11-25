@@ -187,7 +187,8 @@ fn privilege_rules() -> Fallible<Rules> {
 
 /// Rules matching sockets of other address families than IPv4, IPv6,
 /// netlink, and Unix ones with [`NetworkAccess::Any`], with another
-/// protocol than the ones listed for their family, and UDP ones with
+/// protocol than the ones listed for their family, IPv4 and IPv6 ones
+/// that are neither stream nor datagram sockets, and UDP ones with
 /// [`NetworkAccess::Ports`]; and socket pairs other than Unix ones, or
 /// datagram ones unless with [`NetworkAccess::Any`].
 fn socket_rules(network: NetworkAccess) -> Fallible<Rules> {
@@ -203,7 +204,15 @@ fn socket_rules(network: NetworkAccess) -> Fallible<Rules> {
     for &(family, protocols) in families.iter().filter(|(_, p)| !p.is_empty()) {
         let protocols = protocols.iter().map(|&protocol| ne(2, protocol));
         socket.push(rule(std::iter::once(eq(0, family)).chain(protocols))?);
-        if network == NetworkAccess::Ports && family != libc::AF_NETLINK {
+        if family == libc::AF_NETLINK {
+            continue;
+        }
+        // The default protocol of the other types is not a listed one,
+        // such as SCTP for `SOCK_SEQPACKET`.
+        for kind in (0..=SOCK_TYPE_MASK).filter(|kind| !IP_TYPES.contains(kind)) {
+            socket.push(rule([eq(0, family), of_type(kind)])?);
+        }
+        if network == NetworkAccess::Ports {
             socket.push(rule([eq(0, family), datagram()])?);
         }
     }
@@ -247,10 +256,22 @@ fn has(arg: u8, flags: u64) -> Condition {
     (arg, SeccompCmpOp::MaskedEq(flags), flags)
 }
 
-/// Whether the type of a socket, without flags such as `SOCK_NONBLOCK`, is
-/// a datagram one.
+/// The bits of the type of a socket, without flags such as
+/// `SOCK_NONBLOCK`.
+const SOCK_TYPE_MASK: libc::c_int = 0xf;
+
+/// The types IPv4 and IPv6 sockets may have.
+const IP_TYPES: [libc::c_int; 2] = [libc::SOCK_STREAM, libc::SOCK_DGRAM];
+
+/// Whether the type of a socket, without its flags, is `kind`.
+fn of_type(kind: libc::c_int) -> Condition {
+    let mask = SOCK_TYPE_MASK as u64;
+    (1, SeccompCmpOp::MaskedEq(mask), kind as u64)
+}
+
+/// Whether the type of a socket is a datagram one.
 fn datagram() -> Condition {
-    (1, SeccompCmpOp::MaskedEq(0xf), libc::SOCK_DGRAM as u64)
+    of_type(libc::SOCK_DGRAM)
 }
 
 /// A rule matching when all `conditions` hold.
