@@ -182,7 +182,12 @@ pub async fn thinking_levels(client: &Client, model: &str) -> Option<Vec<Thinkin
     let target = client.resolve_service_target(model).await.ok()?;
     let kind = target.model.adapter_kind;
     let name = target.model.model_name.namespace_and_name().1;
-    let http = reqwest::Client::new();
+    // No redirect is followed: one to another host would carry the key
+    // of the provider there.
+    let http = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .ok()?;
     let request = match kind {
         AdapterKind::Anthropic => {
             let (base, headers) = match target.auth {
@@ -198,7 +203,13 @@ pub async fn thinking_levels(client: &Client, model: &str) -> Option<Vec<Thinkin
                     ]),
                 ),
             };
-            let mut request = http.get(format!("{base}models/{name}"));
+            // The name as one part of the path, whatever it holds.
+            let mut url = reqwest::Url::parse(&base).ok()?;
+            url.path_segments_mut()
+                .ok()?
+                .pop_if_empty()
+                .extend(["models", name]);
+            let mut request = http.get(url);
             for (key, value) in headers.iter() {
                 request = request.header(key, value);
             }
