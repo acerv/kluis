@@ -4,7 +4,7 @@
 use std::collections::VecDeque;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::history::MAX_HISTORY;
 
@@ -220,10 +220,10 @@ impl Input {
         let start = self.line_start(self.cursor);
         if start > 0 {
             // Move to the previous line within the multiline input.
-            let col_chars = self.buf[start..self.cursor].chars().count();
+            let col = self.buf[start..self.cursor].width();
             let prev_end = start - 1;
             let prev_start = self.line_start(prev_end);
-            let target = advance_chars(&self.buf[prev_start..prev_end], col_chars);
+            let target = at_column(&self.buf[prev_start..prev_end], col);
             return self.move_to(prev_start + target);
         }
         self.history_prev()
@@ -234,10 +234,10 @@ impl Input {
         if end < self.buf.len() {
             // Move to the next line within the multiline input.
             let start = self.line_start(self.cursor);
-            let col_chars = self.buf[start..self.cursor].chars().count();
+            let col = self.buf[start..self.cursor].width();
             let next_start = end + 1;
             let next_end = self.line_end(next_start);
-            let target = advance_chars(&self.buf[next_start..next_end], col_chars);
+            let target = at_column(&self.buf[next_start..next_end], col);
             return self.move_to(next_start + target);
         }
         self.history_next()
@@ -310,8 +310,16 @@ impl Input {
     }
 }
 
-fn advance_chars(line: &str, count: usize) -> usize {
-    line.char_indices()
-        .nth(count)
-        .map_or(line.len(), |(i, _)| i)
+/// The offset in `line` of the character at the column `col`, the end of
+/// `line` when it is shorter. Columns are terminal cells: a wide
+/// character takes two.
+fn at_column(line: &str, col: usize) -> usize {
+    let mut width = 0;
+    for (i, c) in line.char_indices() {
+        width += c.width().unwrap_or(0);
+        if width > col {
+            return i;
+        }
+    }
+    line.len()
 }
