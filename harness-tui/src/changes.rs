@@ -35,6 +35,9 @@ pub const MAX_TEXT_BYTES: u64 = 1024 * 1024;
 /// Most bytes of text the snapshot keeps in all.
 pub const MAX_SNAPSHOT_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Why the text of a file that cannot be read is not known.
+const UNREADABLE: &str = "cannot be read";
+
 /// How a file differs from the snapshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeKind {
@@ -232,11 +235,22 @@ fn walk(root: &Path, mut f: impl FnMut(PathBuf, Stamp)) -> bool {
 /// gone or is not one. Never follows a symbolic link, nor blocks on a FIFO
 /// put in place of the file.
 fn read(path: &Path) -> Option<(Stamp, Content)> {
-    let mut file = File::options()
+    let file = File::options()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
-        .ok()?;
+        .open(path);
+    let mut file = match file {
+        Ok(file) => file,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return None,
+        // There, but not to read: taken for a missing file, undoing would
+        // delete it once it can be read.
+        Err(_) => {
+            let meta = std::fs::symlink_metadata(path).ok()?;
+            return meta
+                .is_file()
+                .then(|| (Stamp::of(&meta), Content::Opaque(UNREADABLE)));
+        }
+    };
     let meta = file.metadata().ok()?;
     if !meta.is_file() {
         return None;
@@ -251,7 +265,7 @@ fn read(path: &Path) -> Option<(Stamp, Content)> {
         .take(MAX_TEXT_BYTES + 1)
         .read_to_end(&mut bytes)
     {
-        Err(_) => Content::Opaque("cannot be read"),
+        Err(_) => Content::Opaque(UNREADABLE),
         Ok(_) if bytes.len() as u64 > MAX_TEXT_BYTES => Content::Opaque("too large to diff"),
         Ok(_) if bytes.contains(&0) => Content::Opaque("binary file"),
         Ok(_) => match String::from_utf8(bytes) {
