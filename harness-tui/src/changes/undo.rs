@@ -10,15 +10,17 @@
 //! outside the project.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::ffi::OsStr;
 use std::fs::{File, Permissions};
 use std::io::{self, Write};
 use std::os::fd::OwnedFd;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use harness_core::tools::count_lines;
-use rustix::fs::{openat, unlinkat, AtFlags, Mode, OFlags, CWD};
+use rustix::fs::{openat, unlinkat, AtFlags, Dir, Mode, OFlags, CWD};
 use rustix::io::Errno;
 
 use super::{read, walk, ChangeKind, Content, Entry, FileChange, Snapshot, MAX_SNAPSHOT_BYTES};
@@ -92,7 +94,10 @@ impl Checkpoints {
 
     pub(super) fn undo(&mut self, snapshot: &Snapshot) -> Option<Undo> {
         let checkpoint = self.0.pop_back()?;
-        let (plan, steps) = snapshot.steps(&checkpoint);
+        let (plan, mut steps) = snapshot.steps(&checkpoint);
+        // The files to delete first: one to write may take the place of
+        // the folder that held them.
+        steps.sort_by_key(|(_, target)| target.is_some());
         let failed = steps
             .into_iter()
             .filter_map(|(path, target)| {
@@ -269,7 +274,8 @@ fn open_parent<'a>(root: &Path, path: &'a Path, create: bool) -> io::Result<(Own
 
 /// Give the file at `path`, relative to `root`, the `text` and the
 /// permissions `mode`, making it and its folders when missing. What is not
-/// a regular file there is replaced when it can be deleted.
+/// a regular file there is replaced when it can be deleted: a folder, when
+/// it holds no file.
 fn write(root: &Path, path: &Path, text: &str, mode: u32) -> io::Result<()> {
     let (dir, name) = open_parent(root, path, true)?;
     let mode = mode & 0o777;
@@ -283,13 +289,27 @@ fn write(root: &Path, path: &Path, text: &str, mode: u32) -> io::Result<()> {
         }
     };
     let mut file = open().or_else(|_| {
-        // A link or a FIFO left in its place.
-        unlinkat(&dir, name, AtFlags::empty())?;
+        // A link or a FIFO left in its place, or a folder.
+        unlinkat(&dir, name, AtFlags::empty()).or_else(|_| remove_folders(&dir, name))?;
         open()
     })?;
     file.set_len(0)?;
     file.write_all(text.as_bytes())?;
     file.set_permissions(Permissions::from_mode(mode))
+}
+
+/// Remove the folder `name` of `dir` and the folders in it, failing when
+/// one holds anything else.
+fn remove_folders(dir: &OwnedFd, name: &Path) -> io::Result<()> {
+    let folder = openat(dir, name, DIR | OFlags::NOFOLLOW, Mode::empty())?;
+    for entry in Dir::read_from(&folder)? {
+        let entry = entry?;
+        let inner = entry.file_name().to_bytes();
+        if inner != b"." && inner != b".." {
+            remove_folders(&folder, Path::new(OsStr::from_bytes(inner)))?;
+        }
+    }
+    Ok(unlinkat(dir, name, AtFlags::REMOVEDIR)?)
 }
 
 /// Delete the file at `path`, relative to `root`, if it is still there.

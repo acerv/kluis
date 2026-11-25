@@ -407,3 +407,19 @@ async fn undo_keeps_a_file_that_could_not_be_read() {
     watcher.undo().await.unwrap();
     assert_eq!(text(&file), "notes\n");
 }
+
+#[tokio::test]
+async fn undo_puts_back_a_file_replaced_by_a_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    put(&root.join("a"), "text\n");
+    let watcher = watching(root).await;
+    watcher.checkpoint(0, 0).await;
+    fs::remove_file(root.join("a")).unwrap();
+    put(&root.join("a/deep/inner.txt"), "x\n");
+    fs::create_dir(root.join("a/empty")).unwrap();
+
+    let undo = watcher.undo().await.unwrap();
+    assert!(undo.failed.is_empty(), "{:?}", undo.failed);
+    assert_eq!(text(&root.join("a")), "text\n");
+}
