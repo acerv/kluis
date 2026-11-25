@@ -372,6 +372,18 @@ impl Agent {
         self
     }
 
+    /// Add `line` to the system prompt, under a section for the instructions
+    /// given since the conversation started.
+    pub fn add_instruction(&mut self, line: &str) {
+        const HEADER: &str = "\n\n## Instructions added in this session\n";
+        let system = self.req.system.get_or_insert_default();
+        if !system.contains(HEADER) {
+            system.push_str(HEADER);
+        }
+        system.push('\n');
+        system.push_str(line);
+    }
+
     /// The system prompt currently configured for requests, if any.
     pub fn system(&self) -> Option<&str> {
         self.req.system.as_deref()

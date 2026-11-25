@@ -41,7 +41,9 @@ pub use models::{
     discover_models, discover_models_with_timeout, is_chat_model, provider_name, thinking_levels,
     ModelInfo, ModelList,
 };
-pub use prompt::{find_agents_files, system_prompt, AGENTS_FILE, MAX_AGENTS_BYTES};
+pub use prompt::{
+    find_agents_files, project_agents_file, remember, system_prompt, AGENTS_FILE, MAX_AGENTS_BYTES,
+};
 pub use retry::RetryPolicy;
 pub use session::{
     SessionData, SessionEntry, SessionMeta, SessionStore, SessionSummary, SessionWriter,

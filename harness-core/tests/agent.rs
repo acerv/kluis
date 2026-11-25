@@ -1684,3 +1684,88 @@ async fn plan_mode_runs_only_the_tools_that_change_nothing() {
     prompt(&mut agent, "more").await.unwrap();
     assert!(!user(&model.requests()[3]).contains("Plan mode"));
 }
+
+#[test]
+fn remember_adds_a_line_to_the_agents_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join(AGENTS_FILE);
+
+    // The file is created, and the text is kept on one line.
+    let line = harness_core::remember(&file, "  run clippy\nbefore commits ").unwrap();
+    assert_eq!(line, "- run clippy before commits");
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "- run clippy before commits\n"
+    );
+
+    // A file not ending with a newline gets one first.
+    std::fs::write(&file, "# Rules\n\n- be brief").unwrap();
+    harness_core::remember(&file, "no python").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "# Rules\n\n- be brief\n- no python\n"
+    );
+
+    assert!(harness_core::remember(&file, " \n ").is_err());
+}
+
+#[test]
+fn remember_refuses_what_is_not_a_plain_file() {
+    // The model can write the project, and could leave a link to a file
+    // the sandbox hides, or a FIFO to hang on.
+    let tmp = tempfile::tempdir().unwrap();
+    let hidden = tmp.path().join("config.toml");
+    std::fs::write(&hidden, "model = \"x\"\n").unwrap();
+    let link = tmp.path().join(AGENTS_FILE);
+    std::os::unix::fs::symlink(&hidden, &link).unwrap();
+    assert!(harness_core::remember(&link, "text").is_err());
+    assert_eq!(std::fs::read_to_string(&hidden).unwrap(), "model = \"x\"\n");
+
+    let fifo = tmp.path().join("fifo");
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &fifo,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    assert!(harness_core::remember(&fifo, "text").is_err());
+}
+
+#[test]
+fn project_agents_file_is_at_the_repository_root() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sub = tmp.path().join("a/b");
+    std::fs::create_dir_all(&sub).unwrap();
+    // Outside a repository, the folder itself.
+    assert_eq!(
+        harness_core::project_agents_file(&sub),
+        sub.join(AGENTS_FILE)
+    );
+    std::fs::create_dir(tmp.path().join(".git")).unwrap();
+    assert_eq!(
+        harness_core::project_agents_file(&sub),
+        tmp.path().join(AGENTS_FILE)
+    );
+}
+
+#[tokio::test]
+async fn added_instructions_reach_the_model() {
+    let model = MockModel::start(vec![text("ok")]).await;
+    let mut agent = Agent::with_client(model.client(), "test-model").with_system("Be brief.");
+    agent.add_instruction("- run clippy");
+    agent.add_instruction("- no python");
+
+    let system = agent.system().unwrap();
+    assert!(system.starts_with("Be brief."), "{system}");
+    assert_eq!(
+        system.matches("Instructions added in this session").count(),
+        1
+    );
+    assert!(system.ends_with("\n- run clippy\n- no python"), "{system}");
+
+    agent.prompt("hi", |_| {}).await.unwrap();
+    let sent = model.requests()[0].to_string();
+    assert!(sent.contains("- run clippy"), "{sent}");
+}

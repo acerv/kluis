@@ -5,7 +5,12 @@
 
 use std::collections::HashSet;
 use std::fmt::Write;
+use std::fs::OpenOptions;
+use std::io::{self, Read, Seek, SeekFrom, Write as _};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+
+use rustix::fs::OFlags;
 
 use crate::private_file::read_capped;
 use crate::skills::Skill;
@@ -67,6 +72,45 @@ fn project_dirs(cwd: &Path) -> Vec<&Path> {
         }
     }
     vec![cwd]
+}
+
+/// The `AGENTS.md` of the project `cwd` is in: the one of the enclosing git
+/// repository root, or of `cwd` outside a git repository.
+pub fn project_agents_file(cwd: &Path) -> PathBuf {
+    project_dirs(cwd)[0].join(AGENTS_FILE)
+}
+
+/// Add the instruction `text` to the `AGENTS.md` at `path` as a list item
+/// on a line of its own, creating the file when missing. Returns the line
+/// added, without its newline.
+///
+/// A project is writable by the model: a symlink or a FIFO it left at
+/// `path` is refused rather than followed or waited on. Resolve the global
+/// file, which may be a symlink of the user, before passing it.
+pub fn remember(path: &Path, text: &str) -> io::Result<String> {
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        return Err(io::Error::other("nothing to remember"));
+    }
+    let mut file = OpenOptions::new()
+        .read(true)
+        .append(true)
+        .create(true)
+        .mode(0o644)
+        .custom_flags((OFlags::NOFOLLOW | OFlags::NONBLOCK).bits() as i32)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::other("not a regular file"));
+    }
+    // Start on a new line when the file does not end with one.
+    let mut last = *b"\n";
+    if file.seek(SeekFrom::End(-1)).is_ok() {
+        file.read_exact(&mut last)?;
+    }
+    let line = format!("- {text}");
+    let start = if last == *b"\n" { "" } else { "\n" };
+    file.write_all(format!("{start}{line}\n").as_bytes())?;
+    Ok(line)
 }
 
 /// Build the default system prompt for `cwd`, appending any readable,
