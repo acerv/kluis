@@ -18,7 +18,7 @@ use reqwest::{redirect, Client, Response, Url};
 
 use crate::error::chain;
 use crate::fetch::{is_web, FETCH_TIMEOUT};
-use crate::tools::ToolError;
+use crate::tools::{Hosts, ToolError};
 
 /// Redirects followed by one request.
 const MAX_REDIRECTS: usize = 10;
@@ -47,7 +47,7 @@ impl WebClient {
             .redirect(redirect::Policy::custom(move |attempt| {
                 if attempt.previous().len() >= MAX_REDIRECTS {
                     attempt.error("too many redirects")
-                } else if let Err(e) = redirects.check(attempt.url()) {
+                } else if let Err(e) = check(&redirects, attempt.url()) {
                     attempt.error(e)
                 } else {
                     attempt.follow()
@@ -60,57 +60,27 @@ impl WebClient {
 
     /// The response to a GET of `url`.
     pub(crate) async fn get(&self, url: Url) -> Result<Response, String> {
-        self.hosts.check(&url)?;
+        check(&self.hosts, &url)?;
         self.client.get(url).send().await.map_err(|e| chain(&e))
     }
 }
 
-/// The hosts a client may reach, any public one when empty.
-#[derive(Debug)]
-struct Hosts(Vec<String>);
-
-impl Hosts {
-    fn new<S: AsRef<str>>(hosts: &[S]) -> Result<Self, ToolError> {
-        hosts
-            .iter()
-            .map(|host| {
-                let host = host.as_ref();
-                // A host alone, written as in a URL: no scheme, port or path.
-                Url::parse(&format!("http://{host}/"))
-                    .ok()
-                    .and_then(|url| url.host_str().map(str::to_owned))
-                    .filter(|name| name.eq_ignore_ascii_case(host))
-                    .ok_or_else(|| ToolError::new(format!("{host} is not a host name")))
-            })
-            .collect::<Result<_, _>>()
-            .map(Self)
+/// Why `url` may not be asked of a client limited to `hosts`, any
+/// public one when empty, if it may not.
+fn check(hosts: &Hosts, url: &Url) -> Result<(), String> {
+    if !is_web(url) {
+        return Err("only http and https URLs are allowed".into());
     }
-
-    /// Whether `host`, as in a URL, is listed or a subdomain of a listed
-    /// host.
-    fn lists(&self, host: &str) -> bool {
-        self.0.iter().any(|allowed| {
-            host.strip_suffix(allowed.as_str())
-                .is_some_and(|rest| rest.is_empty() || rest.ends_with('.'))
-        })
+    let host = url.host_str().unwrap_or_default();
+    if hosts.lists(host) {
+        return Ok(());
     }
-
-    /// Why `url` may not be asked, if it may not.
-    fn check(&self, url: &Url) -> Result<(), String> {
-        if !is_web(url) {
-            return Err("only http and https URLs are allowed".into());
-        }
-        let host = url.host_str().unwrap_or_default();
-        if self.lists(host) {
-            return Ok(());
-        }
-        if !self.0.is_empty() {
-            return Err(format!("{host} is not an allowed host"));
-        }
-        match host.trim_matches(['[', ']']).parse() {
-            Ok(ip) if !is_public(ip) => Err(format!("{host} is not a public address")),
-            _ => Ok(()),
-        }
+    if !hosts.is_empty() {
+        return Err(format!("{host} is not an allowed host"));
+    }
+    match host.trim_matches(['[', ']']).parse() {
+        Ok(ip) if !is_public(ip) => Err(format!("{host} is not a public address")),
+        _ => Ok(()),
     }
 }
 

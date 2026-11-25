@@ -21,6 +21,7 @@ mod edit;
 mod error;
 mod find;
 mod grep;
+mod hosts;
 mod ls;
 mod path;
 mod protocol;
@@ -53,6 +54,7 @@ pub use find::{FindOutput, FindTool, DEFAULT_FIND_LIMIT, FIND_TOOL, MAX_FIND_BYT
 pub use grep::{
     GrepOutput, GrepTool, DEFAULT_GREP_LIMIT, GREP_TOOL, MAX_GREP_BYTES, MAX_GREP_LINE_CHARS,
 };
+pub use hosts::Hosts;
 pub use ls::{LsOutput, LsTool, DEFAULT_LS_LIMIT, LS_TOOL, MAX_LS_BYTES};
 pub use protocol::{Request, Response, MAX_FRAME_BYTES};
 pub use read::{
