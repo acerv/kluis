@@ -3,7 +3,7 @@
 
 //! Git repositories that commands create in the writable folders.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -38,7 +38,20 @@ pub struct GitGuard {
     denied: Vec<Hidden>,
     /// Mounts the sandbox hides, as on a network filesystem.
     hidden: Vec<PathBuf>,
-    known: HashSet<PathBuf>,
+    /// The repositories found at the start, and which link each was.
+    known: HashMap<PathBuf, Option<LinkId>>,
+}
+
+/// What tells a symbolic link from one made in its place: its inode and
+/// when it last changed, which no program can set back.
+type LinkId = (u64, i64, i64);
+
+/// The [`LinkId`] of `path`, `None` when it is not a symbolic link.
+fn link_id(path: &Path) -> Option<LinkId> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    meta.file_type()
+        .is_symlink()
+        .then(|| (meta.ino(), meta.ctime(), meta.ctime_nsec()))
 }
 
 /// What [`GitGuard::disable_new`] found.
@@ -103,19 +116,29 @@ impl GitGuard {
             writable,
             denied: resolve_denied(&sandbox.deny)?,
             hidden,
-            known: HashSet::new(),
+            known: HashMap::new(),
         };
-        guard.known = guard.scan().complete()?.into_iter().collect();
+        let found = guard.scan().complete()?;
+        guard.known = found
+            .into_iter()
+            .map(|path| {
+                let link = link_id(&path);
+                (path, link)
+            })
+            .collect();
         Ok(guard)
     }
 
     /// Rename each `.git` that appeared since the guard started.
+    ///
+    /// A `.git` that is a symbolic link in a writable folder itself cannot
+    /// be kept read-only: one that is no longer the same link is new too.
     pub fn disable_new(&mut self) -> GitCheck {
         let scan = self.scan();
         let new = scan
             .found
             .into_iter()
-            .filter(|path| !self.known.contains(path))
+            .filter(|path| self.known.get(path) != Some(&link_id(path)))
             .map(|path| {
                 let moved_to = disable(&path);
                 NewRepository { path, moved_to }

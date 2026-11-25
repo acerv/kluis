@@ -143,3 +143,27 @@ fn repository_in_an_unreadable_folder_is_reported() {
     let err = check.unchecked.unwrap();
     assert!(err.message.contains(&*sub.to_string_lossy()), "{err}");
 }
+
+#[test]
+fn repository_put_in_place_of_a_link_is_disabled() {
+    // A link in the writable folder itself cannot be kept read-only.
+    let dir = tempfile::tempdir().unwrap();
+    let (project, real) = (dir.path().join("project"), dir.path().join("real.git"));
+    std::fs::create_dir(&project).unwrap();
+    std::fs::create_dir(&real).unwrap();
+    let git = project.join(".git");
+    std::os::unix::fs::symlink(&real, &git).unwrap();
+    let mut guard = GitGuard::new(&Sandbox::new().allow_write(&project)).unwrap();
+    assert!(disable_new(&mut guard).is_empty());
+
+    std::fs::remove_file(&git).unwrap();
+    repository(&project);
+    let disabled = project.join(".git.kl-disabled");
+    assert_eq!(disable_new(&mut guard), [(git.clone(), disabled.clone())]);
+    assert!(disabled.join("config").exists());
+
+    // So is another link.
+    std::os::unix::fs::symlink(&disabled, &git).unwrap();
+    let again = project.join(".git.kl-disabled-2");
+    assert_eq!(disable_new(&mut guard), [(git, again)]);
+}
