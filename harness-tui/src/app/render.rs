@@ -18,9 +18,43 @@ impl App {
         }
         FIXED_CHROME_ROWS
             + self.live_rows(width)
-            + self.todo_lines().len() as u16
+            + self.panel_lines().len() as u16
             + self.editor_rows(width)
             + self.completion.visible_rows()
+    }
+
+    /// The plan, then the queued messages, between the spinner and the
+    /// editor.
+    fn panel_lines(&self) -> Vec<Line<'static>> {
+        let mut lines = self.todo_lines();
+        lines.extend(self.queued_lines());
+        lines
+    }
+
+    /// The messages waiting to join the conversation, in order, the
+    /// latest ones folded into how many more there are.
+    fn queued_lines(&self) -> Vec<Line<'static>> {
+        if self.queued.is_empty() {
+            return Vec::new();
+        }
+        let mut lines = vec![Line::from(vec![
+            Span::styled("Queued", self.theme.prompt),
+            Span::styled(format!(" {}", self.queued.len()), self.theme.muted),
+        ])];
+        for text in self.queued.iter().take(MAX_QUEUED_ROWS) {
+            lines.push(Line::from(vec![
+                Span::styled("  › ", self.theme.muted),
+                Span::raw(summary(text)),
+            ]));
+        }
+        let hidden = self.queued.len().saturating_sub(MAX_QUEUED_ROWS);
+        if hidden > 0 {
+            lines.push(Line::styled(
+                format!("  … +{hidden} more"),
+                self.theme.muted,
+            ));
+        }
+        lines
     }
 
     /// The plan: a title with the progress, then the items around the one
@@ -155,29 +189,29 @@ impl App {
             return;
         }
         let live_lines = self.wrapped_live_lines(area.width as usize);
-        let todo_lines = self.todo_lines();
+        let panel_lines = self.panel_lines();
         let completion_h = self
             .completion
             .visible_rows()
             .min(area.height.saturating_sub(FIXED_CHROME_ROWS + 2));
-        let todo_h = (todo_lines.len() as u16).min(
+        let panel_h = (panel_lines.len() as u16).min(
             area.height
                 .saturating_sub(FIXED_CHROME_ROWS + 2 + completion_h),
         );
         let max_live = area
             .height
-            .saturating_sub(FIXED_CHROME_ROWS + completion_h + todo_h + 1)
+            .saturating_sub(FIXED_CHROME_ROWS + completion_h + panel_h + 1)
             .clamp(1, MAX_LIVE_ROWS);
         let live_h = (live_lines.len() as u16).clamp(1, max_live);
         let editor_h = area
             .height
-            .saturating_sub(FIXED_CHROME_ROWS + live_h + todo_h + completion_h)
+            .saturating_sub(FIXED_CHROME_ROWS + live_h + panel_h + completion_h)
             .max(1);
-        let [live_area, spinner_area, todo_area, top_rule, editor_area, bottom_rule, completion_area, footer_area] =
+        let [live_area, spinner_area, panel_area, top_rule, editor_area, bottom_rule, completion_area, footer_area] =
             Layout::vertical([
                 Constraint::Length(live_h),
                 Constraint::Length(1),
-                Constraint::Length(todo_h),
+                Constraint::Length(panel_h),
                 Constraint::Length(1),
                 Constraint::Length(editor_h),
                 Constraint::Length(1),
@@ -188,7 +222,7 @@ impl App {
 
         self.render_live(frame, live_area, live_lines);
         self.render_spinner(frame, spinner_area);
-        frame.render_widget(Paragraph::new(todo_lines), todo_area);
+        frame.render_widget(Paragraph::new(panel_lines), panel_area);
         self.render_rule(frame, top_rule);
         self.render_editor(frame, editor_area);
         self.render_rule(frame, bottom_rule);
@@ -228,10 +262,6 @@ impl App {
                     format!("{spin} Thinking…{elapsed}  (Ctrl-O to hide · esc to cancel)")
                 }
                 None => format!("{spin} Working…{elapsed}  (Ctrl-O to hide · esc to cancel)"),
-            };
-            let label = match self.queued.len() {
-                0 => label,
-                n => format!("{label} · {n} queued"),
             };
             Line::styled(label, self.theme.muted)
         } else if let Some(notice) = &self.notice {

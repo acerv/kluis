@@ -2191,7 +2191,6 @@ fn tool_output_keeps_tab_indentation() {
 #[test]
 fn messages_typed_while_busy_are_queued_and_shown_when_they_join() {
     let mut app = App::new("model", status(), Theme::new(false));
-    let mut terminal = inline_terminal(60, 20);
     app.start_prompt("work");
     let _ = app.take_scrollback();
 
@@ -2205,10 +2204,19 @@ fn messages_typed_while_busy_are_queued_and_shown_when_they_join() {
         app.handle_event(key(KeyCode::Enter)),
         Action::Submit("use tabs".into())
     );
+    type_str(&mut app, "and spaces\nnowhere");
+    app.handle_event(key(KeyCode::Enter));
+    let mut terminal = inline_terminal_with(60, 20, app.viewport_height(60));
     terminal.draw(|frame| app.render(frame)).unwrap();
-    assert!(render_text(&terminal).contains("1 queued"));
+    let screen = render_text(&terminal);
+    assert!(screen.contains("Queued 2"), "{screen}");
+    assert!(screen.contains("  › use tabs"), "{screen}");
+    // One line each.
+    assert!(screen.contains("  › and spaces"), "{screen}");
+    assert!(!screen.contains("nowhere"), "{screen}");
 
     app.apply_update(AgentUpdate::Steered("use tabs".into()));
+    app.apply_update(AgentUpdate::Steered("and spaces\nnowhere".into()));
     let rows: Vec<String> = app
         .take_scrollback()
         .iter()
@@ -2216,7 +2224,28 @@ fn messages_typed_while_busy_are_queued_and_shown_when_they_join() {
         .collect();
     assert!(rows.contains(&"> use tabs".to_owned()), "{rows:?}");
     terminal.draw(|frame| app.render(frame)).unwrap();
-    assert!(!render_text(&terminal).contains("queued"));
+    assert!(!render_text(&terminal).contains("Queued"));
+}
+
+#[test]
+fn many_queued_messages_fold_into_a_count() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    app.start_prompt("work");
+    for text in ["one", "two", "three", "four", "five"] {
+        type_str(&mut app, text);
+        app.handle_event(key(KeyCode::Enter));
+    }
+    let mut terminal = inline_terminal_with(60, 20, app.viewport_height(60));
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let screen = render_text(&terminal);
+    assert!(screen.contains("Queued 5"), "{screen}");
+    assert!(screen.contains("  › three"), "{screen}");
+    assert!(!screen.contains("four"), "{screen}");
+    assert!(screen.contains("  … +2 more"), "{screen}");
+
+    app.finish_prompt(Ok(()));
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert!(!render_text(&terminal).contains("Queued"));
 }
 
 #[test]
