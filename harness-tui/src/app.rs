@@ -66,6 +66,9 @@ const MAX_LIVE_ROWS: u16 = 6;
 /// Maximum `todo` items shown above the editor.
 const MAX_TODO_ROWS: usize = 8;
 
+/// Maximum queued messages shown above the editor.
+const MAX_QUEUED_ROWS: usize = 3;
+
 /// Maximum visible rows inside the framed multiline editor before scrolling.
 const MAX_EDITOR_ROWS: u16 = 8;
 
