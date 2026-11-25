@@ -44,6 +44,7 @@ pub async fn run_worker(
             background,
             ..BashContext::default()
         },
+        seen: Arc::default(),
     };
     if let Some(bytes) = max_memory {
         ctx.bash.pre_exec = Some(Arc::new(move || harness_sandbox::limit_memory(bytes)));

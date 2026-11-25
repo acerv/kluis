@@ -4,11 +4,13 @@
 //! Tool definitions and dispatch.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use genai::chat::{Tool, ToolCall, ToolResponse};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::seen::SeenFiles;
 use crate::{
     error_json, BashContext, BashTool, Diff, EditTool, FindTool, GrepTool, Image, LsTool, ReadTool,
     Todo, TodoTool, WriteTool, BASH_TOOL, EDIT_TOOL, FIND_TOOL, GREP_TOOL, LS_TOOL, READ_TOOL,
@@ -35,6 +37,9 @@ pub struct ToolContext {
     /// `.`, the current directory of the process.
     pub cwd: PathBuf,
     pub bash: BashContext,
+    /// The files the model read or wrote: `edit` and `write` refuse one
+    /// that changed since. Clones share it.
+    pub seen: Arc<SeenFiles>,
 }
 
 impl Default for ToolContext {
@@ -42,6 +47,7 @@ impl Default for ToolContext {
         Self {
             cwd: PathBuf::from("."),
             bash: BashContext::default(),
+            seen: Arc::default(),
         }
     }
 }
@@ -118,13 +124,27 @@ async fn dispatch(
     let cwd = &ctx.cwd;
     match name {
         READ_TOOL => {
-            let mut out = ReadTool::deserialize(args)?.run_in(cwd).await?;
+            let tool = ReadTool::deserialize(args)?;
+            let path = tool.path.clone();
+            let mut out = tool.run_in(cwd).await?;
+            ctx.seen.record(cwd, &path);
             let image = out.image.take().map(ToolDetails::Image);
             Ok((serde_json::to_string(&out)?, image))
         }
-        WRITE_TOOL => plain(&WriteTool::deserialize(args)?.run_in(cwd).await?),
+        WRITE_TOOL => {
+            let tool = WriteTool::deserialize(args)?;
+            let path = tool.path.clone();
+            ctx.seen.check(cwd, &path)?;
+            let out = tool.run_in(cwd).await?;
+            ctx.seen.record(cwd, &path);
+            plain(&out)
+        }
         EDIT_TOOL => {
-            let out = EditTool::deserialize(args)?.run_in(cwd).await?;
+            let tool = EditTool::deserialize(args)?;
+            let path = tool.path.clone();
+            ctx.seen.check(cwd, &path)?;
+            let out = tool.run_in(cwd).await?;
+            ctx.seen.record(cwd, &path);
             Ok((
                 serde_json::to_string(&out)?,
                 Some(ToolDetails::Edit(out.diff)),
