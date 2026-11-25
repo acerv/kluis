@@ -589,6 +589,7 @@ fn session_picker_navigation_filtering_and_resume_slash() {
             updated_at: 100,
             message_count: 4,
             first_prompt: Some("fix build error".into()),
+            forked_from: None,
         },
         SessionSummary {
             id: "20261119-110000-bbbb".into(),
@@ -598,6 +599,7 @@ fn session_picker_navigation_filtering_and_resume_slash() {
             updated_at: 50,
             message_count: 1,
             first_prompt: Some("refactor parser".into()),
+            forked_from: Some("20261119-120000-aaaa".into()),
         },
     ];
     app.open_picker(entries.clone(), Some("20261119-120000-aaaa".into()));
@@ -610,6 +612,7 @@ fn session_picker_navigation_filtering_and_resume_slash() {
     assert!(screen.contains("❯ fix build error"), "{screen}");
     assert!(screen.contains("(current)"), "{screen}");
     assert!(screen.contains("refactor parser"), "{screen}");
+    assert!(screen.contains("fork of 20261119-120000"), "{screen}");
     // NO_COLOR theme keeps all picker cells unstyled.
     for cell in term.backend().buffer().content() {
         assert_eq!(cell.fg, Color::Reset, "fg set: {cell:?}");

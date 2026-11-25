@@ -77,7 +77,12 @@ pub struct Args {
     notify: bool,
 
     /// Continue the most recent session for the current folder.
-    #[arg(short = 'c', long = "continue", conflicts_with = "no_session")]
+    #[arg(
+        short = 'c',
+        long = "continue",
+        group = "previous",
+        conflicts_with = "no_session"
+    )]
     continue_session: bool,
 
     /// Resume a previous session (opens a picker when no ID is given).
@@ -87,9 +92,15 @@ pub struct Args {
         value_name = "ID",
         num_args = 0..=1,
         default_missing_value = "",
+        group = "previous",
         conflicts_with_all = ["continue_session", "no_session"]
     )]
     resume_session: Option<String>,
+
+    /// With --continue or --resume, go on in a copy of the session and
+    /// leave the session itself as it is.
+    #[arg(long, requires = "previous")]
+    fork: bool,
 
     /// Do not read or write session files.
     #[arg(long)]
@@ -527,6 +538,7 @@ async fn run(
             model: args.model,
             history,
             picker_entries,
+            fork: args.fork,
             adapters,
             banner,
             git_guard,
@@ -631,7 +643,7 @@ fn open_session(args: &Args, cwd: &Path, default_model: &str) -> Result<Opened, 
         let Some(data) = store.latest()? else {
             return Err(format!("no session to continue for {}", cwd.display()).into());
         };
-        return open_loaded_session(store, data, args.model.as_deref());
+        return open_loaded_session(store, data, args);
     }
     let Some(query) = &args.resume_session else {
         return Ok(new(store, Vec::new()));
@@ -639,7 +651,7 @@ fn open_session(args: &Args, cwd: &Path, default_model: &str) -> Result<Opened, 
     let store = store.ok_or("cannot resume session: HOME is not set")?;
     if !query.is_empty() {
         let data = store.load(query)?;
-        return open_loaded_session(store, data, args.model.as_deref());
+        return open_loaded_session(store, data, args);
     }
     if !args.prompt.is_empty() || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(
@@ -837,16 +849,19 @@ fn exit_code(failed: bool) -> ExitCode {
 fn open_loaded_session(
     store: SessionStore,
     data: SessionData,
-    model_override: Option<&str>,
+    args: &Args,
 ) -> Result<Opened, Error> {
-    let model = model_override.unwrap_or(&data.meta.model).to_owned();
-    let mut writer = store.open(&data);
-    if model_override.is_some() && model != data.meta.model {
-        writer.append_model(&model)?;
+    let model = args.model.as_deref().unwrap_or(&data.meta.model);
+    let writer = store.open(&data);
+    let mut session = Session::new(store, writer, data.usage, data.context);
+    if args.fork {
+        session.fork(model, &data.messages)?;
+    } else if model != data.meta.model {
+        session.record_model(model)?;
     }
     Ok(Opened {
-        model,
-        session: Some(Session::new(store, writer, data.usage, data.context)),
+        model: model.to_owned(),
+        session: Some(session),
         history: data.messages,
         picker_entries: Vec::new(),
     })

@@ -115,6 +115,15 @@ impl Session {
         self.context = data.context;
     }
 
+    /// Go on in a new session holding a copy of this conversation, its
+    /// `history`, leaving the file of this one as it is.
+    pub fn fork(&mut self, model: &str, history: &[ChatMessage]) -> io::Result<()> {
+        self.writer =
+            self.store
+                .fork(self.writer.id(), model, history, self.usage, self.context)?;
+        Ok(())
+    }
+
     /// Start a fresh lazy session file (e.g. after `/new`), leaving the
     /// previous session file intact on disk.
     pub fn rotate(&mut self, model: &str) {

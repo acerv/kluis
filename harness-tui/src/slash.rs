@@ -109,6 +109,20 @@ pub(crate) async fn handle_slash(
             },
         },
         SlashCommand::Export(path) => export(path, agent, &mut ui.app, session.as_deref()),
+        SlashCommand::Fork => match session {
+            None => ui.app.push_info("[sessions disabled (--no-session)]"),
+            Some(_) if agent.history().is_empty() => ui.app.push_info("[nothing to fork]"),
+            Some(session) => {
+                let from = session.short_id().to_owned();
+                match session.fork(agent.model(), agent.history()) {
+                    Ok(()) => ui.app.push_info(format!(
+                        "[forked session {from}: now in {}, {from} stays as it was]",
+                        session.short_id()
+                    )),
+                    Err(err) => ui.app.push_info(format!("[fork error: {err}]")),
+                }
+            }
+        },
         SlashCommand::New => {
             agent.clear();
             ui.app.reset_session();
@@ -151,7 +165,7 @@ pub(crate) async fn handle_slash(
                 .push_info(format!("thinking: {}{takes}", agent.thinking()));
         }
         SlashCommand::Resume(Some(id)) => {
-            resume_session(&id, None, agent, &mut ui.app, session);
+            resume_session(&id, None, false, agent, &mut ui.app, session);
         }
         SlashCommand::Resume(None) => match session {
             None => ui.app.push_info("[sessions disabled (--no-session)]"),
@@ -303,10 +317,12 @@ async fn fetch_models(
     }
 }
 
-/// Switch to the session `id`, with its own model unless `model` is given.
+/// Switch to the session `id`, with its own model unless `model` is given,
+/// or with `fork` to a copy of it.
 pub(crate) fn resume_session(
     id: &str,
     model: Option<String>,
+    fork: bool,
     agent: &mut Agent,
     app: &mut App,
     session: Option<&mut Session>,
@@ -328,17 +344,23 @@ pub(crate) fn resume_session(
     }
     session.activate(&data);
     let model = model.unwrap_or_else(|| data.meta.model.clone());
-    if model != data.meta.model {
-        if let Err(err) = session.record_model(&model) {
-            app.push_info(format!("[session save error: {err}]"));
-        }
+    let saved = if fork {
+        session.fork(&model, &data.messages)
+    } else if model != data.meta.model {
+        session.record_model(&model)
+    } else {
+        Ok(())
+    };
+    if let Err(err) = saved {
+        app.push_info(format!("[session save error: {err}]"));
     }
     agent.set_model(&model);
     app.set_model(&model);
     agent.set_history(data.messages);
     let short = short_id(&data.meta.id);
+    let what = if fork { "forked" } else { "resumed" };
     app.push_info(format!(
-        "[resumed session {short} · {} messages]",
+        "[{what} session {short} · {} messages]",
         agent.history().len()
     ));
     app.replay_history(agent.history());
