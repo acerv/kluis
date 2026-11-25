@@ -378,6 +378,33 @@ async fn call_to_a_worker_that_stopped_reading_can_be_cancelled() {
     // Dropping the executor ends the write with the worker.
 }
 
+#[tokio::test]
+async fn sandbox_executor_refuses_a_call_the_worker_would_not_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let sandbox = Sandbox::with_defaults(&Options {
+        write: vec![dir.path().to_path_buf()],
+        ..Options::default()
+    })
+    .no_network();
+    let exec = Executor::sandbox(SandboxConfig {
+        sandbox,
+        program: PathBuf::from("/bin/bash"),
+        args: vec!["-c".into(), MOCK_WORKER_SCRIPT.into()],
+        cwd: dir.path().to_path_buf(),
+        env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+        hosts: Hosts::default(),
+    })
+    .unwrap();
+
+    // Sent, it would end the worker and what runs in its container.
+    let content = "x".repeat(harness_exec::MAX_FRAME_BYTES);
+    let big = call("b", "write", json!({ "content": content }));
+    let (resp, _) = exec.execute(&big, |_| {}).await;
+    assert!(resp.content.contains("exceeds"), "{}", resp.content);
+    let (resp, _) = exec.execute(&call("p", "ping", json!({})), |_| {}).await;
+    assert_eq!(resp.content, r#"{"pong":true}"#);
+}
+
 #[test]
 fn sandbox_executor_fails_fast_when_worker_exits_before_ready() {
     let dir = tempfile::tempdir().unwrap();
