@@ -319,7 +319,7 @@ impl Collect<'_> {
         if is_match {
             self.matches += 1;
             if self.matches == self.limit {
-                self.window_end = number + self.context;
+                self.window_end = number.saturating_add(self.context);
             }
         }
         true
@@ -395,7 +395,7 @@ impl Merge {
                 if line.is_match {
                     self.matches += 1;
                     if self.matches == self.limit {
-                        window_end = Some(line.number + self.context);
+                        window_end = Some(line.number.saturating_add(self.context));
                     }
                 }
                 continue;

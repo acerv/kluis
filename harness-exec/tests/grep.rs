@@ -150,6 +150,21 @@ async fn limit_keeps_context_of_last_match() {
 }
 
 #[tokio::test]
+async fn limit_with_the_largest_context() {
+    let dir = tempfile::tempdir().unwrap();
+    files(dir.path(), &[("f", "m\nm\nx\n")]);
+
+    let tool = GrepTool {
+        context: Some(usize::MAX),
+        limit: Some(1),
+        ..call("m", dir.path())
+    };
+    let out = tool.run().await.unwrap();
+    assert_eq!(out.output, "f:1: m\nf-2- m\nf-3- x");
+    assert!(out.truncated);
+}
+
+#[tokio::test]
 async fn limit_across_files() {
     let dir = tempfile::tempdir().unwrap();
     files(dir.path(), &[("a", "m\n"), ("b", "m\n")]);
