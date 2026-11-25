@@ -24,6 +24,7 @@ pub mod oauth;
 pub mod private_file;
 mod prompt;
 mod retry;
+mod schema;
 mod search;
 mod session;
 mod skills;
@@ -45,6 +46,7 @@ pub use prompt::{
     find_agents_files, project_agents_file, remember, system_prompt, AGENTS_FILE, MAX_AGENTS_BYTES,
 };
 pub use retry::RetryPolicy;
+pub use schema::OutputSchema;
 pub use session::{
     SessionData, SessionEntry, SessionMeta, SessionStore, SessionSummary, SessionWriter,
     TokenUsage, MAX_SESSION_BYTES,
