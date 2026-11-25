@@ -539,9 +539,11 @@ impl App {
         self.diff.undo_plan().await
     }
 
-    /// Put the files back as they were before the last prompt.
-    pub async fn undo(&self) -> Option<Undo> {
-        self.diff.undo().await
+    /// Put the files back as they were before the last prompt, as the
+    /// plan `shown` says: when it no longer holds, nothing is done, and
+    /// the plan as it is now is returned.
+    pub async fn undo(&self, shown: UndoPlan) -> Option<Result<Undo, UndoPlan>> {
+        self.diff.undo(shown).await
     }
 
     /// The messages and the tag the last checkpoint was taken with.

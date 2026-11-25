@@ -13,7 +13,7 @@ use tokio::time::{interval_at, Instant, MissedTickBehavior};
 
 use crate::session::{PromptSaver, Session};
 use crate::terminal::{EventReader, InlineTerminal};
-use crate::{Action, AgentUpdate, App, PromptStats, Signals};
+use crate::{Action, AgentUpdate, App, PromptStats, Signals, UndoPlan};
 
 /// The terminal, what it shows and what the user does there.
 pub(crate) struct Ui {
@@ -26,8 +26,8 @@ pub(crate) struct Ui {
     pub(crate) signals: Signals,
     /// The user's own `AGENTS.md`.
     pub(crate) agents_file: Option<PathBuf>,
-    /// Whether the question shown asks to confirm `/undo`.
-    pub(crate) undo_asked: bool,
+    /// What the question shown asks to confirm, when it is `/undo`.
+    pub(crate) undo_asked: Option<UndoPlan>,
 }
 
 impl Ui {

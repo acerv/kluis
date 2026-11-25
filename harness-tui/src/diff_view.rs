@@ -107,9 +107,10 @@ impl DiffView {
         self.watcher.as_ref()?.undo_plan().await
     }
 
-    /// Put the files back as they were before the last prompt.
-    pub async fn undo(&self) -> Option<Undo> {
-        let undo = self.watcher.as_ref()?.undo().await;
+    /// Put the files back as they were before the last prompt, as the
+    /// plan `shown` says: see [`Watcher::undo`].
+    pub async fn undo(&self, shown: UndoPlan) -> Option<Result<Undo, UndoPlan>> {
+        let undo = self.watcher.as_ref()?.undo(shown).await;
         self.refresh();
         undo
     }

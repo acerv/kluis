@@ -87,12 +87,12 @@ fn undo_lines(plan: &UndoPlan) -> Vec<String> {
     changed.chain(kept).collect()
 }
 
-/// Show what `/undo` would do and ask to confirm it. Returns whether the
-/// question was asked.
-async fn ask_undo(app: &mut App, agent: &Agent) -> bool {
+/// Show what `/undo` would do and ask to confirm it. Returns the plan
+/// shown, when the question was asked.
+async fn ask_undo(app: &mut App, agent: &Agent) -> Option<UndoPlan> {
     let Some(plan) = undo_plan(app, agent).await else {
         app.push_info("[nothing to undo]");
-        return false;
+        return None;
     };
     let question = if plan.files.is_empty() && plan.kept.is_empty() {
         "The last prompt changed no file. Drop it from the conversation?".to_owned()
@@ -106,29 +106,39 @@ async fn ask_undo(app: &mut App, agent: &Agent) -> bool {
     };
     app.push_info(&question);
     app.ask(&question, &[UNDO.to_owned(), "Cancel".to_owned()]);
-    true
+    Some(plan)
 }
 
-/// With the `answer` that confirms it, put the files back as they were
-/// before the last prompt, and drop the prompt and what it led to.
+/// With the `answer` that confirms the plan `shown`, put the files back
+/// as they were before the last prompt, and drop the prompt and what it
+/// led to. When the files changed since, so that the plan is another one,
+/// it is shown and asked about again: returns the plan then shown.
 pub(crate) async fn undo(
     app: &mut App,
     answer: &str,
+    shown: UndoPlan,
     agent: &mut Agent,
     session: Option<&mut Session>,
-) {
+) -> Option<UndoPlan> {
     if answer != UNDO {
         app.push_info("[undo cancelled]");
-        return;
+        return None;
     }
     // Looked up again: only a checkpoint of this conversation is used.
     if undo_plan(app, agent).await.is_none() {
         app.push_info("[nothing to undo]");
-        return;
+        return None;
     }
-    let Some(Undo { plan, failed }) = app.undo().await else {
-        app.push_info("[nothing to undo]");
-        return;
+    let Undo { plan, failed } = match app.undo(shown).await {
+        Some(Ok(undo)) => undo,
+        Some(Err(_)) => {
+            app.push_info("[the files changed since: nothing was undone]");
+            return ask_undo(app, agent).await;
+        }
+        None => {
+            app.push_info("[nothing to undo]");
+            return None;
+        }
     };
     let mut history = agent.history().to_vec();
     history.truncate(plan.messages);
@@ -146,6 +156,7 @@ pub(crate) async fn undo(
     app.push_info(format!(
         "[undone: {files} {unit} put back, last prompt dropped]"
     ));
+    None
 }
 
 /// Write the conversation as Markdown to `path`, by default to a file of

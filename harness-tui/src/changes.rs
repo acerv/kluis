@@ -288,8 +288,9 @@ enum Request {
     },
     /// What putting the files back as at the last checkpoint would do.
     Plan(oneshot::Sender<Option<UndoPlan>>),
-    /// Put them back, and forget that checkpoint.
-    Undo(oneshot::Sender<Option<Undo>>),
+    /// Put them back, and forget that checkpoint, if that still does what
+    /// this plan says.
+    Undo(UndoPlan, oneshot::Sender<Option<Result<Undo, UndoPlan>>>),
     /// The messages and the tag of the last checkpoint.
     Last(oneshot::Sender<Option<(usize, u64)>>),
     /// Forget the last checkpoint, or all of them.
@@ -347,10 +348,12 @@ impl Watcher {
     }
 
     /// Put the files back as they were at the last checkpoint, which is
-    /// forgotten. `None` without a checkpoint.
-    pub async fn undo(&self) -> Option<Undo> {
+    /// forgotten. `None` without a checkpoint. When the files changed
+    /// since the plan `shown` was made, nothing is done, and the plan as
+    /// it is now is returned.
+    pub async fn undo(&self, shown: UndoPlan) -> Option<Result<Undo, UndoPlan>> {
         let (reply, wait) = oneshot::channel();
-        let _ = self.requests.send(Request::Undo(reply));
+        let _ = self.requests.send(Request::Undo(shown, reply));
         wait.await.ok().flatten()
     }
 
@@ -401,8 +404,8 @@ fn serve(
                 Request::Plan(reply) => {
                     let _ = reply.send(checkpoints.plan(&snapshot));
                 }
-                Request::Undo(reply) => {
-                    let _ = reply.send(checkpoints.undo(&snapshot));
+                Request::Undo(shown, reply) => {
+                    let _ = reply.send(checkpoints.undo(&snapshot, &shown));
                 }
                 Request::Last(reply) => {
                     let _ = reply.send(checkpoints.last());
