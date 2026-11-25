@@ -31,6 +31,18 @@ container that shows only the folders you configure.
 
 See [Configuration](configuration.md) for the settings that control this.
 
+To check the result, `kl --sandbox-info` prints the sandbox a run with the
+same options and config file would get, then exits: the paths commands can
+change, the ones they can only read, the ones hidden from them, the
+network, the limits, the environment variables passed and the web tools
+offered, followed by the warnings a run would start with. The paths are the
+mounts of the container itself, in the order they are made.
+
+```sh
+kl --sandbox-info
+kl --sandbox-info --strict --allow-read ~/.cargo
+```
+
 ## Home folder
 
 Commands see `$HOME` at the usual path, but it starts empty and nothing

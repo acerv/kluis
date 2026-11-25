@@ -92,6 +92,7 @@ inline code, keep a plain style. With `NO_COLOR`, all of it stays plain.
 | `--no-session`        | Do not read or write session files                 |
 | `--strict`            | Make the current folder read-only                  |
 | `--no-sandbox`        | Run tools on the host                              |
+| `--sandbox-info`      | Print what the sandbox lets commands see and reach, then exit |
 | `--login`, `--logout` | Log in to or out of a subscription (`anthropic`)   |
 
 ## Environment variables
