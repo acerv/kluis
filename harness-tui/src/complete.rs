@@ -98,6 +98,11 @@ const COMMANDS: &[CommandSpec] = &[
         description: "go on in a copy of this session",
     },
     CommandSpec {
+        name: "/remember",
+        arg: Some("<text>"),
+        description: "add an instruction to AGENTS.md (--global: yours)",
+    },
+    CommandSpec {
         name: "/help",
         arg: None,
         description: "show commands and keybindings",

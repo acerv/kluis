@@ -539,6 +539,7 @@ async fn run(
             history,
             picker_entries,
             fork: args.fork,
+            agents_file: config::agents_path(),
             adapters,
             banner,
             git_guard,

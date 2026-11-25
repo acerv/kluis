@@ -3,6 +3,7 @@
 
 //! Running the agent while the terminal stays live.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use harness_core::tools::{Question, BASH_TOOL};
@@ -23,6 +24,8 @@ pub(crate) struct Ui {
     pub(crate) questions: mpsc::UnboundedReceiver<Question>,
     /// What asks to quit from outside.
     pub(crate) signals: Signals,
+    /// The user's own `AGENTS.md`.
+    pub(crate) agents_file: Option<PathBuf>,
 }
 
 impl Ui {

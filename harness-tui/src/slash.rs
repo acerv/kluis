@@ -5,7 +5,7 @@
 
 use crossterm::event::{Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers};
 use genai::adapter::AdapterKind;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use harness_core::{export, Agent, Error, ModelInfo, ModelList, Thinking};
 
@@ -49,6 +49,45 @@ fn export(path: Option<String>, agent: &Agent, app: &mut App, session: Option<&S
     match export::write_markdown(&path, agent.history()) {
         Ok(()) => app.push_info(format!("[exported to {}]", path.display())),
         Err(err) => app.push_info(format!("[export error: {}: {err}]", path.display())),
+    }
+}
+
+/// Add the instruction `arg` to the `AGENTS.md` of the project, or to the
+/// user's own (`own`) when it starts with `--global`, and to this
+/// conversation.
+fn remember(arg: Option<String>, own: Option<&Path>, agent: &mut Agent, app: &mut App) {
+    let arg = arg.unwrap_or_default();
+    let (global, text) = match arg.strip_prefix("--global") {
+        Some(text) if text.is_empty() || text.starts_with(char::is_whitespace) => (true, text),
+        _ => (false, arg.as_str()),
+    };
+    if text.trim().is_empty() {
+        app.push_info("usage: /remember [--global] <text>");
+        return;
+    }
+    let path = if global {
+        // Only the user writes there: their symlink is followed.
+        own.map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned()))
+    } else {
+        std::env::current_dir()
+            .ok()
+            .map(|cwd| harness_core::project_agents_file(&cwd))
+    };
+    let Some(path) = path else {
+        app.push_info("[remember error: no folder to write AGENTS.md in]");
+        return;
+    };
+    let saved = match path.parent() {
+        Some(dir) if global => harness_core::private_file::create_dir(dir),
+        _ => Ok(()),
+    }
+    .and_then(|()| harness_core::remember(&path, text));
+    match saved {
+        Ok(line) => {
+            agent.add_instruction(&line);
+            app.push_info(format!("[added to {}]", path.display()));
+        }
+        Err(err) => app.push_info(format!("[remember error: {}: {err}]", path.display())),
     }
 }
 
@@ -109,6 +148,7 @@ pub(crate) async fn handle_slash(
             },
         },
         SlashCommand::Export(path) => export(path, agent, &mut ui.app, session.as_deref()),
+        SlashCommand::Remember(arg) => remember(arg, ui.agents_file.as_deref(), agent, &mut ui.app),
         SlashCommand::Fork => match session {
             None => ui.app.push_info("[sessions disabled (--no-session)]"),
             Some(_) if agent.history().is_empty() => ui.app.push_info("[nothing to fork]"),
