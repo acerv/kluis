@@ -12,7 +12,7 @@
 - Skills: folders with a `SKILL.md` in `~/.kluis/skills`. Only each
   skill's name and description are in the system prompt; the model loads
   the rest with the `skill` tool when a task needs it. See [Skills](#skills).
-- Bundled skills, such as `mentor` and `study`, installed with
+- Bundled skills, such as `mentor`, `study` and `init`, installed with
   `kl --install-skills`.
   See [Bundled skills](#bundled-skills).
 - Live model discovery across configured providers, with a per-provider
@@ -204,14 +204,18 @@ They include:
   say "show me".
 - `study`, which teaches a topic or a codebase one step at a time,
   checking that you understood before moving on.
+- `init`, which reads the project and writes its `AGENTS.md`: how to
+  build, test and format it, where the code lives and the conventions it
+  follows. It updates the file when there is one.
 
 ```text
+> /init
 > /mentor I want to add a cache to the web_fetch tool
 > /study how does the sandbox work in this repo?
 ```
 
 A skill's instructions stay in the conversation once loaded. To also keep
-the model from changing files, use these two in plan mode (Shift+Tab).
+the model from changing files, use `mentor` and `study` in plan mode (Shift+Tab).
 
 To bundle another skill, add its folder, holding a `SKILL.md` whose name is
 the folder's, to `skills/`: the build picks up every folder there.
