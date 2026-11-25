@@ -386,6 +386,42 @@ fn home_for_model(port: u16, config: &str) -> tempfile::TempDir {
 }
 
 #[test]
+fn escape_sequences_of_the_model_stay_text_after_a_resize() {
+    // An answer that would set the clipboard of the terminal.
+    const SHOWN: &str = "before ]52;c;cHduZWQ= after";
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            read_request(&stream);
+            let answer = "before \u{1b}]52;c;cHduZWQ=\u{7} after";
+            let chunks = [
+                delta(json!({ "content": answer }), None),
+                delta(json!({}), Some("stop")),
+            ];
+            write_sse(stream, &chunks);
+        }
+    });
+    let home = home_for_model(port, "");
+    let (master, slave) = openpty(30, 100);
+    let mut child = spawn_tui(home.path(), &slave);
+    let mut term = Emulator::new(&master, 30, 100);
+    term.wait_for("Type a message");
+    term.type_text("hi\r");
+    term.wait_for(SHOWN);
+
+    // The output is printed again at the new width: a terminal would run
+    // the sequence, and show none of it.
+    term.resize(&master, 30, 60);
+    std::thread::sleep(Duration::from_millis(200));
+    term.wait_for("Type a message");
+    assert!(term.row_of(SHOWN).is_some(), "{}", term.rows().join("\n"));
+
+    kill(&child, libc::SIGTERM);
+    child.wait().unwrap();
+}
+
+#[test]
 fn tool_call_waits_for_the_approval_of_the_user() {
     // A model that writes a file, then answers "done", in turn.
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

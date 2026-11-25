@@ -442,17 +442,18 @@ fn last_rows(lines: &VecDeque<Line<'static>>, width: u16, height: u16) -> Vec<Li
 }
 
 /// Print `lines` at the cursor, wrapped to `width`, as plain terminal
-/// output: much less to write than drawing them cell by cell.
+/// output, without control characters: much less to write than drawing
+/// them cell by cell.
 fn print_lines(lines: &[Line<'static>], width: u16) -> io::Result<()> {
     let mut out = io::BufWriter::new(io::stdout().lock());
     for line in lines {
         for row in wrap_lines(std::slice::from_ref(line), usize::from(width.max(1))) {
             for span in &row.spans {
                 let style = row.style.patch(span.style).into_crossterm();
-                queue!(
-                    out,
-                    PrintStyledContent(StyledContent::new(style, &span.content))
-                )?;
+                // As a drawn cell holds none: text from the model or from
+                // commands could otherwise send escape sequences.
+                let text = span.content.replace(char::is_control, "");
+                queue!(out, PrintStyledContent(StyledContent::new(style, text)))?;
             }
             queue!(out, Print("\r\n"))?;
         }
