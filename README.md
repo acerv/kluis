@@ -66,6 +66,7 @@ kl --install-skills              # install the skills that come with kl
 kl --resume                      # continue a previous session
 kl --resume --fork               # try another direction in a copy of it
 kl --strict                      # make the project read-only
+kl --sandbox-info                # show what commands can see and reach
 kl --no-sandbox                  # run tools on the host
 ```
 
