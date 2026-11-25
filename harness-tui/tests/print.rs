@@ -6,13 +6,38 @@
 mod common;
 
 use std::io::{BufRead, BufReader, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::process::{Output, Stdio};
 use std::thread::{self, JoinHandle};
 
 use common::{delta, kill, kl, read_request, stderr, tempdir, write_sse};
 use serde_json::{json, Value};
 use tempfile::TempDir;
+
+/// The last user message of `request`.
+fn last_user(request: &Value) -> String {
+    request["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|m| m["role"] == "user")
+        .map(|m| m["content"].as_str().unwrap_or_default().to_owned())
+        .unwrap_or_default()
+}
+
+/// Answer a request with the streamed `text`.
+fn write_answer(stream: TcpStream, text: &str) {
+    let usage = json!({ "prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15 });
+    let mut chunks = [
+        delta(json!({ "content": text }), None),
+        delta(json!({}), Some("stop")),
+    ];
+    for chunk in &mut chunks {
+        chunk["usage"] = usage.clone();
+    }
+    write_sse(stream, &chunks);
+}
 
 /// Start a server that answers one request with `status`, and with a
 /// streamed "done" when it is 200. It returns the user message it got.
@@ -21,25 +46,9 @@ fn start_mock_llm(status: u16) -> (u16, JoinHandle<String>) {
     let port = listener.local_addr().unwrap().port();
     let handle = thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
-        let request = read_request(&stream);
-        let user = request["messages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .rev()
-            .find(|m| m["role"] == "user")
-            .map(|m| m["content"].as_str().unwrap_or_default().to_owned())
-            .unwrap_or_default();
+        let user = last_user(&read_request(&stream));
         if status == 200 {
-            let usage = json!({ "prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15 });
-            let mut chunks = [
-                delta(json!({ "content": "done" }), None),
-                delta(json!({}), Some("stop")),
-            ];
-            for chunk in &mut chunks {
-                chunk["usage"] = usage.clone();
-            }
-            write_sse(stream, &chunks);
+            write_answer(stream, "done");
         } else {
             let body = r#"{"error":{"message":"bad key"}}"#;
             let reply = format!(
@@ -51,6 +60,24 @@ fn start_mock_llm(status: u16) -> (u16, JoinHandle<String>) {
             stream.flush().unwrap();
         }
         user
+    });
+    (port, handle)
+}
+
+/// Start a server that answers a request with each of `answers`. It
+/// returns the user messages it got.
+fn start_mock_answers(answers: &[&str]) -> (u16, JoinHandle<Vec<String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let answers: Vec<_> = answers.iter().map(|&answer| answer.to_owned()).collect();
+    let handle = thread::spawn(move || {
+        let mut users = Vec::new();
+        for answer in &answers {
+            let (stream, _) = listener.accept().unwrap();
+            users.push(last_user(&read_request(&stream)));
+            write_answer(stream, answer);
+        }
+        users
     });
     (port, handle)
 }
@@ -85,6 +112,11 @@ fn run_kl_at(
     status: u16,
 ) -> (Output, JoinHandle<String>) {
     let (port, server) = start_mock_llm(status);
+    (spawn_kl(home, cwd, args, stdin, port), server)
+}
+
+/// Run `kl` with `args` and `stdin` against the server at `port`.
+fn spawn_kl(home: &TempDir, cwd: &TempDir, args: &[&str], stdin: &str, port: u16) -> Output {
     let mut child = kl(home.path())
         .args(["--model", "genai_1::test-model"])
         .args(args)
@@ -102,8 +134,7 @@ fn run_kl_at(
         .unwrap()
         .write_all(stdin.as_bytes())
         .unwrap();
-    let out = child.wait_with_output().unwrap();
-    (out, server)
+    child.wait_with_output().unwrap()
 }
 
 #[test]
@@ -280,4 +311,86 @@ fn fork_needs_a_session_to_copy() {
     assert_eq!(out.status.code(), Some(2), "{out:?}");
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("--fork"), "{err}");
+}
+
+const SCHEMA: &str = r#"{
+    "type": "object",
+    "properties": { "count": { "type": "integer" } },
+    "required": ["count"]
+}"#;
+
+/// Run `kl` with `args` and a schema file against a server that gives
+/// `answers`; return its output and the user messages the server got.
+fn run_with_schema(args: &[&str], answers: &[&str]) -> (Output, Vec<String>) {
+    let (home, cwd) = (tempdir(), tempdir());
+    let schema = cwd.path().join("schema.json");
+    std::fs::write(&schema, SCHEMA).unwrap();
+    let mut all = vec!["--no-session", "--output-schema", schema.to_str().unwrap()];
+    all.extend(args);
+    let (port, server) = start_mock_answers(answers);
+    let out = spawn_kl(&home, &cwd, &all, "", port);
+    (out, server.join().unwrap())
+}
+
+#[test]
+fn schema_prints_the_matching_answer_alone() {
+    let (out, users) = run_with_schema(&["count"], &["```json\n{ \"count\": 3 }\n```"]);
+
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(common::stdout(&out), "{\"count\":3}\n");
+    let [prompt] = users.as_slice() else {
+        panic!("{users:?}");
+    };
+    assert!(prompt.starts_with("count\n\n"), "{prompt}");
+    assert!(prompt.contains(r#""required":["count"]"#), "{prompt}");
+}
+
+#[test]
+fn schema_asks_once_more_for_a_matching_answer() {
+    let args = ["--output-format", "json", "count"];
+    let (out, users) = run_with_schema(&args, &["three", r#"{"count":3}"#]);
+
+    assert!(out.status.success(), "{out:?}");
+    assert!(users[1].contains("not JSON"), "{users:?}");
+    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(result["structured"], json!({ "count": 3 }));
+    assert_eq!(result["result"], r#"{"count":3}"#);
+    // Both answers count.
+    assert_eq!(result["usage"]["output"], 6);
+}
+
+#[test]
+fn schema_fails_an_answer_that_never_matches() {
+    let args = ["--output-format", "stream", "count"];
+    let (out, users) = run_with_schema(&args, &[r#"{"count":"3"}"#, "{}"]);
+
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(users[1].contains("$.count: expected"), "{users:?}");
+    let lines = json_lines(&out.stdout);
+    let last = lines.last().unwrap();
+    assert_eq!(last["type"], "error");
+    assert!(
+        last["error"]
+            .as_str()
+            .unwrap()
+            .contains("`count` is missing"),
+        "{last}"
+    );
+}
+
+#[test]
+fn schema_with_an_unknown_keyword_is_refused() {
+    let (home, cwd) = (tempdir(), tempdir());
+    let schema = cwd.path().join("schema.json");
+    std::fs::write(&schema, r#"{ "type": "string", "pattern": "^a" }"#).unwrap();
+    let out = kl(home.path())
+        .args(["--output-schema", schema.to_str().unwrap(), "hello"])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(
+        stderr(&out).contains("`pattern` is not supported"),
+        "{out:?}"
+    );
 }
