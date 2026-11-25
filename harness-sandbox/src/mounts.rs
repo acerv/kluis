@@ -64,14 +64,6 @@ impl Sandbox {
         }
         ro_paths.retain(|p| !covered_by_denied(p, &denied));
 
-        // A path kept read-only also overrides writable mounts at or below it.
-        shown.retain(|m| {
-            !m.writable
-                || !ro_paths
-                    .iter()
-                    .any(|ro| m.path.starts_with(ro) || m.canon.starts_with(ro))
-        });
-
         let mut masks = map_denied(&shown, &denied);
         ro_paths.retain(|ro| !masks.iter().any(|m| ro.starts_with(&m.path)));
 
@@ -82,6 +74,15 @@ impl Sandbox {
         // unless allowed themselves.
         let remote = remote_mounts(&shown, &allowed, &masks, &mountinfo)?;
         masks.extend(remote);
+
+        // A path kept read-only also overrides writable mounts at or below
+        // it. Only now: what they show still needs its masks.
+        shown.retain(|m| {
+            !m.writable
+                || !ro_paths
+                    .iter()
+                    .any(|ro| m.path.starts_with(ro) || m.canon.starts_with(ro))
+        });
 
         ordered(shown, ro_paths, masks)
             .into_iter()
