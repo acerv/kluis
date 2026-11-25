@@ -1056,6 +1056,16 @@ fn ctrl_v_pastes_an_image_the_prompt_names() {
 }
 
 #[test]
+fn undo_command_is_a_slash_command() {
+    let mut app = App::new("deepseek-chat", status(), Theme::new(false));
+    app.handle_event(Event::Paste("/undo".into()));
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Slash(SlashCommand::Undo)
+    );
+}
+
+#[test]
 fn remember_command_takes_the_text() {
     let mut app = App::new("deepseek-chat", status(), Theme::new(false));
     app.handle_event(Event::Paste("/remember --global be brief".into()));

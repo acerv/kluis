@@ -93,6 +93,11 @@ const COMMANDS: &[CommandSpec] = &[
         description: "write the conversation as Markdown",
     },
     CommandSpec {
+        name: "/undo",
+        arg: None,
+        description: "put the files back and drop the last prompt",
+    },
+    CommandSpec {
         name: "/fork",
         arg: None,
         description: "go on in a copy of this session",

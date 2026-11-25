@@ -12,11 +12,12 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use common::{
-    kill, line_count, openpty, resize, spawn_sandboxed_tui_in, spawn_tui, spawn_tui_in,
-    spawn_tui_with, tempdir, wait_until,
+    delta, kill, line_count, openpty, read_request, resize, spawn_sandboxed_tui_in, spawn_tui,
+    spawn_tui_in, spawn_tui_with, tempdir, wait_until, write_sse,
 };
 use genai::chat::ChatMessage;
 use harness_core::SessionStore;
+use serde_json::json;
 
 /// Cursor position query sent by crossterm.
 const DSR: &[u8] = b"\x1b[6n";
@@ -343,6 +344,97 @@ fn diff_panel_shows_changes_and_keeps_the_output() {
     term.wait_for("M a.txt");
     term.type_text("/diff\r");
     check_output(&mut term);
+
+    kill(&child, libc::SIGTERM);
+    child.wait().unwrap();
+}
+
+#[test]
+fn undo_puts_files_back_and_drops_the_prompt() {
+    use std::os::unix::fs::PermissionsExt;
+
+    const PROMPT: &str = "Type a message";
+    // A model that answers "done" to every request.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            read_request(&stream);
+            let chunks = [
+                delta(json!({ "content": "done" }), None),
+                delta(json!({}), Some("stop")),
+            ];
+            write_sse(stream, &chunks);
+        }
+    });
+    let home = tempfile::tempdir().unwrap();
+    let kluis = home.path().join(".kluis");
+    std::fs::create_dir_all(&kluis).unwrap();
+    std::fs::write(
+        kluis.join("config.toml"),
+        "[generic]\nmodel = \"genai_1::test-model\"\n",
+    )
+    .unwrap();
+    let auth = kluis.join("auth.toml");
+    let endpoint = format!("http://127.0.0.1:{port}/v1/");
+    std::fs::write(
+        &auth,
+        format!("[genai_1]\nendpoint = \"{endpoint}\"\napi_key = \"test-key\"\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&auth, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let file = project.path().join("a.txt");
+    std::fs::write(&file, "one\n").unwrap();
+
+    let (master, slave) = openpty(40, 100);
+    let mut child = spawn_tui_in(home.path(), project.path(), &slave);
+    let mut term = Emulator::new(&master, 40, 100);
+    term.wait_for(PROMPT);
+    term.type_text("/undo\r");
+    term.wait_for("[nothing to undo]");
+
+    term.type_text("first prompt\r");
+    term.wait_for("done");
+    term.wait_for(PROMPT);
+    // What the tools of the model would do during the second prompt.
+    term.type_text("second prompt\r");
+    term.wait_until("the second answer", || {
+        let store = SessionStore::new(home.path().join(".kluis/sessions"), project.path());
+        store
+            .latest()
+            .ok()
+            .flatten()
+            .is_some_and(|session| session.messages.len() == 4)
+    });
+    std::fs::write(&file, "one\ntwo\n").unwrap();
+    std::fs::write(project.path().join("new.txt"), "new\n").unwrap();
+
+    // Cancelled first: nothing changes.
+    term.type_text("/undo\r");
+    term.wait_for("restore a.txt");
+    term.wait_for("delete  new.txt");
+    term.type_text("\x1b");
+    term.wait_for(PROMPT);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "one\ntwo\n");
+
+    term.type_text("/undo\r");
+    term.wait_for("Put these files back");
+    term.type_text("\r");
+    term.wait_for("[undone: 2 files put back, last prompt dropped]");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "one\n");
+    assert!(!project.path().join("new.txt").exists());
+    let store = SessionStore::new(home.path().join(".kluis/sessions"), project.path());
+    let session = store.latest().unwrap().unwrap();
+    assert_eq!(session.messages.len(), 2, "{:?}", session.messages);
+
+    // The first prompt changed no file: only the conversation goes back.
+    term.type_text("/undo\r");
+    term.wait_for("changed no file");
+    term.type_text("\r");
+    term.wait_for("[undone: 0 files put back, last prompt dropped]");
+    term.type_text("/undo\r");
+    term.wait_for("[nothing to undo]");
 
     kill(&child, libc::SIGTERM);
     child.wait().unwrap();

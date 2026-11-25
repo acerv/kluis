@@ -22,7 +22,7 @@ use serde_json::Value;
 use tui_markdown::CodeTheme;
 use unicode_width::UnicodeWidthStr;
 
-use crate::changes::ChangesUpdate;
+use crate::changes::{ChangesUpdate, Undo, UndoPlan};
 use crate::complete::CommandCompletion;
 use crate::diff_view::DiffView;
 use crate::input::Input;
@@ -125,6 +125,7 @@ pub enum SlashCommand {
     Copy,
     Export(Option<String>),
     Fork,
+    Undo,
     Remember(Option<String>),
     Diff,
     New,
@@ -520,6 +521,34 @@ impl App {
                 "/diff needs a terminal of {MIN_SPLIT_WIDTH} columns at least"
             ));
         }
+    }
+
+    /// Remember the files of the project as they are, before a prompt
+    /// joins a conversation of `messages` messages, the last one told by
+    /// `tag`, for `/undo`.
+    pub async fn checkpoint(&self, messages: usize, tag: u64) {
+        self.diff.checkpoint(messages, tag).await;
+    }
+
+    /// What [`Self::undo`] would do, `None` when there is nothing to undo.
+    pub async fn undo_plan(&self) -> Option<UndoPlan> {
+        self.diff.undo_plan().await
+    }
+
+    /// Put the files back as they were before the last prompt.
+    pub async fn undo(&self) -> Option<Undo> {
+        self.diff.undo().await
+    }
+
+    /// The messages and the tag the last checkpoint was taken with.
+    pub async fn last_checkpoint(&self) -> Option<(usize, u64)> {
+        self.diff.last_checkpoint().await
+    }
+
+    /// Forget the files as they were before the last prompt, which is
+    /// gone, or before `all` of them, when the conversation is another one.
+    pub fn forget_checkpoints(&self, all: bool) {
+        self.diff.forget_checkpoints(all);
     }
 
     /// What the watcher of the changes found next; never, without one.
@@ -1102,6 +1131,7 @@ fn parse_slash(input: &str) -> Option<Result<SlashCommand, String>> {
         "/resume" => Ok(SlashCommand::Resume(arg)),
         "/compact" => Ok(SlashCommand::Compact(arg)),
         "/retry" => Ok(SlashCommand::Retry),
+        "/undo" => Ok(SlashCommand::Undo),
         "/status" => Ok(SlashCommand::Status),
         "/output" => Ok(SlashCommand::Output),
         "/copy" => Ok(SlashCommand::Copy),

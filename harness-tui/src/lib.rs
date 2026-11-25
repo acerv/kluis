@@ -58,7 +58,10 @@ pub use terminal::flush_scrollback;
 pub use tui_markdown::CodeTheme;
 
 use drive::{handle_event_batch, restore_queued, run_shell, run_turn, Ui};
-use slash::{check_thinking, handle_slash, resume_session, switch_model, ModelCatalog};
+use slash::{
+    check_thinking, handle_slash, history_tag, resume_session, switch_model, sync_checkpoints,
+    undo, ModelCatalog,
+};
 use terminal::{EventReader, InlineTerminal};
 
 /// Session details displayed in the status bar.
@@ -198,6 +201,7 @@ pub async fn run(
         questions,
         signals: signals.clone(),
         agents_file,
+        undo_asked: false,
     };
     ui.draw()?;
 
@@ -242,6 +246,15 @@ pub async fn run(
             _ => std::mem::take(&mut startup_fork),
         };
         match action {
+            Action::Answer(answer) if ui.undo_asked => {
+                ui.undo_asked = false;
+                undo(&mut ui.app, &answer, &mut agent, session.as_mut()).await;
+                ui.draw()?;
+            }
+            Action::Cancel if ui.undo_asked => {
+                ui.undo_asked = false;
+                ui.draw()?;
+            }
             Action::None | Action::Cancel | Action::Answer(_) => {}
             Action::Redraw => ui.draw()?,
             Action::Quit => break,
@@ -302,9 +315,13 @@ pub async fn run(
                 for (name, image) in ui.app.take_images(&prompt) {
                     agent.attach_image(name, image);
                 }
+                // What `/undo` goes back to.
+                let history = agent.history();
+                ui.app.checkpoint(history.len(), history_tag(history)).await;
                 ui.app.start_prompt(&prompt);
                 ui.draw()?;
                 let turn = run_turn(&mut ui, &mut agent, session.as_mut(), &prompt).await?;
+                sync_checkpoints(&ui.app, &agent).await;
                 let notices =
                     after_commands(&agent, git_guard.as_mut(), turn.changed_files, !turn.quit)
                         .await;
