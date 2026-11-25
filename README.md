@@ -60,6 +60,7 @@ kl "fix the typo in README.md"   # one task, one command
 git diff | kl -p "review this"   # stdin appended to the prompt
 kl --output-format json "list the TODOs"  # result, usage and session as JSON
 kl --output-format stream "fix the tests" # one JSON line per event, then the result
+kl --output-schema todo.json "list the TODOs"  # a JSON value matching a JSON Schema
 kl                               # interactive chat, Ctrl-D to quit
 kl --login anthropic             # use a Claude subscription instead
 kl --install-skills              # install the skills that come with kl

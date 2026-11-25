@@ -148,6 +148,16 @@
   `compacted`, `compact_failed` and `pruned`. The last line
   is the `json` object, with a type of `result` or `error`.
 - Both imply `-p`.
+- `--output-schema FILE` makes the answer a JSON value matching the JSON
+  Schema in `FILE`, and implies `-p` too. The schema is added to the prompt
+  and the answer is checked: kl asks once more with what is wrong, then
+  fails with exit code 1. As `text` the value is printed alone; `json` and
+  the last line of `stream` carry it as `structured` next to `result`.
+  The keywords checked are `type`, `enum`, `const`, `properties`,
+  `required`, `additionalProperties`, `items`, `minItems`, `maxItems`,
+  `minimum`, `maximum`, `minLength`, `maxLength`, `anyOf`, `oneOf` and
+  `allOf`. A schema using any other, such as `$ref` or `pattern`, is
+  refused, so that no answer passes a rule nobody checked.
 
 ## Undo
 
