@@ -593,3 +593,29 @@ fn fork_copies_the_conversation_to_a_new_session() {
     assert_eq!(loaded.meta.forked_from.as_deref(), Some(original.id()));
     assert_eq!(loaded.messages.len(), 1);
 }
+
+#[test]
+fn latest_skips_a_file_that_does_not_load() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(root.path(), cwd.path());
+    let broken = store.project_dir().join("broken.jsonl");
+
+    // Alone, its error shows.
+    store.ensure_dir().unwrap();
+    std::fs::write(&broken, "not json\n").unwrap();
+    let err = store.latest().unwrap_err().to_string();
+    assert!(err.contains("invalid session header"), "{err}");
+
+    let mut writer = store.create("model-one");
+    writer
+        .append_messages(&[ChatMessage::user("hello")])
+        .unwrap();
+    // The most recent of the two.
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+    let file = OpenOptions::new().write(true).open(&broken).unwrap();
+    file.set_modified(later).unwrap();
+
+    let loaded = store.latest().unwrap().expect("the session that loads");
+    assert_eq!(loaded.meta.id, writer.id());
+}

@@ -50,11 +50,19 @@ impl SessionStore {
     }
 
     /// Load the most recently modified session for this workspace, if any.
+    ///
+    /// A file that does not load is skipped for the one before it, as
+    /// [`Self::list`] does; when none loads, the error is the one of the
+    /// most recent.
     pub fn latest(&self) -> Result<Option<SessionData>, Error> {
-        let Some((_, _, path)) = session_files(&self.dir)?.into_iter().next() else {
-            return Ok(None);
-        };
-        load_file(&path).map(Some)
+        let mut failed = None;
+        for (_, _, path) in session_files(&self.dir)? {
+            match load_file(&path) {
+                Ok(data) => return Ok(Some(data)),
+                Err(err) => failed = failed.or(Some(err)),
+            }
+        }
+        failed.map_or(Ok(None), Err)
     }
 
     /// List valid persisted sessions for this workspace, newest first.
