@@ -521,7 +521,7 @@ async fn run(
         args.prompt.is_empty() && io::stdin().is_terminal() && io::stdout().is_terminal();
     if !full_screen {
         for warning in &warnings {
-            eprintln!("warning: {warning}");
+            eprintln!("warning: {}", printable(warning));
         }
     }
 
