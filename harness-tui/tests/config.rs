@@ -204,6 +204,33 @@ fn web_hosts_are_accepted_and_validated() {
 }
 
 #[test]
+fn hosts_are_accepted_and_validated() {
+    let home = tempdir();
+    // The proxy starts with the sandbox.
+    write_default(home.path(), "[sandbox]\nhosts = [\"crates.io\"]\n");
+    let out = run_cli(home.path(), &["--allow-host", "github.com"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    // It needs a sandbox without network, which ports open.
+    let out = run_cli(home.path(), &["--allow-connect", "8080"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("--allow-host cannot be used with --allow-connect"),
+        "{}",
+        stderr(&out)
+    );
+
+    write_default(home.path(), "[sandbox]\nhosts = [\"crates.io:443\"]\n");
+    let out = run_cli(home.path(), &[]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("crates.io:443 is not a host name"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
 fn file_in_current_folder_works() {
     // Shown read-only on top of the writable current folder.
     let home = tempdir();

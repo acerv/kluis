@@ -6,12 +6,13 @@
 //! `--strict`), an empty private `$HOME` showing only the allowed paths,
 //! `~/.kluis` hidden but for its skills, shown read-only, zero API
 //! keys in the environment, and no network unless `--network` or
-//! `--allow-connect` is given. Commands cannot create user namespaces, nor
+//! `--allow-connect` is given; `--allow-host` lets commands reach some
+//! hosts through a proxy. Commands cannot create user namespaces, nor
 //! Unix sockets without `--network`.
 
 use std::path::{Path, PathBuf};
 
-use harness_core::tools::{Executor, Hosts, SandboxConfig};
+use harness_core::tools::{Executor, Hosts, SandboxConfig, PROXY_PORT};
 use harness_core::Error;
 use harness_sandbox::{apparmor, GitGuard, Options, Sandbox};
 
@@ -96,9 +97,22 @@ pub fn executor(args: &Args, cwd: &Path) -> Result<(Executor, GitGuard), Error> 
         args: worker_args(args),
         cwd: cwd.to_path_buf(),
         env,
-        hosts: Hosts::default(),
+        hosts: proxy_hosts(args)?,
     })?;
     Ok((executor, git_guard))
+}
+
+/// The hosts `args` let commands reach through the proxy: none with any
+/// network, where they reach all.
+fn proxy_hosts(args: &Args) -> Result<Hosts, Error> {
+    if args.network || args.allow_host.is_empty() {
+        return Ok(Hosts::default());
+    }
+    // The proxy needs a container without network, which ports open.
+    if !args.allow_connect.is_empty() {
+        return Err("--allow-host cannot be used with --allow-connect".into());
+    }
+    Ok(Hosts::new(&args.allow_host)?)
 }
 
 /// What `args` let commands see and reach in `cwd`, as text: the sandbox
@@ -126,6 +140,13 @@ pub fn info(args: &Args, cwd: &Path) -> Result<String, Error> {
         .collect();
     names.sort();
     out += &format!("Environment variables passed: {}\n", names.join(", "));
+
+    if !args.no_sandbox && !proxy_hosts(args)?.is_empty() {
+        out += &format!(
+            "Hosts commands reach through kl's proxy, at 127.0.0.1:{PROXY_PORT}: {}\n",
+            args.allow_host.join(", ")
+        );
+    }
 
     // As `with_options` offers them.
     let web = if args.network || args.no_sandbox {

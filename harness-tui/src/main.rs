@@ -134,6 +134,10 @@ pub struct Args {
     #[arg(long)]
     network: bool,
 
+    /// Let commands reach HOST through a proxy, without --network (repeatable)
+    #[arg(long, value_name = "HOST")]
+    allow_host: Vec<String>,
+
     /// Let web_fetch reach only HOST, even without --network (repeatable)
     #[arg(long, value_name = "HOST")]
     web_host: Vec<String>,
@@ -422,6 +426,7 @@ fn apply_config(args: &mut Args) -> Result<Option<String>, Error> {
     args.searxng_url = args.searxng_url.take().or(config.generic.searxng_url);
     args.network |= config.sandbox.network;
     args.web_host.extend(config.sandbox.web_hosts);
+    args.allow_host.extend(config.sandbox.hosts);
     args.background_commands |= config.sandbox.background_commands;
     args.max_processes = args.max_processes.or(config.sandbox.max_processes);
     args.tmp_size = args.tmp_size.or(config.sandbox.tmp_size);
@@ -803,6 +808,10 @@ fn startup_warnings(
         warnings.extend(sandbox::secrets_warning(args, cwd));
         warnings.extend(sandbox::remote_warnings(args, cwd));
     }
+    if !args.allow_host.is_empty() && (args.network || args.no_sandbox) {
+        warnings
+            .push("--allow-host limits nothing here: commands already reach any host".to_owned());
+    }
     warnings
 }
 
@@ -1080,6 +1089,9 @@ fn sandbox_details(args: &Args, cwd: &Path) -> String {
         format!("ports {}", ports.join(", "))
     };
     let mut details = format!("sandbox: {access} · {network}");
+    if !args.network && !args.allow_host.is_empty() {
+        details += &format!(" · hosts {}", args.allow_host.join(", "));
+    }
     if !args.web_host.is_empty() {
         details += &format!(" · web {}", args.web_host.join(", "));
     }
