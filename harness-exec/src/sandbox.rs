@@ -281,8 +281,11 @@ impl SandboxExecutor {
             }
             let worker = guard.as_ref().expect("worker just spawned");
             let (tx, rx) = mpsc::unbounded_channel();
-            lock(&worker.pending).insert(id, tx);
-            match worker.send(req) {
+            let sent = match worker.register(id, tx) {
+                true => worker.send(req),
+                false => Err(req),
+            };
+            match sent {
                 Ok(()) => return Ok((worker.pending.clone(), rx)),
                 Err(unsent) => {
                     lock(&worker.pending).remove(&id);
@@ -300,6 +303,19 @@ impl SandboxExecutor {
 }
 
 impl Worker {
+    /// Have the responses to the call `id` sent to `tx`, unless the
+    /// worker is dead: nothing would then drop `tx`, and its call would
+    /// wait forever.
+    fn register(&self, id: u64, tx: mpsc::UnboundedSender<Response>) -> bool {
+        // Under the lock the reader clears the calls with, once dead.
+        let mut pending = lock(&self.pending);
+        let alive = self.alive.load(Ordering::Acquire);
+        if alive {
+            pending.insert(id, tx);
+        }
+        alive
+    }
+
     /// Queue the line `req` for the worker, giving it back when a write
     /// failed before, as the worker is then dead.
     fn send(&self, req: Vec<u8>) -> Result<(), Vec<u8>> {
@@ -434,8 +450,10 @@ fn startup_failure(mut child: Child, eof: bool) -> ExecError {
 /// answer.
 fn read_responses(mut stdout: impl BufRead, pending: &PendingMap, alive: &AtomicBool) {
     let _done = scopeguard::guard((), |()| {
+        // Both under the lock: a call is either refused or cleared.
+        let mut pending = lock(pending);
         alive.store(false, Ordering::Release);
-        lock(pending).clear();
+        pending.clear();
     });
     let mut buf = Vec::new();
     while let Ok(1..) = read_line_bounded(&mut stdout, &mut buf) {
