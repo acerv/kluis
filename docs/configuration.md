@@ -1,7 +1,7 @@
 # Configuration
 
 K-Luis reads `~/.kluis/config.toml`. Every setting also has a command-line
-option: see `kl --help`.
+option: see [Command-line options](#command-line-options).
 
 ```toml
 [generic]
@@ -93,16 +93,45 @@ inline code, keep a plain style. With `NO_COLOR`, all of it stays plain.
 
 ## Command-line options
 
-| Option                | What it does                                       |
-| --------------------- | -------------------------------------------------- |
-| `-c`, `--continue`    | Continue the latest session in this folder         |
-| `--resume [ID]`       | Resume a session, with a picker when no ID is given |
-| `--fork`              | With `--continue` or `--resume`, go on in a copy of the session |
-| `--no-session`        | Do not read or write session files                 |
-| `--strict`            | Make the current folder read-only                  |
-| `--no-sandbox`        | Run tools on the host                              |
-| `--sandbox-info`      | Print what the sandbox lets commands see and reach, then exit |
-| `--login`, `--logout` | Log in to or out of a subscription (`anthropic`)   |
+`kl --help` lists them in short. Options with a config key take the same
+values as the key.
+
+| Option                         | Config key                    | What it does |
+| ------------------------------ | ----------------------------- | ------------ |
+| `--model NAME`                 | `generic.model`               | Model to use; its name picks the provider |
+| `--thinking LEVEL`             | `generic.thinking`            | Thinking effort |
+| `--code-theme NAME\|PATH`      | `generic.code_theme`          | Colors of code blocks, see [Code theme](#code-theme) |
+| `--auto-compact-tokens N`      | `generic.auto_compact_tokens` | Auto-compact the conversation at this many prompt tokens (`0` disables) |
+| `--notify`                     | `generic.notify`              | Ring the terminal bell when a prompt that ran for 10 seconds or more ends or asks a question |
+| `-c`, `--continue`             |                               | Continue the latest session in this folder |
+| `-r`, `--resume [ID]`          |                               | Resume a session, with a picker when no ID is given |
+| `--fork`                       |                               | With `--continue` or `--resume`, go on in a copy of the session and leave the session itself as it is |
+| `--no-session`                 |                               | Do not read or write session files |
+| `--no-sandbox`                 |                               | Run tools on the host |
+| `--strict`                     |                               | Make the current folder read-only |
+| `--allow-read PATH`            | `sandbox.read`                | Also allow reading this path; `$HOME` is empty but for the allowed paths and the current folder |
+| `--allow-write PATH`           | `sandbox.write`               | Also allow changing this path |
+| `--deny-read PATH`             | `sandbox.deny`                | Hide this path from the harness and its commands |
+| `--allow-connect PORT`         | `sandbox.connect`             | Let the harness connect to this TCP port, e.g. for a local model |
+| `--network`                    | `sandbox.network`             | Allow any network, to commands too |
+| `--web-host HOST`              | `sandbox.web_hosts`           | Let `web_fetch` reach only this host and its subdomains, private addresses included, even without `--network`, see [Web tools](sandbox.md#web-tools) |
+| `--searxng-url URL`            | `generic.searxng_url`         | Search the web with this SearXNG instance instead of DuckDuckGo |
+| `--max-processes N`            | `sandbox.max_processes`       | Processes and threads the harness and its commands may run at once |
+| `--tmp-size SIZE`              | `sandbox.tmp_size`            | Size of the private `/tmp` |
+| `--max-memory SIZE`            | `sandbox.max_memory`          | Virtual memory limit for commands |
+| `--background-commands`        | `sandbox.background_commands` | Let commands, such as a server, keep running across prompts, see [Background commands](sandbox.md#background-commands) |
+| `--pass-env NAME`              | `sandbox.env`                 | Also pass this environment variable to commands |
+| `--allow-tool TOOL`            | `permissions.allow`           | Let this tool run without asking, see [Permissions](features.md#permissions) |
+| `--ask-tool TOOL`              | `permissions.ask`             | Ask before each call of this tool; without the terminal UI, the tool is not offered |
+| `--deny-tool TOOL`             | `permissions.deny`            | Do not offer this tool to the model |
+| `--config PATH`                |                               | Config file to read |
+| `-p`, `--print`                |                               | Run the prompt once and exit, with standard input appended when it is not a terminal |
+| `--output-format FORMAT`       |                               | `text`, `json` or `stream`, see [features](features.md); `json` and `stream` imply `--print` |
+| `--output-schema FILE`         |                               | Make the answer a JSON value matching the JSON Schema in this file; implies `--print` |
+| `--login PROVIDER`, `--logout PROVIDER` |                      | Log in to or out of a subscription (`anthropic`), then exit |
+| `--apparmor-profile`           |                               | Print an AppArmor profile that lets kl create its sandbox on Ubuntu, then exit, see [sandbox](sandbox.md) |
+| `--install-skills`             |                               | Install the bundled skills in `~/.kluis/skills`, or update the ones you did not change, then exit |
+| `--sandbox-info`               |                               | Print what the sandbox lets commands see and reach with these options and the config file, then exit |
 
 ## Environment variables
 
