@@ -111,8 +111,13 @@
 - `/<command> [args]` sends a prompt template of yours from
   `~/.kluis/commands`. See [Custom commands](#custom-commands).
 - Slash commands: `/model`, `/thinking`, `/resume`, `/fork`, `/remember`,
-  `/copy`, `/export`, `/output`, `/diff`, `/retry`, `/compact`, `/status`,
-  `/new`, `/help`, `/quit`.
+  `/copy`, `/export`, `/output`, `/diff`, `/retry`, `/undo`, `/compact`,
+  `/status`, `/new`, `/help`, `/quit`.
+- `/undo` puts the files of the project back as they were before the
+  last prompt, and drops that prompt and what it led to from the
+  conversation. It first lists the files it would restore, create again
+  or delete, and asks. Repeating it goes back one prompt more, up to 10.
+  See [Undo](#undo).
 - `/remember <text>` adds `- <text>` to the `AGENTS.md` at the root of
   the repository (of the current folder outside one), creating it when
   missing, and `/remember --global <text>` to `~/.kluis/AGENTS.md`. The
@@ -143,6 +148,27 @@
   `compacted`, `compact_failed` and `pruned`. The last line
   is the `json` object, with a type of `result` or `error`.
 - Both imply `-p`.
+
+## Undo
+
+Before each prompt, `kl` notes how the files of the project differ from
+the snapshot `/diff` took at the start. `/undo` compares the files with
+that note and puts back every one that changed since: whatever changed
+it, the `edit` and `write` tools, a command of the model, or you in your
+editor meanwhile. So look at the list before you confirm.
+
+- Like `/diff`, it runs no git command, works outside git repositories,
+  and does not look at what `.gitignore` lists.
+- Binary files, files over 1 MiB, and what does not fit in the 64 MiB a
+  checkpoint may hold cannot be put back: they are listed and left as
+  they are. A file made since is deleted whatever it holds.
+- Folders left empty are not removed.
+- Files are written by `kl` itself, outside the sandbox, never through a
+  symbolic link: a link the model left in the project is replaced, not
+  followed.
+- Checkpoints live in memory, for the last 10 prompts of the session.
+  `/new`, `/resume` and a compaction of the conversation forget them.
+- `/undo` is for the terminal UI: not with `-p` nor in line mode.
 
 ## Skills
 
