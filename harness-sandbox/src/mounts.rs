@@ -259,8 +259,9 @@ fn covered_by_denied(path: &Path, denied: &[Hidden]) -> bool {
 /// is a directory.
 ///
 /// Mounts below a `hidden` path stay, which hiding already covers. So do
-/// mounts this user cannot reach, whose program is gone or which deny
-/// access: the sandbox, running as the same user, cannot reach them either.
+/// mounts this user cannot reach, whose program is gone, which deny access
+/// or whose path is gone, as below another mount: the sandbox, running as
+/// the same user, cannot reach them either.
 fn remote_mounts(
     roots: &[Mount],
     allowed: &[&Path],
@@ -284,7 +285,7 @@ fn remote_mounts(
             Err(e)
                 if matches!(
                     e.raw_os_error(),
-                    Some(nix::libc::ENOTCONN | nix::libc::EACCES)
+                    Some(nix::libc::ENOTCONN | nix::libc::EACCES | nix::libc::ENOENT)
                 ) => {}
             Err(e) => {
                 return Err(SandboxError::at(
