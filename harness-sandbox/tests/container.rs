@@ -261,6 +261,19 @@ fn kept_read_only_wins_over_writable() {
 }
 
 #[test]
+fn kept_read_only_writable_folder_keeps_denied_paths_hidden() {
+    let (dir, file) = folder();
+    let sandbox = system()
+        .allow_write(dir.path())
+        .deny_read(&file)
+        .keep_read_only(dir.path());
+
+    assert_eq!(errno(inside(&sandbox, read(&file))), EACCES);
+    let new = dir.path().join("new.txt");
+    assert_eq!(errno(inside(&sandbox, write(&new, "y"))), EROFS);
+}
+
+#[test]
 fn kept_read_only_is_readable() {
     let (_dir, file) = folder();
     let sandbox = system().keep_read_only(&file);
