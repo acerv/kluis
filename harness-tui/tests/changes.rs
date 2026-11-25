@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use harness_core::tools::DiffLine;
 use harness_tui::{
-    ChangeKind, ChangesUpdate, FileChange, Snapshot, Watcher, MAX_CHECKPOINTS, MAX_TEXT_BYTES,
+    ChangeKind, ChangesUpdate, FileChange, Snapshot, Undo, Watcher, MAX_CHECKPOINTS, MAX_TEXT_BYTES,
 };
 
 fn change(path: &str, kind: ChangeKind, lines: Option<(usize, usize)>) -> FileChange {
@@ -176,6 +176,12 @@ async fn watching(root: &Path) -> Watcher {
     watcher
 }
 
+/// Put the files back as the plan of `watcher` says now.
+async fn undo_now(watcher: &Watcher) -> Option<Undo> {
+    let plan = watcher.undo_plan().await?;
+    Some(watcher.undo(plan).await?.expect("the plan still holds"))
+}
+
 fn text(path: &Path) -> String {
     fs::read_to_string(path).unwrap()
 }
@@ -192,7 +198,7 @@ async fn undo_puts_the_files_back_as_at_the_checkpoint() {
     put(&root.join("docs/old/notes.txt"), "notes\n");
     let watcher = watching(root).await;
     assert_eq!(watcher.undo_plan().await, None);
-    assert_eq!(watcher.undo().await, None);
+    assert_eq!(undo_now(&watcher).await, None);
 
     // Changed before the prompt: this is what comes back, not the start.
     put(&root.join("src/main.rs"), "one\ntwo\nthree\n");
@@ -218,7 +224,7 @@ async fn undo_puts_the_files_back_as_at_the_checkpoint() {
     // Looking changes nothing.
     assert_eq!(text(&root.join("src/main.rs")), "1\ntwo\nthree\n");
 
-    let undo = watcher.undo().await.unwrap();
+    let undo = watcher.undo(plan.clone()).await.unwrap().unwrap();
     assert_eq!(undo.plan, plan);
     assert!(undo.failed.is_empty(), "{:?}", undo.failed);
     assert_eq!(text(&root.join("src/main.rs")), "one\ntwo\nthree\n");
@@ -246,11 +252,11 @@ async fn undo_walks_back_one_prompt_at_a_time() {
     watcher.checkpoint(2, 0).await;
     put(&file, "second\n");
 
-    assert!(watcher.undo().await.unwrap().failed.is_empty());
+    assert!(undo_now(&watcher).await.unwrap().failed.is_empty());
     assert_eq!(text(&file), "first\n");
-    assert!(watcher.undo().await.unwrap().failed.is_empty());
+    assert!(undo_now(&watcher).await.unwrap().failed.is_empty());
     assert_eq!(text(&file), "start\n");
-    assert_eq!(watcher.undo().await, None);
+    assert_eq!(undo_now(&watcher).await, None);
 }
 
 #[tokio::test]
@@ -268,11 +274,11 @@ async fn checkpoints_of_prompts_sent_again_are_forgotten() {
     watcher.checkpoint(2, 0).await;
     put(&file, "second again\n");
 
-    watcher.undo().await.unwrap();
+    undo_now(&watcher).await.unwrap();
     assert_eq!(text(&file), "second\n");
-    watcher.undo().await.unwrap();
+    undo_now(&watcher).await.unwrap();
     assert_eq!(text(&file), "start\n");
-    assert_eq!(watcher.undo().await, None);
+    assert_eq!(undo_now(&watcher).await, None);
 
     // Forgetting one leaves the files alone.
     watcher.checkpoint(0, 0).await;
@@ -280,14 +286,14 @@ async fn checkpoints_of_prompts_sent_again_are_forgotten() {
     assert_eq!(watcher.last_checkpoint().await, Some((0, 0)));
     watcher.forget_checkpoints(false);
     assert_eq!(watcher.last_checkpoint().await, None);
-    assert_eq!(watcher.undo().await, None);
+    assert_eq!(undo_now(&watcher).await, None);
     assert_eq!(text(&file), "kept\n");
 
     // All of them, when the conversation is another one.
     watcher.checkpoint(0, 0).await;
     watcher.checkpoint(2, 0).await;
     watcher.forget_checkpoints(true);
-    assert_eq!(watcher.undo().await, None);
+    assert_eq!(undo_now(&watcher).await, None);
 }
 
 #[tokio::test]
@@ -301,7 +307,7 @@ async fn only_the_last_checkpoints_are_kept() {
         put(&file, &format!("{prompt}\n"));
     }
     let mut undone = 0;
-    while watcher.undo().await.is_some() {
+    while undo_now(&watcher).await.is_some() {
         undone += 1;
     }
     assert_eq!(undone, MAX_CHECKPOINTS);
@@ -322,7 +328,7 @@ async fn undo_leaves_what_it_cannot_put_back() {
     fs::write(root.join("new.bin"), [0u8]).unwrap();
     put(&root.join("a.txt"), "b\n");
 
-    let undo = watcher.undo().await.unwrap();
+    let undo = undo_now(&watcher).await.unwrap();
     assert_eq!(
         undo.plan.kept,
         vec![(PathBuf::from("image.bin"), "binary file")]
@@ -361,7 +367,7 @@ async fn undo_follows_no_link_out_of_the_project() {
     fs::remove_file(root.join("b.txt")).unwrap();
     symlink(outside.join("secret"), root.join("b.txt")).unwrap();
 
-    let undo = watcher.undo().await.unwrap();
+    let undo = undo_now(&watcher).await.unwrap();
     // The folder is not gone through: its file cannot be made again.
     let failed: Vec<_> = undo.failed.iter().map(|(path, _)| path.clone()).collect();
     assert_eq!(failed, vec![PathBuf::from("sub/a.txt")]);
@@ -378,7 +384,7 @@ async fn undo_follows_no_link_out_of_the_project() {
     fs::rename(root.join("gone"), &moved).unwrap();
     put(&outside.join("new.txt"), "outside new\n");
     symlink(&outside, root.join("gone")).unwrap();
-    watcher.undo().await.unwrap();
+    undo_now(&watcher).await.unwrap();
     assert_eq!(text(&outside.join("new.txt")), "outside new\n");
     assert_eq!(text(&outside.join("c.txt")), "outside c\n");
 }
@@ -404,7 +410,7 @@ async fn undo_keeps_a_file_that_could_not_be_read() {
     let plan = watcher.undo_plan().await.unwrap();
     assert!(plan.files.is_empty(), "{:?}", plan.files);
     assert_eq!(plan.kept, [(PathBuf::from("notes.txt"), "cannot be read")]);
-    watcher.undo().await.unwrap();
+    undo_now(&watcher).await.unwrap();
     assert_eq!(text(&file), "notes\n");
 }
 
@@ -419,7 +425,31 @@ async fn undo_puts_back_a_file_replaced_by_a_folder() {
     put(&root.join("a/deep/inner.txt"), "x\n");
     fs::create_dir(root.join("a/empty")).unwrap();
 
-    let undo = watcher.undo().await.unwrap();
+    let undo = undo_now(&watcher).await.unwrap();
     assert!(undo.failed.is_empty(), "{:?}", undo.failed);
     assert_eq!(text(&root.join("a")), "text\n");
+}
+
+#[tokio::test]
+async fn undo_does_only_the_plan_that_was_shown() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    put(&root.join("a.txt"), "a\n");
+    let watcher = watching(root).await;
+    watcher.checkpoint(0, 0).await;
+    put(&root.join("a.txt"), "changed\n");
+    let shown = watcher.undo_plan().await.unwrap();
+
+    // Changed while the user was asked: not theirs to lose unseen.
+    put(&root.join("new.txt"), "n\n");
+    let now = watcher.undo(shown.clone()).await.unwrap().unwrap_err();
+    assert_ne!(now, shown);
+    assert_eq!(text(&root.join("a.txt")), "changed\n");
+    assert!(root.join("new.txt").exists());
+
+    // The checkpoint is still there for the plan as it is now.
+    let undo = watcher.undo(now.clone()).await.unwrap().unwrap();
+    assert_eq!(undo.plan, now);
+    assert_eq!(text(&root.join("a.txt")), "a\n");
+    assert!(!root.join("new.txt").exists());
 }

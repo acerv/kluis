@@ -92,9 +92,19 @@ impl Checkpoints {
         Some(snapshot.steps(checkpoint).0)
     }
 
-    pub(super) fn undo(&mut self, snapshot: &Snapshot) -> Option<Undo> {
-        let checkpoint = self.0.pop_back()?;
-        let (plan, mut steps) = snapshot.steps(&checkpoint);
+    /// Put the files back as at the last checkpoint, which is forgotten,
+    /// if that still does what `shown` says: the plan as it is now
+    /// otherwise, and nothing is done.
+    pub(super) fn undo(
+        &mut self,
+        snapshot: &Snapshot,
+        shown: &UndoPlan,
+    ) -> Option<Result<Undo, UndoPlan>> {
+        let (plan, mut steps) = snapshot.steps(self.0.back()?);
+        if plan != *shown {
+            return Some(Err(plan));
+        }
+        self.0.pop_back();
         // The files to delete first: one to write may take the place of
         // the folder that held them.
         steps.sort_by_key(|(_, target)| target.is_some());
@@ -108,7 +118,7 @@ impl Checkpoints {
                 Some((path, res.err()?.to_string()))
             })
             .collect();
-        Some(Undo { plan, failed })
+        Some(Ok(Undo { plan, failed }))
     }
 
     /// The messages and the tag the last checkpoint was taken with.

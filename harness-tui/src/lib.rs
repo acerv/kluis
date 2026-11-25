@@ -221,7 +221,7 @@ pub async fn run(
         questions,
         signals: signals.clone(),
         agents_file,
-        undo_asked: false,
+        undo_asked: None,
     };
     ui.draw()?;
 
@@ -266,13 +266,15 @@ pub async fn run(
             _ => std::mem::take(&mut startup_fork),
         };
         match action {
-            Action::Answer(answer) if ui.undo_asked => {
-                ui.undo_asked = false;
-                undo(&mut ui.app, &answer, &mut agent, session.as_mut()).await;
+            Action::Answer(answer) if ui.undo_asked.is_some() => {
+                if let Some(shown) = ui.undo_asked.take() {
+                    ui.undo_asked =
+                        undo(&mut ui.app, &answer, shown, &mut agent, session.as_mut()).await;
+                }
                 ui.draw()?;
             }
-            Action::Cancel if ui.undo_asked => {
-                ui.undo_asked = false;
+            Action::Cancel if ui.undo_asked.is_some() => {
+                ui.undo_asked = None;
                 ui.draw()?;
             }
             Action::None | Action::Cancel | Action::Answer(_) => {}
