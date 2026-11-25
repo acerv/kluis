@@ -64,6 +64,26 @@ use slash::{
 };
 use terminal::{EventReader, InlineTerminal};
 
+/// `print!` that goes on when nobody reads the standard output any more,
+/// as in `kl -p ... | head`: the panic of `print!` would skip what ends a
+/// prompt, the check for new repositories included.
+#[macro_export]
+macro_rules! out {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = write!(std::io::stdout(), $($arg)*);
+    }};
+}
+
+/// `println!` that goes on like [`out!`].
+#[macro_export]
+macro_rules! outln {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stdout(), $($arg)*);
+    }};
+}
+
 /// Session details displayed in the status bar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {

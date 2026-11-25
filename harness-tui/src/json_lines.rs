@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 pub fn print_event(event: Event<'_>) {
     if let Some(line) = event_json(event) {
         // Line buffered: each event shows as soon as it happens.
-        println!("{line}");
+        crate::outln!("{line}");
     }
 }
 

@@ -147,6 +147,38 @@ fn print_appends_standard_input_to_the_prompt() {
 }
 
 #[test]
+fn print_goes_on_when_nobody_reads_its_output() {
+    // As `kl -p ... | head`, once `head` is gone.
+    let (port, server) = start_mock_llm(200);
+    let (home, cwd) = (tempdir(), tempdir());
+    let mut child = kl(home.path())
+        .args(["--model", "genai_1::test-model", "--no-sandbox", "-p", "hi"])
+        .current_dir(cwd.path())
+        .env("GENAI_1_ENDPOINT", format!("http://127.0.0.1:{port}/v1/"))
+        .env("GENAI_1_API_KEY", "test-key")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    let out = child.wait_with_output().unwrap();
+
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(server.join().unwrap(), "hi");
+    // The prompt ended as any other: its session is whole.
+    let sessions = home.path().join(".kluis/sessions");
+    let project = std::fs::read_dir(sessions)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap();
+    let file = std::fs::read_dir(project.path()).unwrap().next().unwrap();
+    let saved = std::fs::read_to_string(file.unwrap().path()).unwrap();
+    assert!(saved.contains("done"), "{saved}");
+}
+
+#[test]
 fn json_prints_the_result_as_one_object() {
     let (out, server) = run_kl(&["--output-format", "json"], "hello", 200);
 

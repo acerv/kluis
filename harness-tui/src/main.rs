@@ -41,8 +41,8 @@ use harness_core::{
 };
 use harness_sandbox::{GitGuard, NetworkAccess};
 use harness_tui::{
-    after_commands, printable, pruned_notice, retry_notice, summary, BannerLine, History,
-    PromptSaver, PromptStats, RunOptions, Session, Signals, Status, TRUNCATED_NOTICE,
+    after_commands, out, outln, printable, pruned_notice, retry_notice, summary, BannerLine,
+    History, PromptSaver, PromptStats, RunOptions, Session, Signals, Status, TRUNCATED_NOTICE,
 };
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::runtime::Runtime;
@@ -843,7 +843,7 @@ async fn run_once(
     };
     if format == OutputFormat::Text {
         if let Some(value) = res?.1 {
-            println!("{value}");
+            outln!("{value}");
         }
         return Ok(ExitCode::SUCCESS);
     }
@@ -863,7 +863,7 @@ async fn run_once(
     };
     out["type"] = if failed { "error" } else { "result" }.into();
     out["session"] = session.map(|session| session.current_id()).into();
-    println!("{out}");
+    outln!("{out}");
     Ok(exit_code(failed))
 }
 
@@ -923,7 +923,7 @@ async fn run_lines(
     commands: &[Command],
     sandbox: &str,
 ) -> Result<ExitCode, Error> {
-    println!(
+    outln!(
         "kluis ({} ({}), {sandbox}), Ctrl-D to quit",
         agent.model(),
         agent.thinking()
@@ -931,8 +931,8 @@ async fn run_lines(
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     let mut failed = false;
     loop {
-        print!("> ");
-        io::stdout().flush()?;
+        out!("> ");
+        let _ = io::stdout().flush();
 
         let line = tokio::select! {
             biased;
@@ -940,7 +940,7 @@ async fn run_lines(
             line = lines.next_line() => line?,
         };
         let Some(line) = line else {
-            println!();
+            outln!();
             for notice in after_commands(&agent, git_guard.as_mut(), false, false).await {
                 eprintln!("{}", printable(&notice));
             }
@@ -1190,12 +1190,12 @@ fn tilde(path: &Path) -> String {
 fn print_event(event: Event<'_>) {
     match event {
         Event::TextDelta(text) => {
-            print!("{}", printable(text));
+            out!("{}", printable(text));
             // Show the text as it comes, not line by line.
             let _ = io::stdout().flush();
         }
         // Already printed piece by piece: end its line.
-        Event::Text(_) => println!(),
+        Event::Text(_) => outln!(),
         Event::Messages(_)
         | Event::Steered(_)
         | Event::TurnStart
@@ -1204,19 +1204,19 @@ fn print_event(event: Event<'_>) {
         | Event::TurnEnd(_)
         | Event::TaskUsage(_) => {}
         Event::Truncated => eprintln!("{TRUNCATED_NOTICE}"),
-        Event::ToolCall(call) => println!(
+        Event::ToolCall(call) => outln!(
             "→ {} {}",
             printable(&call.fn_name),
             printable(&summary(&call.fn_arguments.to_string()))
         ),
-        Event::ToolResult(resp, _) => println!("← {}", printable(&summary(&resp.content))),
+        Event::ToolResult(resp, _) => outln!("← {}", printable(&summary(&resp.content))),
         Event::Retry {
             attempt,
             delay,
             reason,
         } => {
             // End any line the failed attempt left half printed.
-            println!();
+            outln!();
             eprintln!("{}", printable(&retry_notice(attempt, delay, reason)));
         }
         Event::Compacting { context_tokens } => {
