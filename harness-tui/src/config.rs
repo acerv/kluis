@@ -52,6 +52,15 @@
 //! max_memory = "4G"
 //! # Also pass these environment variables to commands.
 //! env = ["CC", "CFLAGS"]
+//!
+//! [permissions]
+//! # Tools that run without asking: all of them, unless listed below.
+//! allow = ["read", "ls", "find", "grep"]
+//! # Tools whose calls wait for you to approve them; not offered when
+//! # there is no terminal UI to ask in.
+//! ask = ["bash", "write", "edit"]
+//! # Tools the model does not get.
+//! deny = ["web_search"]
 //! ```
 //!
 //! Lists add up with the matching command-line options, and switches are on
@@ -78,6 +87,8 @@ pub struct Config {
     pub generic: GenericConfig,
     #[serde(default)]
     pub sandbox: SandboxConfig,
+    #[serde(default)]
+    pub permissions: PermissionsConfig,
 }
 
 impl Default for Config {
@@ -93,6 +104,7 @@ impl Default for Config {
                 notify: false,
             },
             sandbox: SandboxConfig::default(),
+            permissions: PermissionsConfig::default(),
         }
     }
 }
@@ -167,6 +179,20 @@ impl Default for SandboxConfig {
             env: Vec::new(),
         }
     }
+}
+
+/// The `[permissions]` section: tools by name. A tool in several lists
+/// gets the strictest, and the matching command-line options replace what
+/// is here tool by tool.
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PermissionsConfig {
+    /// Run without asking, like `--allow-tool`.
+    pub allow: Vec<String>,
+    /// Wait for an approval, like `--ask-tool`.
+    pub ask: Vec<String>,
+    /// Not offered, like `--deny-tool`.
+    pub deny: Vec<String>,
 }
 
 /// Harness state directory (`~/.kluis`).

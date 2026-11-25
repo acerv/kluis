@@ -65,19 +65,19 @@ fn start_mock_llm(status: u16) -> (u16, JoinHandle<String>) {
 }
 
 /// Start a server that answers a request with each of `answers`. It
-/// returns the user messages it got.
-fn start_mock_answers(answers: &[&str]) -> (u16, JoinHandle<Vec<String>>) {
+/// returns the requests it got.
+fn start_mock_answers(answers: &[&str]) -> (u16, JoinHandle<Vec<Value>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let answers: Vec<_> = answers.iter().map(|&answer| answer.to_owned()).collect();
     let handle = thread::spawn(move || {
-        let mut users = Vec::new();
+        let mut requests = Vec::new();
         for answer in &answers {
             let (stream, _) = listener.accept().unwrap();
-            users.push(last_user(&read_request(&stream)));
+            requests.push(read_request(&stream));
             write_answer(stream, answer);
         }
-        users
+        requests
     });
     (port, handle)
 }
@@ -329,7 +329,8 @@ fn run_with_schema(args: &[&str], answers: &[&str]) -> (Output, Vec<String>) {
     all.extend(args);
     let (port, server) = start_mock_answers(answers);
     let out = spawn_kl(&home, &cwd, &all, "", port);
-    (out, server.join().unwrap())
+    let users = server.join().unwrap().iter().map(last_user).collect();
+    (out, users)
 }
 
 #[test]
@@ -393,4 +394,48 @@ fn schema_with_an_unknown_keyword_is_refused() {
         stderr(&out).contains("`pattern` is not supported"),
         "{out:?}"
     );
+}
+
+#[test]
+fn tools_denied_or_needing_an_approval_are_not_offered() {
+    let (home, cwd) = (tempdir(), tempdir());
+    let config = cwd.path().join("config.toml");
+    let permissions = "[permissions]\nask = [\"bash\", \"edit\"]\ndeny = [\"write\", \"ls\"]\n";
+    std::fs::write(&config, permissions).unwrap();
+    let config = config.to_str().unwrap();
+    let args = ["--no-session", "--config", config, "-p", "hello"];
+    // The options replace the config tool by tool.
+    let options = ["--allow-tool", "edit", "--allow-tool", "ls"];
+    let (port, server) = start_mock_answers(&["done"]);
+
+    let out = spawn_kl(&home, &cwd, &[&args[..], &options[..]].concat(), "", port);
+
+    assert!(out.status.success(), "{out:?}");
+    let requests = server.join().unwrap();
+    let names: Vec<_> = requests[0]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["function"]["name"].as_str().unwrap())
+        .collect();
+    for (tool, offered) in [
+        ("bash", false),
+        ("write", false),
+        ("edit", true),
+        ("ls", true),
+    ] {
+        assert_eq!(names.contains(&tool), offered, "{tool}: {names:?}");
+    }
+}
+
+#[test]
+fn permission_for_an_unknown_tool_is_refused() {
+    let home = tempdir();
+    let out = kl(home.path())
+        .args(["--deny-tool", "shell", "hello"])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(stderr(&out).contains("unknown tool `shell`"), "{out:?}");
 }
