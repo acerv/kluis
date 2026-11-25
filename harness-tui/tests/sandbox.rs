@@ -113,3 +113,58 @@ fn refuses_to_run_as_root() {
         assert!(stderr.contains("refusing to run as root"), "{stderr}");
     }
 }
+
+#[test]
+fn sandbox_info_prints_what_commands_get() {
+    let args = [
+        "--sandbox-info",
+        "--allow-connect",
+        "5432",
+        "--max-memory",
+        "2G",
+        "--web-host",
+        "docs.rs",
+        "--pass-env",
+        "CARGO_MANIFEST_DIR",
+    ];
+    let out = run_cli(&args);
+    assert!(out.status.success(), "{out:?}");
+    assert!(out.stderr.is_empty(), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let cwd = std::env::current_dir().unwrap();
+    let changed = format!("Commands can change:\n  {}\n", cwd.display());
+    assert!(stdout.contains(&changed), "{stdout}");
+    assert!(stdout.contains("\n  /usr\n"), "{stdout}");
+    for line in [
+        "Network: TCP ports 5432 on any host",
+        "Memory of a command: at most 2.0 GiB",
+        "Web tools, which run outside the sandbox: web_fetch, only docs.rs",
+    ] {
+        assert!(stdout.contains(line), "{stdout}");
+    }
+    let env = stdout
+        .lines()
+        .find(|line| line.starts_with("Environment variables passed: "))
+        .unwrap();
+    assert!(env.contains("CARGO_MANIFEST_DIR"), "{env}");
+
+    // With --strict nothing of the project can be changed.
+    let out = run_cli(&["--sandbox-info", "--strict"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains("Commands can change:"), "{stdout}");
+}
+
+#[test]
+fn sandbox_info_tells_when_there_is_no_sandbox() {
+    let out = run_cli(&["--sandbox-info", "--no-sandbox"]);
+    assert!(out.status.success(), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.starts_with("Sandbox: off."), "{stdout}");
+    assert!(stdout.contains("web_fetch and web_search"), "{stdout}");
+}
+
+#[test]
+fn sandbox_info_takes_no_prompt() {
+    let out = run_cli(&["--sandbox-info", "hello"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+}

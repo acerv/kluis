@@ -191,6 +191,11 @@ pub struct Args {
     #[arg(long, conflicts_with_all = ["login", "logout", "apparmor_profile", "prompt"])]
     install_skills: bool,
 
+    /// Print what the sandbox lets commands see and reach with these
+    /// options and the config file, then exit.
+    #[arg(long, conflicts_with_all = ["login", "logout", "apparmor_profile", "install_skills", "prompt"])]
+    sandbox_info: bool,
+
     /// Internal mode: run the NDJSON tool worker inside the sandbox container.
     #[arg(long, hide = true)]
     tool_executor: bool,
@@ -276,7 +281,23 @@ fn launch(mut args: Args) -> Result<ExitCode, Error> {
         runtime.block_on(logout(provider))?;
     } else {
         let config_model = apply_config(&mut args)?;
+        if args.sandbox_info {
+            return sandbox_info(&args);
+        }
         return run_until_signal(runtime, args, config_model);
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Print the sandbox `args` ask for, and the warnings a run would start
+/// with.
+fn sandbox_info(args: &Args) -> Result<ExitCode, Error> {
+    let cwd = std::env::current_dir()?;
+    print!("{}", sandbox::info(args, &cwd)?);
+    let blocked = sandbox::blocked().filter(|_| !args.no_sandbox);
+    let warnings = startup_warnings(args, &cwd, Vec::new(), Vec::new());
+    for warning in blocked.iter().chain(&warnings) {
+        eprintln!("warning: {}", printable(warning));
     }
     Ok(ExitCode::SUCCESS)
 }

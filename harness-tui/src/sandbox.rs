@@ -79,10 +79,10 @@ fn apparmor_help(exe: &Path) -> String {
 /// Spawn the sandboxed tool executor for `args` in `cwd`, with the guard
 /// against git repositories its commands create.
 pub fn executor(args: &Args, cwd: &Path) -> Result<(Executor, GitGuard), Error> {
-    let exe = std::env::current_exe()?;
-    if apparmor::userns_blocked() {
-        return Err(apparmor_help(&exe).into());
+    if let Some(help) = blocked() {
+        return Err(help.into());
     }
+    let exe = std::env::current_exe()?;
     let sandbox = profile(args, cwd, &exe);
     let env = harness_sandbox::command_env(std::env::vars_os(), &args.pass_env)
         .into_iter()
@@ -98,6 +98,50 @@ pub fn executor(args: &Args, cwd: &Path) -> Result<(Executor, GitGuard), Error> 
         env,
     })?;
     Ok((executor, git_guard))
+}
+
+/// What `args` let commands see and reach in `cwd`, as text: the sandbox
+/// [`executor`] would start, and what is decided next to it.
+pub fn info(args: &Args, cwd: &Path) -> Result<String, Error> {
+    let mut out = if args.no_sandbox {
+        "Sandbox: off. Tools and commands run on this machine, as you.\n".to_owned()
+    } else {
+        profile(args, cwd, &std::env::current_exe()?).describe()?
+    };
+    if let Some(bytes) = args.max_memory.filter(|_| !args.no_sandbox) {
+        let size = harness_sandbox::format_size(bytes);
+        out += &format!("Memory of a command: at most {size}\n");
+    }
+    let background = if args.background_commands {
+        "kept running across prompts when the model asks"
+    } else {
+        "stopped after each prompt"
+    };
+    out += &format!("Commands left in the background: {background}\n");
+
+    let mut names: Vec<_> = harness_sandbox::command_env(std::env::vars_os(), &args.pass_env)
+        .into_iter()
+        .map(|(name, _)| name.to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    out += &format!("Environment variables passed: {}\n", names.join(", "));
+
+    // As `with_options` offers them.
+    let web = if args.network || args.no_sandbox {
+        "web_fetch and web_search, any public host".to_owned()
+    } else if args.web_host.is_empty() {
+        "not offered".to_owned()
+    } else {
+        format!("web_fetch, only {}", args.web_host.join(", "))
+    };
+    out += &format!("Web tools, which run outside the sandbox: {web}\n");
+    Ok(out)
+}
+
+/// Why the sandbox of the running `kl` cannot start, if AppArmor blocks it.
+pub fn blocked() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    apparmor::userns_blocked().then(|| apparmor_help(&exe))
 }
 
 /// What `args` let the commands of the worker `exe` see and reach in `cwd`.
