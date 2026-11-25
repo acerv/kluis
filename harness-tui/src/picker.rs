@@ -14,6 +14,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use crate::session::short_id;
 use crate::style::Theme;
 use crate::text::truncate_width;
 
@@ -89,7 +90,11 @@ impl Picker {
                 } else {
                     ""
                 };
-                let meta = format!("{age} · {msgs} · {}{badge}", entry.model);
+                let fork = entry
+                    .forked_from
+                    .map(|id| format!(" · fork of {}", short_id(&id)))
+                    .unwrap_or_default();
+                let meta = format!("{age} · {msgs} · {}{fork}{badge}", entry.model);
                 let primary = entry.first_prompt.unwrap_or_else(|| "(empty)".to_owned());
                 let search = format!("{} {} {}", entry.id, entry.model, primary).to_lowercase();
                 PickerItem {

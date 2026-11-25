@@ -70,10 +70,23 @@ fn run_kl_in(
     stdin: &str,
     status: u16,
 ) -> (Output, JoinHandle<String>) {
+    let mut all = vec!["--no-session"];
+    all.extend(args);
+    run_kl_at(home, &tempdir(), &all, stdin, status)
+}
+
+/// [`run_kl`] with `home` as `$HOME`, in the folder `cwd`, saving the
+/// session unless `args` say otherwise.
+fn run_kl_at(
+    home: &TempDir,
+    cwd: &TempDir,
+    args: &[&str],
+    stdin: &str,
+    status: u16,
+) -> (Output, JoinHandle<String>) {
     let (port, server) = start_mock_llm(status);
-    let cwd = tempdir();
     let mut child = kl(home.path())
-        .args(["--model", "genai_1::test-model", "--no-session"])
+        .args(["--model", "genai_1::test-model"])
         .args(args)
         .current_dir(cwd.path())
         .env("GENAI_1_ENDPOINT", format!("http://127.0.0.1:{port}/v1/"))
@@ -211,4 +224,60 @@ fn signal_ends_the_prompts_read_from_standard_input() {
     kill(&child, libc::SIGTERM);
     let status = child.wait().unwrap();
     assert_eq!(status.code(), Some(128 + libc::SIGTERM), "{status:?}");
+}
+
+/// The session files saved for the only folder `kl` ran in under `home`.
+fn session_files(home: &TempDir) -> Vec<std::path::PathBuf> {
+    let sessions = home.path().join(".kluis/sessions");
+    let project = std::fs::read_dir(sessions)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap();
+    let mut files: Vec<_> = std::fs::read_dir(project.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    files.sort();
+    files
+}
+
+#[test]
+fn fork_goes_on_in_a_copy_of_the_session() {
+    let (home, cwd) = (tempdir(), tempdir());
+    let (out, _) = run_kl_at(&home, &cwd, &["-p", "first"], "", 200);
+    assert!(out.status.success(), "{out:?}");
+    let files = session_files(&home);
+    let [original] = files.as_slice() else {
+        panic!("{files:?}");
+    };
+    let before = std::fs::read_to_string(original).unwrap();
+
+    let args = ["--continue", "--fork", "--output-format", "json", "second"];
+    let (out, server) = run_kl_at(&home, &cwd, &args, "", 200);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(server.join().unwrap(), "second");
+
+    // The session continued is as it was, and the copy holds both prompts.
+    assert_eq!(std::fs::read_to_string(original).unwrap(), before);
+    let files = session_files(&home);
+    assert_eq!(files.len(), 2, "{files:?}");
+    let copy = files.iter().find(|file| *file != original).unwrap();
+    let text = std::fs::read_to_string(copy).unwrap();
+    let header: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+    let id = original.file_stem().unwrap().to_str().unwrap();
+    assert_eq!(header["forked_from"], id, "{header}");
+    assert!(text.contains("first") && text.contains("second"), "{text}");
+    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(result["session"], header["id"], "{result}");
+}
+
+#[test]
+fn fork_needs_a_session_to_copy() {
+    let home = tempdir();
+    let out = kl(home.path()).args(["--fork", "hello"]).output().unwrap();
+
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("--fork"), "{err}");
 }

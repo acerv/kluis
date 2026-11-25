@@ -93,6 +93,11 @@ const COMMANDS: &[CommandSpec] = &[
         description: "write the conversation as Markdown",
     },
     CommandSpec {
+        name: "/fork",
+        arg: None,
+        description: "go on in a copy of this session",
+    },
+    CommandSpec {
         name: "/help",
         arg: None,
         description: "show commands and keybindings",

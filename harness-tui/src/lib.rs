@@ -78,6 +78,8 @@ pub struct RunOptions {
     pub model: Option<String>,
     pub history: Option<History>,
     pub picker_entries: Vec<SessionSummary>,
+    /// Go on in a copy of the session picked at startup.
+    pub fork: bool,
     pub adapters: Vec<AdapterKind>,
     /// Shown next to the startup logo.
     pub banner: Vec<BannerLine>,
@@ -146,6 +148,7 @@ pub async fn run(
         model: mut startup_model,
         mut history,
         picker_entries,
+        fork: mut startup_fork,
         adapters,
         banner,
         mut git_guard,
@@ -229,6 +232,10 @@ pub async fn run(
             Action::None | Action::Redraw => None,
             _ => startup_model.take(),
         };
+        let fork = match action {
+            Action::None | Action::Redraw => false,
+            _ => std::mem::take(&mut startup_fork),
+        };
         match action {
             Action::None | Action::Cancel | Action::Answer(_) => {}
             Action::Redraw => ui.draw()?,
@@ -252,7 +259,7 @@ pub async fn run(
                 ui.draw()?;
             }
             Action::ResumeSession(id) => {
-                resume_session(&id, model, &mut agent, &mut ui.app, session.as_mut());
+                resume_session(&id, model, fork, &mut agent, &mut ui.app, session.as_mut());
                 ui.draw()?;
             }
             Action::SelectModel(name) => {
