@@ -100,6 +100,9 @@ impl History {
             return Ok(());
         }
         if self.total_lines + 1 >= COMPACT_THRESHOLD {
+            // What other instances wrote since the file was read stays.
+            *self = Self::load(std::mem::take(&mut self.path));
+            self.push_in_memory(trimmed);
             self.compact()
         } else {
             self.append(trimmed)

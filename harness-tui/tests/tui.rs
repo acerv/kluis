@@ -735,6 +735,26 @@ fn persistent_history_round_trip_multiline_dedup_and_compaction() {
 }
 
 #[test]
+fn history_compaction_keeps_the_prompts_of_another_instance() {
+    use harness_tui::{History, MAX_HISTORY};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("history");
+    let (mut one, mut other) = (History::load(&path), History::load(&path));
+    for i in 0..(MAX_HISTORY * 2 - 1) {
+        one.record(&format!("cmd-{i}")).unwrap();
+    }
+    other.record("from the other").unwrap();
+    // Rewrites the file.
+    one.record("last").unwrap();
+
+    let entries = History::load(&path).entries();
+    assert_eq!(entries.len(), MAX_HISTORY);
+    assert_eq!(entries[MAX_HISTORY - 2..], ["from the other", "last"]);
+    assert_eq!(one.entries(), entries);
+}
+
+#[test]
 fn thinking_effort_slash_and_footer() {
     let mut term = inline_terminal(80, 14);
     let mut app = App::new("claude-sonnet-4-5", status(), Theme::new(false));
