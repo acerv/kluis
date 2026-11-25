@@ -619,3 +619,27 @@ fn latest_skips_a_file_that_does_not_load() {
     let loaded = store.latest().unwrap().expect("the session that loads");
     assert_eq!(loaded.meta.id, writer.id());
 }
+
+#[test]
+fn session_file_removed_after_loading_starts_again_with_its_header() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(root.path(), cwd.path());
+    let mut writer = store.create("model-one");
+    writer
+        .append_messages(&[ChatMessage::user("hello")])
+        .unwrap();
+    let id = writer.id().to_owned();
+    drop(writer);
+
+    let loaded = store.latest().unwrap().expect("session");
+    let mut writer = store.open(&loaded);
+    std::fs::remove_file(writer.path()).unwrap();
+    writer
+        .append_messages(&[ChatMessage::user("again")])
+        .unwrap();
+
+    let reloaded = store.latest().unwrap().expect("session made again");
+    assert_eq!(reloaded.meta.id, id);
+    assert_eq!(reloaded.messages.len(), 1);
+}
