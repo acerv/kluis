@@ -542,3 +542,54 @@ fn going_back_to_no_messages_is_saved() {
     assert_eq!(loaded.messages.len(), 1);
     assert_eq!(loaded.messages[0].content.first_text(), Some("task again"));
 }
+
+#[test]
+fn fork_copies_the_conversation_to_a_new_session() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(root.path(), cwd.path());
+    let usage = TokenUsage {
+        input: 10,
+        output: 5,
+        cached: 2,
+    };
+    let messages = [ChatMessage::user("hello"), ChatMessage::assistant("hi")];
+
+    let mut original = store.create("deepseek-chat");
+    original.append_messages(&messages).unwrap();
+    original.append_usage(usage, 12).unwrap();
+    let before = std::fs::read(original.path()).unwrap();
+
+    let mut fork = store
+        .fork(original.id(), "gpt-4o", &messages, usage, 12)
+        .unwrap();
+    assert_ne!(fork.id(), original.id());
+    fork.append_messages(&[ChatMessage::user("another way")])
+        .unwrap();
+
+    // The copy has it all, and says where it comes from.
+    let loaded = store.load(fork.id()).unwrap();
+    assert_eq!(loaded.meta.forked_from.as_deref(), Some(original.id()));
+    assert_eq!(loaded.meta.model, "gpt-4o");
+    assert_eq!(loaded.messages.len(), 3);
+    assert_eq!(loaded.usage, usage);
+    assert_eq!(loaded.context, 12);
+
+    // The session it copies is untouched.
+    assert_eq!(std::fs::read(original.path()).unwrap(), before);
+    let loaded = store.load(original.id()).unwrap();
+    assert_eq!(loaded.meta.forked_from, None);
+    assert_eq!(loaded.messages.len(), 2);
+
+    // The list tells them apart, and reopening the copy keeps its origin.
+    let list = store.list().unwrap();
+    let of = |id: &str| list.iter().find(|s| s.id == id).unwrap();
+    assert_eq!(of(fork.id()).forked_from.as_deref(), Some(original.id()));
+    assert_eq!(of(fork.id()).first_prompt.as_deref(), Some("hello"));
+    assert_eq!(of(original.id()).forked_from, None);
+    let mut reopened = store.open(&store.load(fork.id()).unwrap());
+    reopened.append_compact(&messages[..1]).unwrap();
+    let loaded = store.load(fork.id()).unwrap();
+    assert_eq!(loaded.meta.forked_from.as_deref(), Some(original.id()));
+    assert_eq!(loaded.messages.len(), 1);
+}

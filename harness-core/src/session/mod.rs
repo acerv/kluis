@@ -34,6 +34,9 @@ pub enum SessionEntry {
         cwd: PathBuf,
         model: String,
         created_at: u64,
+        /// The session this one started as a copy of.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        forked_from: Option<String>,
     },
     Model {
         model: String,
@@ -116,6 +119,8 @@ pub struct SessionMeta {
     pub cwd: PathBuf,
     pub model: String,
     pub created_at: u64,
+    /// The session this one started as a copy of.
+    pub forked_from: Option<String>,
 }
 
 /// Lightweight entry shown in session lists and pickers without keeping full
@@ -129,6 +134,8 @@ pub struct SessionSummary {
     pub updated_at: u64,
     pub message_count: usize,
     pub first_prompt: Option<String>,
+    /// The session this one started as a copy of.
+    pub forked_from: Option<String>,
 }
 
 /// Loaded session ready to resume in an [`crate::Agent`].
