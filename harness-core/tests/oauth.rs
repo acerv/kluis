@@ -464,6 +464,29 @@ async fn store_refreshes_expired_token_once() {
 }
 
 #[tokio::test]
+async fn store_keeps_a_token_that_still_works_when_refreshing_fails() {
+    let server = WebServer::start(vec![(503, json!({})), (503, json!({}))]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("oauth.toml");
+    // About to expire, not expired.
+    write_private(&path, &tokens("at-0", "rt-0", far_future() - 86_400 + 120));
+    let store = OAuthStore::load(&path)
+        .unwrap()
+        .with_anthropic(anthropic(&server));
+    let token = store.access_token(OAuthProvider::Anthropic).await;
+    assert_eq!(token.unwrap(), "at-0");
+
+    // Expired, the failure shows.
+    write_private(&path, &tokens("at-0", "rt-0", 1));
+    let store = OAuthStore::load(&path)
+        .unwrap()
+        .with_anthropic(anthropic(&server));
+    let err = store.access_token(OAuthProvider::Anthropic).await;
+    assert!(err.is_err());
+    assert_eq!(server.requests().len(), 2);
+}
+
+#[tokio::test]
 async fn store_uses_token_refreshed_by_another_process() {
     let server = WebServer::start(vec![]).await;
     let dir = tempfile::tempdir().unwrap();

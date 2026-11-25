@@ -129,14 +129,25 @@ impl Tokens {
                 .refresh_token()
                 .map(|t| t.secret().clone())
                 .or_else(|| previous.map(str::to_owned)),
-            expires_at: token.expires_in().map(|d| now() + d.as_secs()),
+            expires_at: token
+                .expires_in()
+                .map(|d| now().saturating_add(d.as_secs())),
         }
     }
 
     /// Whether the access token expires within [`REFRESH_MARGIN`].
     pub fn expires_soon(&self) -> bool {
+        self.expires_within(REFRESH_MARGIN)
+    }
+
+    /// Whether the access token no longer works.
+    pub fn expired(&self) -> bool {
+        self.expires_within(Duration::ZERO)
+    }
+
+    fn expires_within(&self, margin: Duration) -> bool {
         self.expires_at
-            .is_some_and(|at| at <= now() + REFRESH_MARGIN.as_secs())
+            .is_some_and(|at| at <= now().saturating_add(margin.as_secs()))
     }
 
     /// Renew these tokens through `flow`.
@@ -184,6 +195,9 @@ pub(crate) trait Provider: Send + Sync {
 
     /// Whether `creds` must be refreshed before use.
     fn expires_soon(&self, creds: &Self::Credentials) -> bool;
+
+    /// Whether `creds` no longer work.
+    fn expired(&self, creds: &Self::Credentials) -> bool;
 
     fn refresh(
         &self,

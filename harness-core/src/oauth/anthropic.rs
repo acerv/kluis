@@ -86,6 +86,10 @@ impl Provider for Anthropic {
         creds.expires_soon()
     }
 
+    fn expired(&self, creds: &Tokens) -> bool {
+        creds.expired()
+    }
+
     async fn refresh(&self, creds: &Tokens) -> Result<Tokens, Error> {
         creds.refresh(Self::ID, &self.flow).await
     }
