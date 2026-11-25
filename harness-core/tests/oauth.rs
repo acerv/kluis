@@ -293,6 +293,21 @@ async fn refresh_sends_refresh_token_and_reports_errors() {
 }
 
 #[tokio::test]
+async fn token_response_that_does_not_parse_is_not_shown() {
+    let (status, mut reply) = token_reply();
+    reply["expires_in"] = json!("at-2");
+    let server = WebServer::start(vec![(status, reply)]).await;
+    let cfg = config(
+        &server,
+        Flow::Device {
+            device_url: server.url("/device"),
+        },
+    );
+    let err = flow::refresh(&cfg, "rt-0").await.unwrap_err().to_string();
+    assert_eq!(err, "invalid token response: unexpected `expires_in`");
+}
+
+#[tokio::test]
 async fn http_json_body_converts_form_fields() {
     let server = WebServer::start(vec![(400, json!({"error": "invalid_grant"}))]).await;
     let http = HttpClient::new(BodyFormat::Json).unwrap();
