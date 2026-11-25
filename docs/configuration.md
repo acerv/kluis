@@ -93,8 +93,7 @@ inline code, keep a plain style. With `NO_COLOR`, all of it stays plain.
 
 ## Command-line options
 
-`kl --help` lists them in short. Options with a config key take the same
-values as the key.
+Options with a config key take the same values as the key.
 
 | Option                         | Config key                    | What it does |
 | ------------------------------ | ----------------------------- | ------------ |
