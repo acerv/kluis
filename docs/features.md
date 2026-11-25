@@ -110,9 +110,15 @@
   with the commands. See [Using skills](#using-skills).
 - `/<command> [args]` sends a prompt template of yours from
   `~/.kluis/commands`. See [Custom commands](#custom-commands).
-- Slash commands: `/model`, `/thinking`, `/resume`, `/fork`, `/copy`,
-  `/export`, `/output`, `/diff`, `/retry`, `/compact`, `/status`, `/new`,
-  `/help`, `/quit`.
+- Slash commands: `/model`, `/thinking`, `/resume`, `/fork`, `/remember`,
+  `/copy`, `/export`, `/output`, `/diff`, `/retry`, `/compact`, `/status`,
+  `/new`, `/help`, `/quit`.
+- `/remember <text>` adds `- <text>` to the `AGENTS.md` at the root of
+  the repository (of the current folder outside one), creating it when
+  missing, and `/remember --global <text>` to `~/.kluis/AGENTS.md`. The
+  instruction also applies to the running conversation. `kl` writes the
+  line itself, without the model, and refuses to write through a symlink
+  in the project.
 - `/fork` goes on in a copy of the session, so you can try another
   direction: the session it copies stays as it was, and can be resumed.
   `kl --continue --fork` and `kl --resume [ID] --fork` do the same at
