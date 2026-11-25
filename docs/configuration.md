@@ -24,6 +24,11 @@ max_processes = 1024
 tmp_size = "512M"
 max_memory = "4G"
 env = ["CC", "CFLAGS"]
+
+[permissions]
+allow = ["read", "ls", "find", "grep"]
+ask = ["bash", "write", "edit"]
+deny = ["web_search"]
 ```
 
 Paths may start with `~`. Sizes take a `K`, `M` or `G` suffix.
@@ -35,6 +40,10 @@ the toolchains they need, such as `~/.cargo` and `~/.rustup`. See
 
 Lists add up with the matching command-line options. Switches turn on when
 either the file or the CLI enables them.
+
+`[permissions]` names tools: see [Permissions](features.md#permissions).
+`--allow-tool`, `--ask-tool` and `--deny-tool` replace what the file says,
+tool by tool.
 
 ## Settings
 

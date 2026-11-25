@@ -68,6 +68,34 @@
 - Tool results are bounded JSON, with `{"error": "..."}` responses so the
   model recovers instead of derailing.
 
+## Permissions
+
+Every tool runs without asking unless the `[permissions]` section of the
+config file, or the matching options, say otherwise:
+
+```toml
+[permissions]
+ask = ["bash", "write", "edit"]
+deny = ["web_search"]
+```
+
+- `deny` (`--deny-tool`): the model does not get the tool.
+- `ask` (`--ask-tool`): each call waits for your answer: `Yes`, `Always in
+  this session`, which stops asking for that tool until kl exits, or `No`.
+  Text typed instead refuses the call and tells the model why. The question
+  shows the arguments of the call, and the number of the subagent when one
+  asks. Without the terminal UI (`-p` and line mode) there is nobody to
+  ask, so these tools are not offered.
+- `allow` (`--allow-tool`): the tool runs, which is the default. The option
+  is of use to lift, for one run, what the config file says.
+
+A tool in several lists gets the strictest, and an unknown tool name is an
+error. The options replace the config file tool by tool. Commands you run
+yourself with `!` are never asked for.
+
+This is a convenience, not a boundary: the sandbox is what keeps the model
+away from the rest of the system.
+
 ## Terminal UI
 
 - Inline terminal UI that keeps native scrollback.
