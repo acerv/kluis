@@ -22,6 +22,7 @@
 compile_error!("harness-sandbox only supports Linux");
 
 pub mod apparmor;
+mod describe;
 mod env;
 mod git;
 mod init;
@@ -31,6 +32,7 @@ mod profile;
 mod protect;
 mod seccomp;
 
+pub use describe::format_size;
 pub use env::command_env;
 pub use git::{GitCheck, GitGuard, NewRepository};
 pub use init::{start_init, stop_others};
