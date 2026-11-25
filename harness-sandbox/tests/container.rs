@@ -355,6 +355,21 @@ fn nested_git_writable_when_allowed() {
 }
 
 #[test]
+fn git_stays_read_only_when_only_a_path_below_it_is_allowed() {
+    let (dir, _) = folder();
+    let git = dir.path().join(".git");
+    fs::create_dir_all(git.join("objects")).unwrap();
+    fs::write(git.join("config"), "init\n").unwrap();
+    let sandbox = system()
+        .allow_write(dir.path())
+        .allow_write(git.join("objects"));
+
+    let res = inside(&sandbox, write(&git.join("config"), "no"));
+    assert_eq!(errno(res), EROFS);
+    assert_eq!(fs::read_to_string(git.join("config")).unwrap(), "init\n");
+}
+
+#[test]
 fn kept_read_only_protects_symlink_in_writable_subfolder() {
     let (dir, _) = folder();
     let (_outside, real) = folder();

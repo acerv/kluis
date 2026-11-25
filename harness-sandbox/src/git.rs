@@ -183,8 +183,9 @@ impl GitScan {
 }
 
 /// Add to `scan` the `.git` folders and files inside `root`, unless
-/// already covered by `writable`, or below `denied` paths or `hidden`
-/// mounts, which commands cannot reach.
+/// `writable` themselves, or below `denied` paths or `hidden` mounts,
+/// which commands cannot reach. A writable path below a `.git` does not
+/// free it: its config and hooks are not what was allowed.
 ///
 /// Commands can make a folder unreadable (`chmod 300`) and still use a
 /// `.git` inside it by name, so a folder that cannot be read is reported,
@@ -228,7 +229,7 @@ pub(crate) fn collect_git(
         }
         let path = entry.path();
         if entry.file_name() == ".git" {
-            if path.exists() && !writable.iter().any(|w| w.starts_with(path)) {
+            if path.exists() && !writable.iter().any(|w| *w == path) {
                 scan.found.push(path.to_path_buf());
             }
             if entry.file_type().is_dir() {
