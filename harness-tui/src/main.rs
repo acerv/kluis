@@ -21,7 +21,7 @@
 mod config;
 mod sandbox;
 
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -36,7 +36,7 @@ use harness_core::tools::{
 };
 use harness_core::{
     provider_name, Agent, AuthConfig, Command, CredentialSource, Error, Event, Installed,
-    SessionData, SessionStore, SessionSummary, Skill, Skills, Thinking, TokenUsage,
+    OutputSchema, SessionData, SessionStore, SessionSummary, Skill, Skills, Thinking, TokenUsage,
 };
 use harness_sandbox::{GitGuard, NetworkAccess};
 use harness_tui::{
@@ -48,6 +48,9 @@ use tokio::runtime::Runtime;
 
 /// Largest standard input `--print` adds to the prompt.
 const MAX_STDIN_BYTES: u64 = 4 << 20;
+
+/// Largest file `--output-schema` reads.
+const MAX_SCHEMA_BYTES: u64 = 256 << 10;
 
 /// Terminal coding agent with native sandboxing.
 #[derive(Parser)]
@@ -216,6 +219,12 @@ pub struct Args {
     /// ending with that object. `json` and `stream` imply --print.
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     output_format: OutputFormat,
+
+    /// Make the answer of a prompt run once a JSON value matching the JSON
+    /// Schema in this file: printed alone as `text`, and as `structured`
+    /// next to `result` otherwise. Implies --print.
+    #[arg(long, value_name = "FILE")]
+    output_schema: Option<PathBuf>,
 
     /// Prompt to run once; starts an interactive chat when absent.
     prompt: Vec<String>,
@@ -452,7 +461,8 @@ async fn run(
     signals: Signals,
 ) -> Result<ExitCode, Error> {
     let cwd = std::env::current_dir()?;
-    if args.print || args.output_format != OutputFormat::Text {
+    let schema = args.output_schema.as_deref().map(read_schema).transpose()?;
+    if args.print || args.output_format != OutputFormat::Text || schema.is_some() {
         args.prompt = vec![read_prompt(&args).await?];
     }
     // A wrong theme fails now, not only once the terminal UI starts.
@@ -521,6 +531,7 @@ async fn run(
             signals,
             &text,
             args.output_format,
+            schema.as_ref(),
         )
         .await;
     }
@@ -600,6 +611,20 @@ async fn read_prompt(args: &Args) -> Result<String, Error> {
         return Err("no prompt: give one as arguments or on standard input".into());
     }
     Ok(text)
+}
+
+/// The schema `--output-schema` names.
+fn read_schema(path: &Path) -> Result<OutputSchema, Error> {
+    let error = |err: &dyn std::fmt::Display| format!("{}: {err}", path.display());
+    let mut text = String::new();
+    std::fs::File::open(path)
+        .and_then(|file| file.take(MAX_SCHEMA_BYTES + 1).read_to_string(&mut text))
+        .map_err(|err| error(&err))?;
+    if text.len() as u64 > MAX_SCHEMA_BYTES {
+        return Err(error(&format_args!("larger than {} KiB", MAX_SCHEMA_BYTES >> 10)).into());
+    }
+    let schema = serde_json::from_str(&text).map_err(|err| error(&err))?;
+    Ok(OutputSchema::new(schema).map_err(|err| error(&err))?)
 }
 
 /// The skills of the user, unless commands cannot read them: a folder
@@ -760,45 +785,102 @@ fn startup_warnings(
     warnings
 }
 
-/// Run the one prompt `text` and print its result as `format` asks.
+/// Run the one prompt `text` and print its result as `format` asks; with
+/// a `schema`, the result is a JSON value matching it.
 async fn run_once(
     agent: &mut Agent,
     mut session: Option<&mut Session>,
     git_guard: Option<&mut GitGuard>,
-    mut signals: Signals,
+    signals: Signals,
     text: &str,
     format: OutputFormat,
+    schema: Option<&OutputSchema>,
 ) -> Result<ExitCode, Error> {
     let output: fn(Event<'_>) = match format {
-        OutputFormat::Text => print_event,
-        OutputFormat::Json => |_| {},
+        OutputFormat::Text if schema.is_none() => print_event,
+        OutputFormat::Text | OutputFormat::Json => |_| {},
         OutputFormat::Stream => harness_tui::json_lines::print_event,
     };
-    let res = prompt_and_persist(
-        agent,
-        session.as_deref_mut(),
+    let mut prompts = Prompts {
+        session: session.as_deref_mut(),
         git_guard,
-        &mut signals,
-        text,
+        signals,
         output,
-        false,
-    )
-    .await;
+    };
+    let res = match schema {
+        Some(schema) => structured_answer(agent, &mut prompts, text, schema).await,
+        None => prompts.run(agent, text).await.map(|done| (done, None)),
+    };
     if format == OutputFormat::Text {
-        return res.map(|_| ExitCode::SUCCESS);
+        if let Some(value) = res?.1 {
+            println!("{value}");
+        }
+        return Ok(ExitCode::SUCCESS);
     }
     let failed = res.is_err();
     let mut out = match res {
-        Ok(done) => serde_json::json!({
-            "result": done.text,
-            "usage": harness_tui::json_lines::usage_json(done.usage),
-        }),
+        Ok((done, structured)) => {
+            let mut out = serde_json::json!({
+                "result": done.text,
+                "usage": harness_tui::json_lines::usage_json(done.usage),
+            });
+            if let Some(value) = structured {
+                out["structured"] = value;
+            }
+            out
+        }
         Err(err) => serde_json::json!({ "error": err.to_string() }),
     };
     out["type"] = if failed { "error" } else { "result" }.into();
     out["session"] = session.map(|session| session.current_id()).into();
     println!("{out}");
     Ok(exit_code(failed))
+}
+
+/// What the prompts of [`run_once`] share.
+struct Prompts<'a> {
+    session: Option<&'a mut Session>,
+    git_guard: Option<&'a mut GitGuard>,
+    signals: Signals,
+    output: fn(Event<'_>),
+}
+
+impl Prompts<'_> {
+    async fn run(&mut self, agent: &mut Agent, text: &str) -> Result<Done, Error> {
+        prompt_and_persist(
+            agent,
+            self.session.as_deref_mut(),
+            self.git_guard.as_deref_mut(),
+            &mut self.signals,
+            text,
+            self.output,
+            false,
+        )
+        .await
+    }
+}
+
+/// Run the prompt `text` for an answer matching `schema`, asking once
+/// more when it does not; return the last answer and the value it holds.
+async fn structured_answer(
+    agent: &mut Agent,
+    prompts: &mut Prompts<'_>,
+    text: &str,
+    schema: &OutputSchema,
+) -> Result<(Done, Option<serde_json::Value>), Error> {
+    let text = format!("{text}\n\n{}", schema.instruction());
+    let mut done = prompts.run(agent, &text).await?;
+    let error = match schema.parse(&done.text) {
+        Ok(value) => return Ok((done, Some(value))),
+        Err(error) => error,
+    };
+    let first = done.usage;
+    done = prompts
+        .run(agent, &OutputSchema::retry_instruction(&error))
+        .await?;
+    done.usage += first;
+    let value = schema.parse(&done.text)?;
+    Ok((done, Some(value)))
 }
 
 /// Run the prompts read from standard input, a line each, until it ends
