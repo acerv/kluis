@@ -64,6 +64,7 @@ kl                               # interactive chat, Ctrl-D to quit
 kl --login anthropic             # use a Claude subscription instead
 kl --install-skills              # install the skills that come with kl
 kl --resume                      # continue a previous session
+kl --resume --fork               # try another direction in a copy of it
 kl --strict                      # make the project read-only
 kl --no-sandbox                  # run tools on the host
 ```
