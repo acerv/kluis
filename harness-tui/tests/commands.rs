@@ -7,7 +7,7 @@
 
 mod common;
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -174,6 +174,54 @@ fn commands_get_no_network() {
         "{other}"
     );
     drop(other_server);
+}
+
+#[test]
+fn commands_reach_allowed_hosts_through_the_proxy_only() {
+    let home = tempdir();
+    let server = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = server.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = server.accept().unwrap();
+        let mut ping = [0; 4];
+        stream.read_exact(&mut ping).unwrap();
+        stream.write_all(b"pong").unwrap();
+        ping
+    });
+
+    let output = run_bash(home.path(), &["--allow-host", "127.0.0.1"], &[], |_| {
+        format!(
+            "ask() {{ exec 3<>/dev/tcp/127.0.0.1/${{https_proxy##*:}}; \
+                      printf 'CONNECT %s HTTP/1.1\\r\\n\\r\\nping' \"$1\" >&3; \
+                      cat <&3; exec 3>&-; echo; }}; \
+             echo PROXY=$https_proxy; \
+             echo ALLOWED=$(ask 127.0.0.1:{port}); \
+             echo REFUSED=$(ask localhost:{port}); \
+             echo DIRECT=$( (exec 3<>/dev/tcp/127.0.0.1/{port}) 2>&1 || true )"
+        )
+    });
+
+    let line = |name: &str| {
+        let prefix = format!("{name}=");
+        output
+            .lines()
+            .find_map(|l| l.strip_prefix(&prefix))
+            .unwrap_or_else(|| panic!("{output}"))
+            .to_owned()
+    };
+    assert_eq!(line("PROXY"), "http://127.0.0.1:3128");
+    let allowed = line("ALLOWED");
+    assert!(allowed.contains("200 Connection established"), "{allowed}");
+    assert!(allowed.ends_with("pong"), "{allowed}");
+    assert_eq!(&server.join().unwrap(), b"ping");
+    let refused = line("REFUSED");
+    assert!(refused.contains("403 Forbidden"), "{refused}");
+    assert!(
+        refused.contains("localhost is not an allowed host"),
+        "{refused}"
+    );
+    // Inside, 127.0.0.1 is the container's own: nothing listens there.
+    assert!(line("DIRECT").contains("Connection refused"), "{output}");
 }
 
 #[test]

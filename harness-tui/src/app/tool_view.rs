@@ -146,6 +146,13 @@ fn format_bash_result(v: &Value, theme: Theme, out: &mut Vec<Line<'static>>) {
     if let Some(path) = v["output_file"].as_str() {
         out.push(Line::styled(format!("  full output: {path}"), theme.muted));
     }
+    if let Some(hosts) = v["refused_hosts"].as_array() {
+        let hosts: Vec<_> = hosts.iter().filter_map(Value::as_str).collect();
+        out.push(Line::styled(
+            format!("  refused hosts: {} (see --allow-host)", hosts.join(", ")),
+            theme.error,
+        ));
+    }
 }
 
 fn truncated_suffix(v: &Value) -> &'static str {
