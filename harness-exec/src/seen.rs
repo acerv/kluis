@@ -38,27 +38,49 @@ impl Stamp {
     }
 }
 
+/// A file as it was when looked at.
+pub(crate) struct Look {
+    key: PathBuf,
+    stamp: Option<Stamp>,
+}
+
 /// The files the model read or wrote, as they were then.
 #[derive(Debug, Default)]
 pub struct SeenFiles(Mutex<HashMap<PathBuf, Stamp>>);
 
 impl SeenFiles {
-    /// Remember `path`, relative to `cwd`, as it is now. A file that
-    /// cannot be looked at is forgotten.
-    pub(crate) fn record(&self, cwd: &Path, path: &str) {
+    /// `path`, relative to `cwd`, as it is now, to [`Self::remember`] once
+    /// the model saw it: looked at after it is read, a change made
+    /// meanwhile would pass for seen.
+    pub(crate) fn look(cwd: &Path, path: &str) -> Look {
         let (key, meta) = locate(cwd, path);
+        Look {
+            key,
+            stamp: meta.as_ref().map(Stamp::of),
+        }
+    }
+
+    /// Remember the file of `look` as it was then. A file that could not
+    /// be looked at is forgotten.
+    pub(crate) fn remember(&self, look: Look) {
+        let Look { key, stamp } = look;
         let mut seen = lock(&self.0);
-        match meta {
-            Some(meta) => {
+        match stamp {
+            Some(stamp) => {
                 if seen.len() >= MAX_SEEN_FILES && !seen.contains_key(&key) {
                     seen.clear();
                 }
-                seen.insert(key, Stamp::of(&meta));
+                seen.insert(key, stamp);
             }
             None => {
                 seen.remove(&key);
             }
         }
+    }
+
+    /// Remember `path`, relative to `cwd`, as it is now.
+    pub(crate) fn record(&self, cwd: &Path, path: &str) {
+        self.remember(Self::look(cwd, path));
     }
 
     /// Fail when `path`, relative to `cwd`, changed since it was
