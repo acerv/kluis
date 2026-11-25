@@ -15,6 +15,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use caps::CapSet;
+use hakoniwa::{Child, Stdio};
 use harness_sandbox::Sandbox;
 
 /// System folders, as kl shows them.
@@ -37,6 +38,15 @@ pub fn inside<F>(sandbox: &Sandbox, body: F) -> io::Result<String>
 where
     F: Fn() -> io::Result<String> + Send + Sync + 'static,
 {
+    output(spawn_inside(sandbox, body))
+}
+
+/// Start `body` in the container of `sandbox` as [`inside`] runs it, with
+/// its output piped.
+pub fn spawn_inside<F>(sandbox: &Sandbox, body: F) -> Child
+where
+    F: Fn() -> io::Result<String> + Send + Sync + 'static,
+{
     let container = sandbox.container().unwrap();
     // SAFETY: the closure runs in the forked child, which hakoniwa already
     // sets up with allocations of its own; it only makes plain system calls
@@ -54,7 +64,16 @@ where
             Err(err) => err.raw_os_error().unwrap_or(FAILED),
         })
     };
-    let out = command.output().unwrap();
+    command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap()
+}
+
+/// What `child`, started by [`spawn_inside`], returned or failed with.
+pub fn output(mut child: Child) -> io::Result<String> {
+    let out = child.wait_with_output().unwrap();
     match out.status.code {
         0 => Ok(String::from_utf8(out.stdout).unwrap()),
         FAILED => panic!(
