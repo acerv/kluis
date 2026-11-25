@@ -45,6 +45,18 @@ pub struct Question {
 }
 
 impl Question {
+    /// The question `text` with the answers `options` suggested, and where
+    /// its answer comes back.
+    pub(crate) fn new(text: String, options: Vec<String>) -> (Self, oneshot::Receiver<String>) {
+        let (reply, answer) = oneshot::channel();
+        let question = Self {
+            text,
+            options,
+            reply,
+        };
+        (question, answer)
+    }
+
     /// Send the user's answer back to the model.
     pub fn answer(self, answer: impl Into<String>) {
         // The agent may have stopped waiting, e.g. when cancelled.
@@ -93,14 +105,8 @@ impl AskTool {
         }
         let no_user = || ToolError::new("no user available to answer");
         let asker = asker.ok_or_else(no_user)?;
-        let (reply, answer) = oneshot::channel();
-        asker
-            .send(Question {
-                text: self.question,
-                options: self.options,
-                reply,
-            })
-            .map_err(|_| no_user())?;
+        let (question, answer) = Question::new(self.question, self.options);
+        asker.send(question).map_err(|_| no_user())?;
         let answer = answer
             .await
             .map_err(|_| ToolError::new("the user did not answer"))?;

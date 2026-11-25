@@ -27,7 +27,7 @@ use crate::tools::{
     ReadOutput, SearchTool, Searcher, SkillTool, TaskOutput, TaskTool, ToolContext, ToolDetails,
     WebClient,
 };
-use crate::{Event, Skill};
+use crate::{Event, Permissions, Skill};
 
 mod compact;
 mod request;
@@ -68,6 +68,8 @@ pub struct Agent {
     /// Shared with the subagents.
     executor: Arc<Executor>,
     host: HostTools,
+    /// Shared with the subagents, with what the user allowed meanwhile.
+    permissions: Permissions,
     retry: RetryPolicy,
     max_turns: Option<usize>,
     auto_compact_tokens: Option<u64>,
@@ -130,6 +132,7 @@ impl Agent {
             cache_key: Uuid::new_v4(),
             executor: Arc::default(),
             host: HostTools::default(),
+            permissions: Permissions::default(),
             retry: RetryPolicy::default(),
             max_turns: Some(DEFAULT_MAX_TURNS),
             auto_compact_tokens: Some(DEFAULT_AUTO_COMPACT_TOKENS),
@@ -168,6 +171,7 @@ impl Agent {
                 asker: None,
                 ..self.host.clone()
             },
+            permissions: self.permissions.clone(),
             retry: self.retry,
             max_turns: self.max_turns,
             auto_compact_tokens: self.auto_compact_tokens,
@@ -288,8 +292,17 @@ impl Agent {
         self
     }
 
-    /// Offer the `ask_user` tool, sending its questions through `asker`.
+    /// Follow `permissions` for the calls of the tools: see
+    /// [`Permissions`].
+    pub fn with_permissions(mut self, permissions: Permissions) -> Self {
+        self.permissions.rules = permissions.rules;
+        self
+    }
+
+    /// Offer the `ask_user` tool, sending its questions through `asker`,
+    /// which also gets the calls waiting for an approval.
     pub fn with_asker(mut self, asker: Asker) -> Self {
+        self.permissions.asker = Some(asker.clone());
         if self.host.asker.replace(asker).is_none() {
             self.req = self.req.append_tool(AskTool::definition());
         }
@@ -697,7 +710,12 @@ impl Agent {
         let sub = (!self.sub && calls.iter().any(|c| c.fn_name == tools::TASK_TOOL))
             .then(|| self.subagent());
         let sub = sub.as_ref();
-        let (host, executor) = (&self.host, &*self.executor);
+        let tools = Tools {
+            host: &self.host,
+            permissions: &self.permissions,
+            executor: &self.executor,
+            sub,
+        };
         let mut pending = Pending {
             messages: &mut self.req.messages,
             calls: &calls,
@@ -736,7 +754,7 @@ impl Agent {
                         let mut report = |event: Event<'_>| {
                             (events.lock().unwrap_or_else(|err| err.into_inner()))(event)
                         };
-                        answer(host, executor, call, refusal, sub, &tag, &mut report).await
+                        tools.answer(call, refusal, &tag, &mut report).await
                     }
                 }))
                 .await;
@@ -749,7 +767,7 @@ impl Agent {
                 let call = &calls[idx];
                 on_event(Event::ToolCall(call));
                 let refusal = refusal(idx, call);
-                let result = answer(host, executor, call, refusal, sub, "", on_event).await;
+                let result = tools.answer(call, refusal, "", on_event).await;
                 pending.answer(result, on_event);
                 idx += 1;
             }
@@ -828,30 +846,44 @@ fn user_call(name: &str, args: serde_json::Value) -> ToolCall {
     }
 }
 
-/// The result of `call`: `refusal` when it must not run, else what a
-/// subagent made from `sub` (with `tag` before its lines), a host tool or
-/// the executor answers. `on_event` gets what it reports meanwhile.
-async fn answer(
-    host: &HostTools,
-    executor: &Executor,
-    call: &ToolCall,
-    refusal: Option<&'static str>,
-    sub: Option<&Agent>,
-    tag: &str,
-    on_event: &mut (dyn FnMut(Event<'_>) + Send),
-) -> (ToolResponse, Option<ToolDetails>) {
-    if let Some(why) = refusal {
-        return (error_response(call, why), None);
+/// What answers the calls of a turn.
+#[derive(Clone, Copy)]
+struct Tools<'a> {
+    host: &'a HostTools,
+    permissions: &'a Permissions,
+    executor: &'a Executor,
+    /// What the subagents of the tasks are made from.
+    sub: Option<&'a Agent>,
+}
+
+impl Tools<'_> {
+    /// The result of `call`: `refusal` when it must not run or what the
+    /// user says when asked to approve it, else what a subagent (with
+    /// `tag` before its lines), a host tool or the executor answers.
+    /// `on_event` gets what it reports meanwhile.
+    async fn answer(
+        self,
+        call: &ToolCall,
+        refusal: Option<&'static str>,
+        tag: &str,
+        on_event: &mut (dyn FnMut(Event<'_>) + Send),
+    ) -> (ToolResponse, Option<ToolDetails>) {
+        if let Some(why) = refusal {
+            return (error_response(call, why), None);
+        }
+        if let Some(why) = self.permissions.refusal(call, tag).await {
+            return (error_response(call, &why), None);
+        }
+        if let (tools::TASK_TOOL, Some(sub)) = (call.fn_name.as_str(), self.sub) {
+            return (sub.run_task(call, tag, on_event).await, None);
+        }
+        if let Some(resp) = self.host.run(call).await {
+            return (resp, None);
+        }
+        self.executor
+            .execute(call, |chunk| on_event(Event::ToolOutput(chunk)))
+            .await
     }
-    if let (tools::TASK_TOOL, Some(sub)) = (call.fn_name.as_str(), sub) {
-        return (sub.run_task(call, tag, on_event).await, None);
-    }
-    if let Some(resp) = host.run(call).await {
-        return (resp, None);
-    }
-    executor
-        .execute(call, |chunk| on_event(Event::ToolOutput(chunk)))
-        .await
 }
 
 fn same_call(a: &ToolCall, b: &ToolCall) -> bool {

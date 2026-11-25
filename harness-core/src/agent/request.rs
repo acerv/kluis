@@ -88,6 +88,9 @@ impl Agent {
         messages.extend(self.req.messages.iter().cloned());
 
         let mut tools = self.req.tools.clone();
+        if let Some(tools) = tools.as_mut().filter(|_| !self.permissions.is_empty()) {
+            tools.retain(|tool| self.permissions.offers(tool.name.as_ref()));
+        }
         if anthropic_cache {
             if !has_leading_system {
                 if let Some(last_tool) = tools.as_mut().and_then(|t| t.last_mut()) {

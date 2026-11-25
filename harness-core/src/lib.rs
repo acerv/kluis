@@ -21,6 +21,7 @@ mod mention;
 mod models;
 mod net;
 pub mod oauth;
+mod permissions;
 pub mod private_file;
 mod prompt;
 mod retry;
@@ -42,6 +43,7 @@ pub use models::{
     discover_models, discover_models_with_timeout, is_chat_model, provider_name, thinking_levels,
     ModelInfo, ModelList,
 };
+pub use permissions::{Permission, Permissions};
 pub use prompt::{
     find_agents_files, project_agents_file, remember, system_prompt, AGENTS_FILE, MAX_AGENTS_BYTES,
 };
