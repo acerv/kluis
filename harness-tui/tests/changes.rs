@@ -382,3 +382,28 @@ async fn undo_follows_no_link_out_of_the_project() {
     assert_eq!(text(&outside.join("new.txt")), "outside new\n");
     assert_eq!(text(&outside.join("c.txt")), "outside c\n");
 }
+
+#[tokio::test]
+async fn undo_keeps_a_file_that_could_not_be_read() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let file = root.join("notes.txt");
+    put(&file, "notes\n");
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read(&file).is_ok() {
+        // Root reads any file.
+        return;
+    }
+    let watcher = watching(root).await;
+    watcher.checkpoint(0, 0).await;
+    // Readable since the prompt: not a file it added.
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+
+    let plan = watcher.undo_plan().await.unwrap();
+    assert!(plan.files.is_empty(), "{:?}", plan.files);
+    assert_eq!(plan.kept, [(PathBuf::from("notes.txt"), "cannot be read")]);
+    watcher.undo().await.unwrap();
+    assert_eq!(text(&file), "notes\n");
+}
