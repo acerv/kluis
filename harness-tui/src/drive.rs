@@ -26,6 +26,8 @@ pub(crate) struct Ui {
     pub(crate) signals: Signals,
     /// The user's own `AGENTS.md`.
     pub(crate) agents_file: Option<PathBuf>,
+    /// Whether the question shown asks to confirm `/undo`.
+    pub(crate) undo_asked: bool,
 }
 
 impl Ui {

@@ -5,13 +5,15 @@
 
 use crossterm::event::{Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers};
 use genai::adapter::AdapterKind;
+use genai::chat::ChatMessage;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use harness_core::{export, Agent, Error, ModelInfo, ModelList, Thinking};
 
 use crate::drive::{run_compact, Ui};
 use crate::session::{short_id, Session};
-use crate::{clipboard, complete, App, SlashCommand};
+use crate::{clipboard, complete, App, ChangeKind, SlashCommand, Undo, UndoPlan};
 
 /// Take the last prompt out of the conversation, to send it again.
 pub(crate) fn retry(
@@ -30,6 +32,120 @@ pub(crate) fn retry(
     }
     app.push_info("[retrying the last prompt]");
     Some(prompt)
+}
+
+/// The answer that confirms `/undo`.
+const UNDO: &str = "Undo";
+
+/// What tells the last of `messages`: a checkpoint of the files goes with
+/// the conversation it was taken in, not with one as long.
+pub(crate) fn history_tag(messages: &[ChatMessage]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    if let Some(last) = messages.last() {
+        serde_json::to_string(last)
+            .unwrap_or_default()
+            .hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// Forget the checkpoints of the files that are not of the conversation
+/// of `agent` as it is now: the one of a prompt that left no message, as
+/// when it failed at once or is sent again, and all of them once the
+/// conversation was rewritten, as a compaction does.
+pub(crate) async fn sync_checkpoints(app: &App, agent: &Agent) {
+    let history = agent.history();
+    while let Some((messages, tag)) = app.last_checkpoint().await {
+        let intact = messages <= history.len() && history_tag(&history[..messages]) == tag;
+        if intact && messages < history.len() {
+            return;
+        }
+        app.forget_checkpoints(!intact);
+    }
+}
+
+/// What `/undo` would do in the conversation of `agent`.
+async fn undo_plan(app: &App, agent: &Agent) -> Option<UndoPlan> {
+    sync_checkpoints(app, agent).await;
+    app.undo_plan().await
+}
+
+/// One line for each file `/undo` handles, as `/diff` names them.
+fn undo_lines(plan: &UndoPlan) -> Vec<String> {
+    let changed = plan.files.iter().map(|file| {
+        let what = match file.kind {
+            ChangeKind::Added => "delete",
+            ChangeKind::Modified => "restore",
+            ChangeKind::Deleted => "create",
+        };
+        format!("  {what:<8}{}", file.path.display())
+    });
+    let kept = plan
+        .kept
+        .iter()
+        .map(|(path, reason)| format!("  keep    {} ({reason})", path.display()));
+    changed.chain(kept).collect()
+}
+
+/// Show what `/undo` would do and ask to confirm it. Returns whether the
+/// question was asked.
+async fn ask_undo(app: &mut App, agent: &Agent) -> bool {
+    let Some(plan) = undo_plan(app, agent).await else {
+        app.push_info("[nothing to undo]");
+        return false;
+    };
+    let question = if plan.files.is_empty() && plan.kept.is_empty() {
+        "The last prompt changed no file. Drop it from the conversation?".to_owned()
+    } else {
+        app.push_info("Files changed since the last prompt was sent:");
+        for line in undo_lines(&plan) {
+            app.push_info(line);
+        }
+        "Put these files back as they were, and drop the last prompt from the conversation?"
+            .to_owned()
+    };
+    app.push_info(&question);
+    app.ask(&question, &[UNDO.to_owned(), "Cancel".to_owned()]);
+    true
+}
+
+/// With the `answer` that confirms it, put the files back as they were
+/// before the last prompt, and drop the prompt and what it led to.
+pub(crate) async fn undo(
+    app: &mut App,
+    answer: &str,
+    agent: &mut Agent,
+    session: Option<&mut Session>,
+) {
+    if answer != UNDO {
+        app.push_info("[undo cancelled]");
+        return;
+    }
+    // Looked up again: only a checkpoint of this conversation is used.
+    if undo_plan(app, agent).await.is_none() {
+        app.push_info("[nothing to undo]");
+        return;
+    }
+    let Some(Undo { plan, failed }) = app.undo().await else {
+        app.push_info("[nothing to undo]");
+        return;
+    };
+    let mut history = agent.history().to_vec();
+    history.truncate(plan.messages);
+    agent.set_history(history);
+    if let Some(session) = session {
+        if let Err(err) = session.record_rewind(agent.history()) {
+            app.push_info(format!("[session save error: {err}]"));
+        }
+    }
+    for (path, err) in &failed {
+        app.push_info(format!("[undo error: {}: {err}]", path.display()));
+    }
+    let files = plan.files.len() - failed.len();
+    let unit = if files == 1 { "file" } else { "files" };
+    app.push_info(format!(
+        "[undone: {files} {unit} put back, last prompt dropped]"
+    ));
 }
 
 /// Write the conversation as Markdown to `path`, by default to a file of
@@ -119,6 +235,7 @@ pub(crate) async fn handle_slash(
     match cmd {
         SlashCommand::Quit => return Ok(true),
         SlashCommand::Retry => *next_prompt = retry(agent, &mut ui.app, session),
+        SlashCommand::Undo => ui.undo_asked = ask_undo(&mut ui.app, agent).await,
         SlashCommand::Compact(focus) => {
             if agent.history().is_empty() {
                 ui.app.push_info("[nothing to compact]");
@@ -383,6 +500,8 @@ pub(crate) fn resume_session(
         return;
     }
     session.activate(&data);
+    // The files as they were before the prompts of another conversation.
+    app.forget_checkpoints(true);
     let model = model.unwrap_or_else(|| data.meta.model.clone());
     let saved = if fork {
         session.fork(&model, &data.messages)

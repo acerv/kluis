@@ -17,7 +17,7 @@ use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::render_diff;
-use crate::changes::{ChangeKind, ChangesUpdate, FileChange, Watcher, MAX_FILES};
+use crate::changes::{ChangeKind, ChangesUpdate, FileChange, Undo, UndoPlan, Watcher, MAX_FILES};
 use crate::style::Theme;
 use crate::text::char_width;
 
@@ -91,6 +91,39 @@ impl DiffView {
             if self.ticks == 0 {
                 self.refresh();
             }
+        }
+    }
+
+    /// Remember the files as they are, before a prompt joins a
+    /// conversation of `messages` messages, the last one told by `tag`.
+    pub async fn checkpoint(&self, messages: usize, tag: u64) {
+        if let Some(watcher) = &self.watcher {
+            watcher.checkpoint(messages, tag).await;
+        }
+    }
+
+    /// What [`Self::undo`] would do, `None` when there is nothing to undo.
+    pub async fn undo_plan(&self) -> Option<UndoPlan> {
+        self.watcher.as_ref()?.undo_plan().await
+    }
+
+    /// Put the files back as they were before the last prompt.
+    pub async fn undo(&self) -> Option<Undo> {
+        let undo = self.watcher.as_ref()?.undo().await;
+        self.refresh();
+        undo
+    }
+
+    /// The messages and the tag the last checkpoint was taken with.
+    pub async fn last_checkpoint(&self) -> Option<(usize, u64)> {
+        self.watcher.as_ref()?.last_checkpoint().await
+    }
+
+    /// Forget the files as they were before the last prompt, or before
+    /// `all` of them.
+    pub fn forget_checkpoints(&self, all: bool) {
+        if let Some(watcher) = &self.watcher {
+            watcher.forget_checkpoints(all);
         }
     }
 
