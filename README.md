@@ -36,7 +36,8 @@ K-Luis does neither. Commands run in a `hakoniwa` container, and:
 - `.git` stays read-only, so hooks and config cannot run code as you.
 - Your home directory is hidden, unless you expose folders explicitly.
 - API keys and `~/.kluis` are never exposed to the sandbox.
-- There is no network unless you allow it: all of it, or only some TCP ports.
+- There is no network unless you allow it: all of it, only some TCP ports, or
+  only some hosts, through a proxy.
   `web_fetch` can be limited to a list of hosts.
 
 A malicious instruction in a file or web page can only affect the folders you

@@ -8,8 +8,9 @@ container that shows only the folders you configure.
 - The current folder is writable. With `--strict` it is read-only, and
   `--no-sandbox` turns the container off.
 - `.git` stays read-only, and a new `.git` is disabled after each prompt.
-- There is no network by default. You can allow all of it, or some TCP ports
-  (Linux 6.7+). Allowed ports are open on every host, not only locally.
+- There is no network by default. You can allow all of it, some TCP ports
+  (Linux 6.7+), which are open on every host, not only locally, or some
+  hosts through a proxy `kl` runs. See [Allowed hosts](#allowed-hosts).
 - `$HOME` is an empty private folder that lives in memory and is gone when
   `kl` exits. Only the current folder, the `sandbox.read` and
   `sandbox.write` paths below it and, read-only, `~/.kluis/skills` show
@@ -34,8 +35,8 @@ See [Configuration](configuration.md) for the settings that control this.
 To check the result, `kl --sandbox-info` prints the sandbox a run with the
 same options and config file would get, then exits: the paths commands can
 change, the ones they can only read, the ones hidden from them, the
-network, the limits, the environment variables passed and the web tools
-offered, followed by the warnings a run would start with. The paths are the
+network, the limits, the environment variables passed, the hosts of the
+proxy and the web tools offered, followed by the warnings a run would start with. The paths are the
 mounts of the container itself, in the order they are made.
 
 ```sh
@@ -103,6 +104,37 @@ documentation it needs while commands stay off the network, and cannot
 send what it reads to a host you did not list. `web_search` is not offered
 then. It asks only its search engine, which may be private when set with
 `--searxng-url`.
+
+## Allowed hosts
+
+`--allow-host`, or `hosts` in `[sandbox]`, lets commands reach the hosts
+listed and their subdomains, and nothing else, without `--network`. It
+fits builds that download packages:
+
+```toml
+[sandbox]
+hosts = ["crates.io", "static.crates.io", "index.crates.io"]
+```
+
+Commands keep a network of their own with nothing in it. `kl` brings up
+its loopback interface and listens there, on `127.0.0.1:3128`, with a
+proxy running on your machine: it forwards plain HTTP requests and tunnels
+`CONNECT` ones, as HTTPS uses, to the listed hosts only. `http_proxy`,
+`https_proxy` and `all_proxy`, also in capitals, point at it, and
+`no_proxy` keeps `localhost` off it. Programs that ignore these variables
+get no network, and DNS does not work: the proxy resolves names itself.
+
+A refused request gets a `403` answer naming the host, and the result of
+the command lists the hosts refused, so you know which one to add. As for
+`web_hosts`, a listed host may be private.
+
+The proxy limits where commands connect, not what they send there: it
+reads no TLS, and a command may still upload the project to a host you
+listed, such as a code hosting site. List only hosts you trust with it.
+
+It needs a sandbox without network, so it cannot be used with
+`--allow-connect`, and limits nothing with `--network`, where commands
+reach every host: `kl` warns then.
 
 ## Background commands
 

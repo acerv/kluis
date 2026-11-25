@@ -60,6 +60,7 @@ tool by tool.
 | `sandbox.deny`          | Paths to hide, on top of the built-in credentials    | none                |
 | `sandbox.connect`       | TCP ports the model can connect to                   | none                |
 | `sandbox.network`       | Allow any network                                    | `false`             |
+| `sandbox.hosts`         | Hosts commands reach through a proxy, with their subdomains, without `network`; not with `connect`, see [Allowed hosts](sandbox.md#allowed-hosts) | none |
 | `sandbox.web_hosts`     | Only hosts `web_fetch` reaches, with their subdomains and private addresses; offers it without `network`, see [Web tools](sandbox.md#web-tools) | any public host |
 | `sandbox.background_commands` | Let the model keep commands running across prompts, see [Background commands](sandbox.md#background-commands) | `false` |
 | `sandbox.max_processes` | Processes and threads at once                        | `1024`              |
@@ -113,6 +114,7 @@ Options with a config key take the same values as the key.
 | `--deny-read PATH`             | `sandbox.deny`                | Hide this path from the harness and its commands |
 | `--allow-connect PORT`         | `sandbox.connect`             | Let the harness connect to this TCP port, e.g. for a local model |
 | `--network`                    | `sandbox.network`             | Allow any network, to commands too |
+| `--allow-host HOST`            | `sandbox.hosts`               | Let commands reach this host and its subdomains through a proxy, without `--network`, see [Allowed hosts](sandbox.md#allowed-hosts) |
 | `--web-host HOST`              | `sandbox.web_hosts`           | Let `web_fetch` reach only this host and its subdomains, private addresses included, even without `--network`, see [Web tools](sandbox.md#web-tools) |
 | `--searxng-url URL`            | `generic.searxng_url`         | Search the web with this SearXNG instance instead of DuckDuckGo |
 | `--max-processes N`            | `sandbox.max_processes`       | Processes and threads the harness and its commands may run at once |
