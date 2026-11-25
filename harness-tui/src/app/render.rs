@@ -229,7 +229,7 @@ impl App {
                 }
                 None => format!("{spin} Working…{elapsed}  (Ctrl-O to hide · esc to cancel)"),
             };
-            let label = match self.queued {
+            let label = match self.queued.len() {
                 0 => label,
                 n => format!("{label} · {n} queued"),
             };
