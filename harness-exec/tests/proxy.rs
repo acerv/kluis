@@ -135,3 +135,39 @@ fn stops_when_dropped() {
     drop(proxy);
     assert!(TcpStream::connect((Ipv4Addr::LOCALHOST, port)).is_err());
 }
+
+#[test]
+fn a_side_that_stops_reading_does_not_hold_the_other_way() {
+    let (_proxy, port) = proxy(&["127.0.0.1"]);
+    // A server that never reads, and answers after a while.
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let target = listener.local_addr().unwrap().port();
+    let (sent, wait) = std::sync::mpsc::channel::<()>();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        wait.recv().unwrap();
+        stream.write_all(b"pong").unwrap();
+        // Kept open until the client got the answer.
+        let _ = wait.recv();
+    });
+
+    let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+    write!(client, "CONNECT 127.0.0.1:{target} HTTP/1.1\r\n\r\n").unwrap();
+    let mut established = [0u8; 39];
+    client.read_exact(&mut established).unwrap();
+
+    // Send until the proxy takes no more, waiting for the server to read.
+    let timeout = Some(std::time::Duration::from_millis(500));
+    client.set_write_timeout(timeout).unwrap();
+    while client.write(&[0u8; 65536]).is_ok() {}
+    sent.send(()).unwrap();
+
+    client
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
+    let mut answer = [0u8; 4];
+    client.read_exact(&mut answer).unwrap();
+    assert_eq!(&answer, b"pong");
+    drop(sent);
+    server.join().unwrap();
+}
