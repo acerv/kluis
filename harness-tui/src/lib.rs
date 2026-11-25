@@ -43,8 +43,8 @@ pub use app::{
     SlashCommand, TRUNCATED_NOTICE, VIEWPORT_HEIGHT,
 };
 pub use changes::{
-    ChangeKind, ChangesUpdate, FileChange, Snapshot, Watcher, MAX_FILES, MAX_SNAPSHOT_BYTES,
-    MAX_TEXT_BYTES,
+    ChangeKind, ChangesUpdate, FileChange, Snapshot, Undo, UndoPlan, Watcher, MAX_CHECKPOINTS,
+    MAX_FILES, MAX_SNAPSHOT_BYTES, MAX_TEXT_BYTES,
 };
 pub use clipboard::{last_assistant_text, osc52_sequence, paste_image};
 pub use complete::is_builtin;

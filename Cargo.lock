@@ -1131,6 +1131,7 @@ dependencies = [
  "ignore",
  "libc",
  "ratatui",
+ "rustix",
  "scopeguard",
  "serde",
  "serde_json",

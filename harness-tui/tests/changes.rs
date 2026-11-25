@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use harness_core::tools::DiffLine;
-use harness_tui::{ChangeKind, ChangesUpdate, FileChange, Snapshot, Watcher, MAX_TEXT_BYTES};
+use harness_tui::{
+    ChangeKind, ChangesUpdate, FileChange, Snapshot, Watcher, MAX_CHECKPOINTS, MAX_TEXT_BYTES,
+};
 
 fn change(path: &str, kind: ChangeKind, lines: Option<(usize, usize)>) -> FileChange {
     FileChange {
@@ -164,4 +166,219 @@ async fn watcher_answers_scans_and_diffs() {
         }
         other => panic!("not a diff: {other:?}"),
     }
+}
+
+/// A watcher of `root` once it took its snapshot.
+async fn watching(root: &Path) -> Watcher {
+    let mut watcher = Watcher::spawn(root.to_owned()).unwrap();
+    watcher.scan();
+    next(&mut watcher).await;
+    watcher
+}
+
+fn text(path: &Path) -> String {
+    fs::read_to_string(path).unwrap()
+}
+
+#[tokio::test]
+async fn undo_puts_the_files_back_as_at_the_checkpoint() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    put(&root.join("src/main.rs"), "one\ntwo\n");
+    put(&root.join("run.sh"), "#!/bin/sh\n");
+    fs::set_permissions(root.join("run.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+    put(&root.join("docs/old/notes.txt"), "notes\n");
+    let watcher = watching(root).await;
+    assert_eq!(watcher.undo_plan().await, None);
+    assert_eq!(watcher.undo().await, None);
+
+    // Changed before the prompt: this is what comes back, not the start.
+    put(&root.join("src/main.rs"), "one\ntwo\nthree\n");
+    watcher.checkpoint(4, 7).await;
+
+    put(&root.join("src/main.rs"), "1\ntwo\nthree\n");
+    fs::remove_file(root.join("run.sh")).unwrap();
+    fs::remove_dir_all(root.join("docs")).unwrap();
+    put(&root.join("new/deep/file.txt"), "n\n");
+
+    let plan = watcher.undo_plan().await.unwrap();
+    assert_eq!((plan.messages, plan.tag), (4, 7));
+    assert_eq!(
+        plan.files,
+        vec![
+            change("docs/old/notes.txt", ChangeKind::Deleted, Some((0, 1))),
+            change("new/deep/file.txt", ChangeKind::Added, Some((1, 0))),
+            change("run.sh", ChangeKind::Deleted, Some((0, 1))),
+            change("src/main.rs", ChangeKind::Modified, Some((1, 1))),
+        ]
+    );
+    assert!(plan.kept.is_empty());
+    // Looking changes nothing.
+    assert_eq!(text(&root.join("src/main.rs")), "1\ntwo\nthree\n");
+
+    let undo = watcher.undo().await.unwrap();
+    assert_eq!(undo.plan, plan);
+    assert!(undo.failed.is_empty(), "{:?}", undo.failed);
+    assert_eq!(text(&root.join("src/main.rs")), "one\ntwo\nthree\n");
+    assert_eq!(text(&root.join("docs/old/notes.txt")), "notes\n");
+    assert!(!root.join("new/deep/file.txt").exists());
+    let mode = fs::metadata(root.join("run.sh"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o755);
+
+    // The checkpoint is used up.
+    assert_eq!(watcher.undo_plan().await, None);
+}
+
+#[tokio::test]
+async fn undo_walks_back_one_prompt_at_a_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("a.txt");
+    put(&file, "start\n");
+    let watcher = watching(dir.path()).await;
+
+    watcher.checkpoint(0, 0).await;
+    put(&file, "first\n");
+    watcher.checkpoint(2, 0).await;
+    put(&file, "second\n");
+
+    assert!(watcher.undo().await.unwrap().failed.is_empty());
+    assert_eq!(text(&file), "first\n");
+    assert!(watcher.undo().await.unwrap().failed.is_empty());
+    assert_eq!(text(&file), "start\n");
+    assert_eq!(watcher.undo().await, None);
+}
+
+#[tokio::test]
+async fn checkpoints_of_prompts_sent_again_are_forgotten() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("a.txt");
+    put(&file, "start\n");
+    let watcher = watching(dir.path()).await;
+
+    watcher.checkpoint(0, 0).await;
+    put(&file, "first\n");
+    watcher.checkpoint(2, 0).await;
+    put(&file, "second\n");
+    // The second prompt is sent again, as `/retry` does.
+    watcher.checkpoint(2, 0).await;
+    put(&file, "second again\n");
+
+    watcher.undo().await.unwrap();
+    assert_eq!(text(&file), "second\n");
+    watcher.undo().await.unwrap();
+    assert_eq!(text(&file), "start\n");
+    assert_eq!(watcher.undo().await, None);
+
+    // Forgetting one leaves the files alone.
+    watcher.checkpoint(0, 0).await;
+    put(&file, "kept\n");
+    assert_eq!(watcher.last_checkpoint().await, Some((0, 0)));
+    watcher.forget_checkpoints(false);
+    assert_eq!(watcher.last_checkpoint().await, None);
+    assert_eq!(watcher.undo().await, None);
+    assert_eq!(text(&file), "kept\n");
+
+    // All of them, when the conversation is another one.
+    watcher.checkpoint(0, 0).await;
+    watcher.checkpoint(2, 0).await;
+    watcher.forget_checkpoints(true);
+    assert_eq!(watcher.undo().await, None);
+}
+
+#[tokio::test]
+async fn only_the_last_checkpoints_are_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("a.txt");
+    put(&file, "0\n");
+    let watcher = watching(dir.path()).await;
+    for prompt in 1..=MAX_CHECKPOINTS + 2 {
+        watcher.checkpoint(prompt, 0).await;
+        put(&file, &format!("{prompt}\n"));
+    }
+    let mut undone = 0;
+    while watcher.undo().await.is_some() {
+        undone += 1;
+    }
+    assert_eq!(undone, MAX_CHECKPOINTS);
+    assert_eq!(text(&file), "2\n");
+}
+
+#[tokio::test]
+async fn undo_leaves_what_it_cannot_put_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::write(root.join("image.bin"), [0u8, 1, 2]).unwrap();
+    put(&root.join("a.txt"), "a\n");
+    let watcher = watching(root).await;
+    watcher.checkpoint(0, 0).await;
+
+    fs::write(root.join("image.bin"), [3u8, 0, 4, 5]).unwrap();
+    // A binary file made since can be deleted, though.
+    fs::write(root.join("new.bin"), [0u8]).unwrap();
+    put(&root.join("a.txt"), "b\n");
+
+    let undo = watcher.undo().await.unwrap();
+    assert_eq!(
+        undo.plan.kept,
+        vec![(PathBuf::from("image.bin"), "binary file")]
+    );
+    assert_eq!(
+        undo.plan.files,
+        vec![
+            change("a.txt", ChangeKind::Modified, Some((1, 1))),
+            change("new.bin", ChangeKind::Added, None),
+        ]
+    );
+    assert!(undo.failed.is_empty(), "{:?}", undo.failed);
+    assert_eq!(fs::read(root.join("image.bin")).unwrap(), [3u8, 0, 4, 5]);
+    assert!(!root.join("new.bin").exists());
+    assert_eq!(text(&root.join("a.txt")), "a\n");
+}
+
+#[tokio::test]
+async fn undo_follows_no_link_out_of_the_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("project");
+    let outside = dir.path().join("outside");
+    put(&root.join("sub/a.txt"), "inside\n");
+    put(&root.join("b.txt"), "b\n");
+    put(&root.join("gone/c.txt"), "c\n");
+    put(&outside.join("a.txt"), "outside\n");
+    put(&outside.join("secret"), "secret\n");
+    put(&outside.join("c.txt"), "outside c\n");
+    let watcher = watching(&root).await;
+    watcher.checkpoint(0, 0).await;
+
+    // As a command of the model could leave them: a folder and a file
+    // replaced by links to the outside, a file deleted through a link.
+    fs::remove_dir_all(root.join("sub")).unwrap();
+    symlink(&outside, root.join("sub")).unwrap();
+    fs::remove_file(root.join("b.txt")).unwrap();
+    symlink(outside.join("secret"), root.join("b.txt")).unwrap();
+
+    let undo = watcher.undo().await.unwrap();
+    // The folder is not gone through: its file cannot be made again.
+    let failed: Vec<_> = undo.failed.iter().map(|(path, _)| path.clone()).collect();
+    assert_eq!(failed, vec![PathBuf::from("sub/a.txt")]);
+    assert_eq!(text(&outside.join("a.txt")), "outside\n");
+    // The link is replaced by the file, what it names is left alone.
+    assert_eq!(text(&outside.join("secret")), "secret\n");
+    assert!(!root.join("b.txt").is_symlink());
+    assert_eq!(text(&root.join("b.txt")), "b\n");
+
+    // A file added since is not deleted through a link either.
+    watcher.checkpoint(0, 0).await;
+    put(&root.join("gone/new.txt"), "new\n");
+    let moved = dir.path().join("moved");
+    fs::rename(root.join("gone"), &moved).unwrap();
+    put(&outside.join("new.txt"), "outside new\n");
+    symlink(&outside, root.join("gone")).unwrap();
+    watcher.undo().await.unwrap();
+    assert_eq!(text(&outside.join("new.txt")), "outside new\n");
+    assert_eq!(text(&outside.join("c.txt")), "outside c\n");
 }

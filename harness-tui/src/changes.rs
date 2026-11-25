@@ -14,11 +14,17 @@ use std::io::{self, Read};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc as std_mpsc;
+use std::sync::Arc;
 use std::thread;
 
 use harness_core::tools::{count_lines, diff_lines, Diff};
 use ignore::WalkBuilder;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
+
+mod undo;
+
+use undo::Checkpoints;
+pub use undo::{Undo, UndoPlan, MAX_CHECKPOINTS};
 
 /// Most files looked at, in the snapshot and in each scan.
 pub const MAX_FILES: usize = 50_000;
@@ -67,17 +73,19 @@ pub enum ChangesUpdate {
 /// What a file holds, as far as it can be diffed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Content {
-    Text(Box<str>),
+    Text(Arc<str>),
     /// Not diffed, for this reason.
     Opaque(&'static str),
 }
 
 /// What tells that a file changed: its size, and when its inode changed,
-/// which no program can set back.
+/// which no program can set back. Its permissions are kept with them, to
+/// make the file again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Stamp {
     len: u64,
     ctime: (i64, i64),
+    mode: u32,
 }
 
 impl Stamp {
@@ -85,10 +93,12 @@ impl Stamp {
         Self {
             len: meta.len(),
             ctime: (meta.ctime(), meta.ctime_nsec()),
+            mode: meta.mode(),
         }
     }
 }
 
+#[derive(Debug, Clone)]
 struct Entry {
     stamp: Stamp,
     content: Content,
@@ -186,7 +196,7 @@ impl Snapshot {
         let new = match read(&self.root.join(path)) {
             Some((_, Content::Text(text))) => text,
             Some((_, Content::Opaque(reason))) => return Err(reason),
-            None => Box::from(""),
+            None => Arc::from(""),
         };
         Ok(diff_lines(old, &new))
     }
@@ -245,7 +255,7 @@ fn read(path: &Path) -> Option<(Stamp, Content)> {
         Ok(_) if bytes.len() as u64 > MAX_TEXT_BYTES => Content::Opaque("too large to diff"),
         Ok(_) if bytes.contains(&0) => Content::Opaque("binary file"),
         Ok(_) => match String::from_utf8(bytes) {
-            Ok(text) => Content::Text(text.into_boxed_str()),
+            Ok(text) => Content::Text(text.into()),
             Err(_) => Content::Opaque("binary file"),
         },
     };
@@ -255,6 +265,23 @@ fn read(path: &Path) -> Option<(Stamp, Content)> {
 enum Request {
     Scan,
     Diff(PathBuf),
+    /// Remember the files as they are, before the prompt that follows
+    /// `messages` messages.
+    Checkpoint {
+        messages: usize,
+        tag: u64,
+        done: oneshot::Sender<()>,
+    },
+    /// What putting the files back as at the last checkpoint would do.
+    Plan(oneshot::Sender<Option<UndoPlan>>),
+    /// Put them back, and forget that checkpoint.
+    Undo(oneshot::Sender<Option<Undo>>),
+    /// The messages and the tag of the last checkpoint.
+    Last(oneshot::Sender<Option<(usize, u64)>>),
+    /// Forget the last checkpoint, or all of them.
+    Forget {
+        all: bool,
+    },
 }
 
 /// Takes a [`Snapshot`] of a folder on a thread of its own, then answers
@@ -285,6 +312,47 @@ impl Watcher {
         let _ = self.requests.send(Request::Diff(path));
     }
 
+    /// Remember the files as they are now, before a prompt joins a
+    /// conversation of `messages` messages, the last one told by `tag`.
+    /// Checkpoints of prompts that are no longer part of it are forgotten.
+    pub async fn checkpoint(&self, messages: usize, tag: u64) {
+        let (done, wait) = oneshot::channel();
+        let _ = self.requests.send(Request::Checkpoint {
+            messages,
+            tag,
+            done,
+        });
+        let _ = wait.await;
+    }
+
+    /// What [`Self::undo`] would do, `None` without a checkpoint.
+    pub async fn undo_plan(&self) -> Option<UndoPlan> {
+        let (reply, wait) = oneshot::channel();
+        let _ = self.requests.send(Request::Plan(reply));
+        wait.await.ok().flatten()
+    }
+
+    /// Put the files back as they were at the last checkpoint, which is
+    /// forgotten. `None` without a checkpoint.
+    pub async fn undo(&self) -> Option<Undo> {
+        let (reply, wait) = oneshot::channel();
+        let _ = self.requests.send(Request::Undo(reply));
+        wait.await.ok().flatten()
+    }
+
+    /// The messages and the tag the last checkpoint was taken with.
+    pub async fn last_checkpoint(&self) -> Option<(usize, u64)> {
+        let (reply, wait) = oneshot::channel();
+        let _ = self.requests.send(Request::Last(reply));
+        wait.await.ok().flatten()
+    }
+
+    /// Forget the last checkpoint, whose prompt is gone, or `all` of them
+    /// when the conversation is another one.
+    pub fn forget_checkpoints(&self, all: bool) {
+        let _ = self.requests.send(Request::Forget { all });
+    }
+
     /// The next answer, `None` once the thread is gone.
     pub async fn next(&mut self) -> Option<ChangesUpdate> {
         self.updates.recv().await
@@ -292,13 +360,15 @@ impl Watcher {
 }
 
 /// Answer `pending` requests until the watcher is dropped, the requests
-/// queued meanwhile at once: a scan, then the diff asked for last.
+/// queued meanwhile at once: the ones about checkpoints in order, then a
+/// scan and the diff asked for last.
 fn serve(
     root: &Path,
     pending: &std_mpsc::Receiver<Request>,
     tx: &mpsc::UnboundedSender<ChangesUpdate>,
 ) {
     let snapshot = Snapshot::take(root);
+    let mut checkpoints = Checkpoints::default();
     while let Ok(first) = pending.recv() {
         let mut scan = false;
         let mut diff = None;
@@ -306,6 +376,24 @@ fn serve(
             match request {
                 Request::Scan => scan = true,
                 Request::Diff(path) => diff = Some(path),
+                Request::Checkpoint {
+                    messages,
+                    tag,
+                    done,
+                } => {
+                    checkpoints.push(&snapshot, messages, tag);
+                    let _ = done.send(());
+                }
+                Request::Plan(reply) => {
+                    let _ = reply.send(checkpoints.plan(&snapshot));
+                }
+                Request::Undo(reply) => {
+                    let _ = reply.send(checkpoints.undo(&snapshot));
+                }
+                Request::Last(reply) => {
+                    let _ = reply.send(checkpoints.last());
+                }
+                Request::Forget { all } => checkpoints.forget(all),
             }
         }
         if scan && tx.send(snapshot.changes()).is_err() {
