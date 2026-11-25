@@ -62,7 +62,7 @@ pub use proxy::Proxy;
 pub use read::{
     Image, ReadOutput, ReadTool, DEFAULT_READ_LIMIT, MAX_IMAGE_BYTES, MAX_READ_BYTES, READ_TOOL,
 };
-pub use sandbox::{ExecError, SandboxConfig, SandboxExecutor};
+pub use sandbox::{ExecError, SandboxConfig, SandboxExecutor, PROXY_PORT};
 pub use seen::{SeenFiles, MAX_SEEN_FILES};
 pub use todo::{
     Todo, TodoOutput, TodoStatus, TodoTool, MAX_TODO_ITEMS, MAX_TODO_ITEM_BYTES, TODO_TOOL,

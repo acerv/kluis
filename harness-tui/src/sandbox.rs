@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-use harness_core::tools::{Executor, SandboxConfig};
+use harness_core::tools::{Executor, Hosts, SandboxConfig};
 use harness_core::Error;
 use harness_sandbox::{apparmor, GitGuard, Options, Sandbox};
 
@@ -96,6 +96,7 @@ pub fn executor(args: &Args, cwd: &Path) -> Result<(Executor, GitGuard), Error> 
         args: worker_args(args),
         cwd: cwd.to_path_buf(),
         env,
+        hosts: Hosts::default(),
     })?;
     Ok((executor, git_guard))
 }

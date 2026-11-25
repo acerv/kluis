@@ -15,13 +15,13 @@ use std::time::Duration;
 
 use genai::chat::{ToolCall, ToolResponse};
 use hakoniwa::{Child, Stdio};
-use harness_sandbox::{Sandbox, SandboxError};
+use harness_sandbox::{listen_in, Sandbox, SandboxError};
 use scopeguard::ScopeGuard;
 use thiserror::Error;
 use tokio::sync::mpsc;
 
 use crate::protocol::{read_line_bounded, write_line, Request, Response};
-use crate::{error_json, lock, ToolDetails};
+use crate::{error_json, lock, Hosts, Proxy, ToolDetails, BASH_TOOL};
 
 /// Configuration for spawning the sandboxed tool worker container.
 #[derive(Debug, Clone)]
@@ -31,7 +31,28 @@ pub struct SandboxConfig {
     pub args: Vec<String>,
     pub cwd: PathBuf,
     pub env: Vec<(String, String)>,
+    /// Hosts commands may reach through a proxy on the host, which needs
+    /// a sandbox without network; no proxy when empty.
+    pub hosts: Hosts,
 }
+
+/// The port the proxy listens on inside the container: nothing else
+/// listens there.
+pub const PROXY_PORT: u16 = 3128;
+
+/// The variables pointing commands at the proxy.
+const PROXY_VARS: &[&str] = &[
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+];
+
+/// The variables keeping local servers off the proxy, and their value.
+const NO_PROXY_VARS: &[&str] = &["no_proxy", "NO_PROXY"];
+const NO_PROXY: &str = "localhost,127.0.0.1,::1";
 
 /// Error starting the sandboxed tool executor.
 #[derive(Debug, Error)]
@@ -73,6 +94,9 @@ struct Worker {
     alive: Arc<AtomicBool>,
     reader: Option<thread::JoinHandle<()>>,
     writer: Option<thread::JoinHandle<()>>,
+    /// The proxy of its commands, if they have one: stopped after the
+    /// container.
+    proxy: Option<Proxy>,
 }
 
 impl std::fmt::Debug for Worker {
@@ -154,9 +178,14 @@ impl SandboxExecutor {
             match resp {
                 Response::Output { chunk, .. } => on_output(&chunk),
                 Response::Result {
-                    content, details, ..
+                    mut content,
+                    details,
+                    ..
                 } => {
                     ScopeGuard::into_inner(cancel_guard);
+                    if call.fn_name == BASH_TOOL {
+                        self.add_refused_hosts(&mut content);
+                    }
                     return (ToolResponse::from_tool_call(call, content), details);
                 }
                 Response::Ready => {}
@@ -209,6 +238,22 @@ impl SandboxExecutor {
                 lock(&self.worker).take();
                 true
             }
+        }
+    }
+
+    /// Add the hosts the proxy refused since the last call, if any, to the
+    /// result `content` of a command, so that the user knows which to allow.
+    fn add_refused_hosts(&self, content: &mut String) {
+        let refused = match lock(&self.worker).as_ref().and_then(|w| w.proxy.as_ref()) {
+            Some(proxy) => proxy.take_refused(),
+            None => return,
+        };
+        if refused.is_empty() {
+            return;
+        }
+        if let Ok(serde_json::Value::Object(mut result)) = serde_json::from_str(content) {
+            result.insert("refused_hosts".into(), refused.into());
+            *content = serde_json::Value::Object(result).to_string();
         }
     }
 
@@ -306,6 +351,15 @@ fn spawn_worker(config: &SandboxConfig, expected: FileId) -> Result<Worker, Exec
         drop(stdout_reader);
         return Err(startup_failure(ScopeGuard::into_inner(child), eof));
     }
+    // Commands reach the hosts through the proxy, listening in the
+    // container before any runs.
+    let proxy = if config.hosts.is_empty() {
+        None
+    } else {
+        let listener = listen_in(child.id(), PROXY_PORT)
+            .map_err(|e| ExecError::Startup(format!("proxy: {e}")))?;
+        Some(Proxy::start(listener, config.hosts.clone())?)
+    };
     let child = ScopeGuard::into_inner(child);
 
     let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
@@ -323,6 +377,7 @@ fn spawn_worker(config: &SandboxConfig, expected: FileId) -> Result<Worker, Exec
         alive,
         reader: Some(reader),
         writer: Some(writer),
+        proxy,
     })
 }
 
@@ -341,6 +396,15 @@ fn start(config: &SandboxConfig) -> Result<Child, ExecError> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::from(dev_null));
+    if !config.hosts.is_empty() {
+        let url = format!("http://127.0.0.1:{PROXY_PORT}");
+        for name in PROXY_VARS {
+            cmd.env(name, &url);
+        }
+        for name in NO_PROXY_VARS {
+            cmd.env(name, NO_PROXY);
+        }
+    }
     cmd.spawn().map_err(|e| ExecError::Startup(e.to_string()))
 }
 

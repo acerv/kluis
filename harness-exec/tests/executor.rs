@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use genai::chat::ToolCall;
 use harness_exec::{
-    run_worker_io, Executor, Request, Response, SandboxConfig, SandboxExecutor, ToolContext,
+    run_worker_io, Executor, Hosts, Request, Response, SandboxConfig, SandboxExecutor, ToolContext,
     ToolDetails,
 };
 use harness_sandbox::{Options, Sandbox};
@@ -254,6 +254,7 @@ async fn sandbox_executor_streams_multiplexes_isolates_and_respawns() {
         args: vec!["-c".into(), MOCK_WORKER_SCRIPT.into()],
         cwd: dir.path().to_path_buf(),
         env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+        hosts: Hosts::default(),
     })
     .expect("sandbox executor should start");
 
@@ -331,6 +332,7 @@ async fn worker_that_does_not_stop_background_is_replaced() {
         args: vec!["-c".into(), MOCK_WORKER_SCRIPT.into()],
         cwd: dir.path().to_path_buf(),
         env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+        hosts: Hosts::default(),
     })
     .unwrap();
     let cancels = || async {
@@ -365,6 +367,7 @@ async fn call_to_a_worker_that_stopped_reading_can_be_cancelled() {
         ],
         cwd: dir.path().to_path_buf(),
         env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+        hosts: Hosts::default(),
     })
     .unwrap();
 
@@ -390,6 +393,7 @@ fn sandbox_executor_fails_fast_when_worker_exits_before_ready() {
         args: vec!["-c".into(), "exit 42".into()],
         cwd: dir.path().to_path_buf(),
         env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+        hosts: Hosts::default(),
     })
     .unwrap_err();
     assert!(err.to_string().contains("42"), "{err}");
@@ -424,6 +428,7 @@ async fn replaced_worker_program_is_not_restarted() {
             args: vec!["-c".into(), MOCK_WORKER_SCRIPT.into()],
             cwd: dir.path().to_path_buf(),
             env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+            hosts: Hosts::default(),
         })
         .unwrap();
         let (pong, _) = exec.execute(&call("p1", "ping", json!({})), |_| {}).await;
@@ -520,4 +525,64 @@ async fn worker_keeps_jobs_until_asked_and_stops_them_on_exit() {
     drop(host_write);
     worker.await.unwrap().unwrap();
     assert!(eventually(|| !group_alive(left)).await);
+}
+
+/// A worker whose `bash` calls ask the proxy for a tunnel to the
+/// `host:port` given as command, and answer with its status line, then
+/// with whether connecting there directly works.
+const PROXY_WORKER_SCRIPT: &str = r#"
+printf '{"op":"ready"}\n'
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  target=$(printf '%s' "$line" | sed -n 's/.*"command":"\([^"]*\)".*/\1/p')
+  exec 3<>"/dev/tcp/127.0.0.1/${https_proxy##*:}"
+  printf 'CONNECT %s HTTP/1.1\r\n\r\nping' "$target" >&3
+  status=$(head -n1 <&3 | tr -d '\r')
+  exec 3>&-
+  direct=$( (exec 4<>"/dev/tcp/${target%:*}/${target##*:}") 2>/dev/null && echo open || echo closed)
+  printf '{"op":"result","id":%s,"content":"{\\"output\\":\\"%s, direct %s\\"}"}\n' "$id" "$status" "$direct"
+done
+"#;
+
+#[tokio::test]
+async fn commands_reach_listed_hosts_through_the_proxy_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = server.local_addr().unwrap().port();
+    let sandbox = Sandbox::with_defaults(&Options {
+        write: vec![dir.path().to_path_buf()],
+        ..Options::default()
+    })
+    .no_network();
+    let exec = Executor::sandbox(SandboxConfig {
+        sandbox,
+        program: PathBuf::from("/bin/bash"),
+        args: vec!["-c".into(), PROXY_WORKER_SCRIPT.into()],
+        cwd: dir.path().to_path_buf(),
+        env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+        hosts: Hosts::new(&["127.0.0.1"]).unwrap(),
+    })
+    .unwrap();
+
+    let target = format!("127.0.0.1:{port}");
+    let bash = |target: &str| call("b", "bash", json!({ "command": target }));
+    let (allowed, _) = exec.execute(&bash(&target), |_| {}).await;
+    let (mut stream, _) = server.accept().unwrap();
+    let mut ping = [0; 4];
+    std::io::Read::read_exact(&mut stream, &mut ping).unwrap();
+    assert_eq!(&ping, b"ping");
+    assert_eq!(
+        allowed.content,
+        r#"{"output":"HTTP/1.1 200 Connection established, direct closed"}"#
+    );
+
+    let (refused, _) = exec.execute(&bash("localhost:1"), |_| {}).await;
+    let refused: serde_json::Value = serde_json::from_str(&refused.content).unwrap();
+    assert_eq!(
+        refused,
+        json!({
+            "output": "HTTP/1.1 403 Forbidden, direct closed",
+            "refused_hosts": ["localhost"],
+        })
+    );
 }
