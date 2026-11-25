@@ -24,6 +24,7 @@ pub struct SessionWriter {
     pub(super) cwd: PathBuf,
     pub(super) model: String,
     pub(super) created_at: u64,
+    pub(super) forked_from: Option<String>,
     pub(super) file: Option<BufWriter<File>>,
     pub(super) initialized: bool,
     pub(super) repair_len: Option<u64>,
@@ -127,6 +128,7 @@ impl SessionWriter {
                     cwd: &self.cwd,
                     model: &self.model,
                     created_at: self.created_at,
+                    forked_from: self.forked_from.as_deref(),
                 };
                 write_entry(&mut buf, &header)?;
                 self.initialized = true;
@@ -207,6 +209,8 @@ enum SessionEntryRef<'a> {
         cwd: &'a Path,
         model: &'a str,
         created_at: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        forked_from: Option<&'a str>,
     },
     Model {
         model: &'a str,

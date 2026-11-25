@@ -13,10 +13,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::Utc;
 use fnv::FnvHasher;
+use genai::chat::ChatMessage;
 use uuid::Uuid;
 
 use super::load::{load_file, summarize_file};
-use super::{SessionData, SessionSummary, SessionWriter};
+use super::{SessionData, SessionSummary, SessionWriter, TokenUsage};
 use crate::{private_file, Error};
 
 /// Manages `.jsonl` session files for one workspace folder under a root
@@ -108,10 +109,30 @@ impl SessionStore {
             cwd: self.cwd.clone(),
             model: model.into(),
             created_at,
+            forked_from: None,
             file: None,
             initialized: false,
             repair_len: None,
         }
+    }
+
+    /// Start a session holding a copy of the conversation of session
+    /// `from`: its `messages`, token `usage` and the tokens its last
+    /// request sent (`context`, 0 when unknown). The file of `from` is
+    /// left as it is.
+    pub fn fork(
+        &self,
+        from: &str,
+        model: impl Into<String>,
+        messages: &[ChatMessage],
+        usage: TokenUsage,
+        context: u64,
+    ) -> io::Result<SessionWriter> {
+        let mut writer = self.create(model);
+        writer.forked_from = Some(from.to_owned());
+        writer.append_messages(messages)?;
+        writer.append_usage(usage, context)?;
+        Ok(writer)
     }
 
     /// Open an existing loaded session so further turns append to the same
@@ -123,6 +144,7 @@ impl SessionStore {
             cwd: data.meta.cwd.clone(),
             model: data.meta.model.clone(),
             created_at: data.meta.created_at,
+            forked_from: data.meta.forked_from.clone(),
             file: None,
             initialized: true,
             repair_len: data.repair_len,

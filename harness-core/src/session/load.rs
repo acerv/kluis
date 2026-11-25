@@ -105,6 +105,7 @@ impl<'a> Lines<'a> {
             cwd,
             model,
             created_at,
+            forked_from,
         } = serde_json::from_str(line.trim())
             .map_err(|e| format!("{}: invalid session header: {e}", path.display()))?
         else {
@@ -121,6 +122,7 @@ impl<'a> Lines<'a> {
             cwd,
             model,
             created_at,
+            forked_from,
         };
         Ok((meta, end))
     }
@@ -155,6 +157,7 @@ pub(super) fn summarize_file(path: &Path, modified: SystemTime) -> Option<Sessio
         id,
         mut model,
         created_at,
+        forked_from,
         ..
     } = meta;
 
@@ -212,6 +215,7 @@ pub(super) fn summarize_file(path: &Path, modified: SystemTime) -> Option<Sessio
         updated_at,
         message_count,
         first_prompt,
+        forked_from,
     })
 }
 
