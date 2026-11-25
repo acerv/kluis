@@ -245,6 +245,39 @@ async fn thinking_levels_from_anthropic_effort() {
 }
 
 #[tokio::test]
+async fn thinking_levels_keep_the_key_and_the_path_of_the_provider() {
+    // A redirect is not followed: its host would get the key.
+    let (other, stolen) = mock_server(json!({})).await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0u8; 4096];
+        let n = stream.read(&mut buf).await.unwrap();
+        let reply = format!(
+            "HTTP/1.1 302 Found\r\nlocation: {other}/steal\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+        );
+        let _ = stream.write_all(reply.as_bytes()).await;
+        String::from_utf8_lossy(&buf[..n]).into_owned()
+    });
+    let auth = AuthConfig::parse(&format!(
+        "[anthropic]\napi_key = \"sk-test\"\nendpoint = \"{endpoint}\"\n"
+    ))
+    .unwrap();
+    let model = "claude-x/../../admin?a=b#c";
+    assert_eq!(thinking_levels(&auth.client().unwrap(), model).await, None);
+
+    // The name of the model stays one part of the path.
+    let request = server.await.unwrap();
+    assert!(
+        request.starts_with("GET /v1/models/claude-x%2F..%2F..%2Fadmin%3Fa=b%23c "),
+        "{request}"
+    );
+    let stolen = tokio::time::timeout(Duration::from_millis(300), stolen).await;
+    assert!(stolen.is_err(), "{stolen:?}");
+}
+
+#[tokio::test]
 async fn thinking_levels_from_anthropic_budget() {
     // Models without effort take a thinking budget, which genai sends for
     // low, medium and high.
