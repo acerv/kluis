@@ -25,6 +25,7 @@ mod hosts;
 mod ls;
 mod path;
 mod protocol;
+mod proxy;
 mod read;
 mod sandbox;
 mod seen;
@@ -57,6 +58,7 @@ pub use grep::{
 pub use hosts::Hosts;
 pub use ls::{LsOutput, LsTool, DEFAULT_LS_LIMIT, LS_TOOL, MAX_LS_BYTES};
 pub use protocol::{Request, Response, MAX_FRAME_BYTES};
+pub use proxy::Proxy;
 pub use read::{
     Image, ReadOutput, ReadTool, DEFAULT_READ_LIMIT, MAX_IMAGE_BYTES, MAX_READ_BYTES, READ_TOOL,
 };
