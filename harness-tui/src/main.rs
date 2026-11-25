@@ -57,30 +57,27 @@ const MAX_SCHEMA_BYTES: u64 = 256 << 10;
 #[derive(Parser)]
 #[command(version)]
 pub struct Args {
-    /// Model to use; the provider is picked from its name [default: deepseek-chat].
+    /// Model to use; its name picks the provider [default: deepseek-chat]
     #[arg(long, env = "HARNESS_MODEL")]
     model: Option<String>,
 
-    /// Thinking effort: default, off, low, medium, high, xhigh, or max.
+    /// Thinking effort: default, off, low, medium, high, xhigh, max
     #[arg(long, env = "HARNESS_THINKING", value_name = "LEVEL")]
     thinking: Option<Thinking>,
 
-    /// Colors of code blocks: a built-in theme, e.g. solarized-dark, or a
-    /// TextMate theme file [default: base16-ocean-dark].
+    /// Code block theme or .tmTheme file [default: base16-ocean-dark]
     #[arg(long, value_name = "NAME|PATH")]
     code_theme: Option<String>,
 
-    /// Auto-compact conversation when prompt tokens reach this threshold
-    /// (0 disables) [default: 100000].
+    /// Compact at this many prompt tokens, 0 disables [default: 100000]
     #[arg(long, env = "HARNESS_AUTO_COMPACT_TOKENS", value_name = "TOKENS")]
     auto_compact_tokens: Option<u64>,
 
-    /// Ring the terminal bell when a prompt that ran for 10 seconds or more
-    /// ends or asks a question.
+    /// Ring the bell when a long prompt ends or asks a question
     #[arg(long)]
     notify: bool,
 
-    /// Continue the most recent session for the current folder.
+    /// Continue the latest session in this folder
     #[arg(
         short = 'c',
         long = "continue",
@@ -89,7 +86,7 @@ pub struct Args {
     )]
     continue_session: bool,
 
-    /// Resume a previous session (opens a picker when no ID is given).
+    /// Resume a session, with a picker when no ID is given
     #[arg(
         short = 'r',
         long = "resume",
@@ -101,75 +98,67 @@ pub struct Args {
     )]
     resume_session: Option<String>,
 
-    /// With --continue or --resume, go on in a copy of the session and
-    /// leave the session itself as it is.
+    /// With --continue or --resume, go on in a copy of the session
     #[arg(long, requires = "previous")]
     fork: bool,
 
-    /// Do not read or write session files.
+    /// Do not read or write session files
     #[arg(long)]
     no_session: bool,
 
-    /// Run without the sandbox.
+    /// Run without the sandbox
     #[arg(long)]
     no_sandbox: bool,
 
-    /// Strict sandbox: make the current folder read-only by default.
+    /// Make the current folder read-only
     #[arg(long, conflicts_with = "no_sandbox")]
     strict: bool,
 
-    /// Also allow reading this path (repeatable). $HOME is empty but for
-    /// the allowed paths and the current folder.
+    /// Also allow reading PATH (repeatable)
     #[arg(long, value_name = "PATH")]
     allow_read: Vec<PathBuf>,
 
-    /// Also allow changing this path (repeatable).
+    /// Also allow changing PATH (repeatable)
     #[arg(long, value_name = "PATH")]
     allow_write: Vec<PathBuf>,
 
-    /// Hide this path from the harness and its commands (repeatable).
+    /// Hide PATH (repeatable)
     #[arg(long, value_name = "PATH")]
     deny_read: Vec<PathBuf>,
 
-    /// Also let the harness connect to this TCP port, e.g. for a local
-    /// model (repeatable).
+    /// Allow connecting to TCP PORT, e.g. a local model (repeatable)
     #[arg(long, value_name = "PORT")]
     allow_connect: Vec<u16>,
 
-    /// Allow any network, to commands too.
+    /// Allow any network, to commands too
     #[arg(long)]
     network: bool,
 
-    /// Let web_fetch reach only this host and its subdomains, private
-    /// addresses included, even without --network (repeatable).
+    /// Let web_fetch reach only HOST, even without --network (repeatable)
     #[arg(long, value_name = "HOST")]
     web_host: Vec<String>,
 
-    /// Search the web with this SearXNG instance instead of DuckDuckGo.
+    /// Search with this SearXNG instance instead of DuckDuckGo
     #[arg(long, value_name = "URL")]
     searxng_url: Option<String>,
 
-    /// Processes and threads the harness and its commands may run at once
-    /// [default: 1024].
+    /// Processes and threads at once [default: 1024]
     #[arg(long, value_name = "NUM", value_parser = clap::value_parser!(u64).range(1..))]
     max_processes: Option<u64>,
 
-    /// Size of the private /tmp in bytes, or with a K, M or G suffix (a
-    /// quarter of the memory by default).
+    /// Size of the private /tmp, e.g. 512M [default: RAM/4]
     #[arg(long, value_name = "SIZE", value_parser = config::parse_size)]
     tmp_size: Option<u64>,
 
-    /// Virtual memory limit for commands in bytes, or with a K, M or G suffix.
+    /// Memory limit per command, e.g. 4G
     #[arg(long, value_name = "SIZE", value_parser = config::parse_size)]
     max_memory: Option<u64>,
 
-    /// Let the model keep commands running in the background across
-    /// prompts, such as a server. A git repository they create may be
-    /// used by your git before kl disables it.
+    /// Let commands keep running across prompts
     #[arg(long)]
     background_commands: bool,
 
-    /// Also pass this environment variable to commands (repeatable).
+    /// Pass environment variable NAME to commands (repeatable)
     #[arg(long, value_name = "NAME")]
     pass_env: Vec<String>,
 
@@ -177,26 +166,23 @@ pub struct Args {
     #[arg(long, env = config::ENV, value_name = "PATH")]
     config: Option<PathBuf>,
 
-    /// Log in to a provider subscription (anthropic), then exit.
+    /// Log in to a subscription (anthropic), then exit
     #[arg(long, value_name = "PROVIDER", conflicts_with_all = ["logout", "prompt"])]
     login: Option<OAuthProvider>,
 
-    /// Forget the login to a provider, then exit.
+    /// Log out of a subscription, then exit
     #[arg(long, value_name = "PROVIDER", conflicts_with = "prompt")]
     logout: Option<OAuthProvider>,
 
-    /// Print an AppArmor profile that lets kl create its sandbox on Ubuntu,
-    /// then exit.
+    /// Print an AppArmor profile for Ubuntu, then exit
     #[arg(long, conflicts_with_all = ["login", "logout", "prompt"])]
     apparmor_profile: bool,
 
-    /// Install the skills that come with kl in ~/.kluis/skills, or update
-    /// the ones you did not change, then exit.
+    /// Install or update the bundled skills, then exit
     #[arg(long, conflicts_with_all = ["login", "logout", "apparmor_profile", "prompt"])]
     install_skills: bool,
 
-    /// Print what the sandbox lets commands see and reach with these
-    /// options and the config file, then exit.
+    /// Show what the sandbox allows, then exit
     #[arg(long, conflicts_with_all = ["login", "logout", "apparmor_profile", "install_skills", "prompt"])]
     sandbox_info: bool,
 
@@ -209,17 +195,15 @@ pub struct Args {
     #[arg(long, hide = true, requires = "tool_executor", default_value = "none")]
     network_access: NetworkAccess,
 
-    /// Let this tool run without asking, whatever the config file says
-    /// (repeatable).
+    /// Run TOOL without asking (repeatable)
     #[arg(long, value_name = "TOOL")]
     allow_tool: Vec<String>,
 
-    /// Ask before each call of this tool; without a terminal UI to ask
-    /// in, the tool is not offered (repeatable).
+    /// Ask before each call of TOOL (repeatable)
     #[arg(long, value_name = "TOOL")]
     ask_tool: Vec<String>,
 
-    /// Do not offer this tool to the model (repeatable).
+    /// Do not offer TOOL to the model (repeatable)
     #[arg(long, value_name = "TOOL")]
     deny_tool: Vec<String>,
 
@@ -228,25 +212,19 @@ pub struct Args {
     #[arg(skip)]
     config_permissions: config::PermissionsConfig,
 
-    /// Run the prompt once and exit, with standard input appended to it
-    /// when it is not a terminal.
+    /// Run the prompt once and exit; stdin is appended
     #[arg(short, long)]
     print: bool,
 
-    /// How a prompt run once writes its output: `text`; `json`, one object
-    /// with `result`, `usage` and `session`, or `error`; or `stream`, one
-    /// JSON line per event (text, tool calls and results, usage, retries)
-    /// ending with that object. `json` and `stream` imply --print.
-    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    /// Output of a prompt run once; json and stream imply --print
+    #[arg(long, value_enum, value_name = "FORMAT", default_value_t = OutputFormat::Text)]
     output_format: OutputFormat,
 
-    /// Make the answer of a prompt run once a JSON value matching the JSON
-    /// Schema in this file: printed alone as `text`, and as `structured`
-    /// next to `result` otherwise. Implies --print.
+    /// Answer with JSON matching this JSON Schema; implies --print
     #[arg(long, value_name = "FILE")]
     output_schema: Option<PathBuf>,
 
-    /// Prompt to run once; starts an interactive chat when absent.
+    /// Prompt to run once; starts an interactive chat when absent
     prompt: Vec<String>,
 }
 
