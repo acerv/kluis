@@ -168,8 +168,9 @@ pub struct App {
     cursor: Cell<Option<Position>>,
     input: Input,
     busy: bool,
-    /// Messages typed while busy, waiting to join the conversation.
-    queued: usize,
+    /// Messages typed while busy, waiting to join the conversation, in
+    /// the order they will join it.
+    queued: Vec<String>,
     /// The images pasted into the prompt, with the words naming them there.
     images: Vec<(String, Image)>,
     show_thinking: bool,
@@ -224,7 +225,7 @@ impl App {
             cursor: Cell::new(None),
             input: Input::default(),
             busy: false,
-            queued: 0,
+            queued: Vec::new(),
             images: Vec::new(),
             show_thinking: true,
             is_thinking: false,
@@ -889,7 +890,9 @@ impl App {
             AgentUpdate::Steered(text) => {
                 self.flush_reasoning();
                 self.flush_text();
-                self.queued = self.queued.saturating_sub(1);
+                if let Some(i) = self.queued.iter().position(|q| *q == text) {
+                    self.queued.remove(i);
+                }
                 self.push_user_message(&text);
             }
         }
@@ -908,7 +911,7 @@ impl App {
         self.flush_text();
         self.ring_if_long();
         self.busy = false;
-        self.queued = 0;
+        self.queued.clear();
         self.activity_started = None;
         self.prompt_started = None;
         self.active_tool = None;
@@ -940,7 +943,7 @@ impl App {
         self.flush_reasoning();
         self.flush_text();
         self.busy = false;
-        self.queued = 0;
+        self.queued.clear();
         self.activity_started = None;
         self.prompt_started = None;
         self.active_tool = None;

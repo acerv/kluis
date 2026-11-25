@@ -252,7 +252,7 @@ impl App {
             return Action::Shell(command.trim_start().to_owned());
         }
         if self.busy {
-            self.queued += 1;
+            self.queued.push(trimmed.to_owned());
         }
         Action::Submit(trimmed.to_owned())
     }
