@@ -168,15 +168,17 @@ fn narrower_terminal_rewraps_output() {
     const PROMPT: &str = "Type a message";
     // The end of a `/help` line that a 40 columns terminal cuts.
     const TAIL: &str = "low ... max)";
+    // Enough for all of `/help` once its lines wrap.
+    const ROWS: u16 = 100;
     let home = tempfile::tempdir().unwrap();
-    let (master, slave) = openpty(60, 80);
+    let (master, slave) = openpty(ROWS, 80);
     let mut child = spawn_tui(home.path(), &slave);
-    let mut term = Emulator::new(&master, 60, 80);
+    let mut term = Emulator::new(&master, ROWS, 80);
 
     term.wait_for(PROMPT);
     term.type_text("/help\r");
     term.wait_for("Ctrl-D");
-    term.resize(&master, 60, 40);
+    term.resize(&master, ROWS, 40);
     // The emulator cuts lines instead of rewrapping them: the tail shows only
     // if the output is printed again at the new width.
     term.wait_for(TAIL);

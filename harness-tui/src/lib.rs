@@ -29,6 +29,7 @@ mod terminal;
 mod text;
 
 use std::io::Write;
+use std::path::PathBuf;
 
 use genai::adapter::AdapterKind;
 use genai::chat::ChatMessage;
@@ -91,6 +92,8 @@ pub struct RunOptions {
     pub commands: Vec<Command>,
     /// Ring the bell when a long prompt ends or asks a question.
     pub notify: bool,
+    /// The user's own `AGENTS.md`, which `/remember --global` adds to.
+    pub agents_file: Option<PathBuf>,
 }
 
 /// Disable the git repositories commands created during a prompt that
@@ -155,6 +158,7 @@ pub async fn run(
         code_theme,
         commands,
         notify,
+        agents_file,
     } = opts;
     let mut models = ModelCatalog::new(adapters);
     let term = InlineTerminal::enter(VIEWPORT_HEIGHT)?;
@@ -193,6 +197,7 @@ pub async fn run(
         events,
         questions,
         signals: signals.clone(),
+        agents_file,
     };
     ui.draw()?;
 
