@@ -137,16 +137,17 @@ fn run_helper(program: &str, args: &[&str], text: &str) -> bool {
     else {
         return false;
     };
-    let write_ok = child
-        .stdin
-        .take()
-        .is_some_and(|mut stdin| stdin.write_all(text.as_bytes()).is_ok());
-    if !write_ok {
-        let _ = child.kill();
-        let _ = child.wait();
-        return false;
-    }
-    wait_helper(&mut child, HELPER_TIMEOUT)
+    let Some(mut stdin) = child.stdin.take() else {
+        return wait_helper(&mut child, Duration::ZERO);
+    };
+    // Written apart, for the wait to stop a helper that does not read: a
+    // text longer than the pipe holds would wait for it forever.
+    thread::scope(|scope| {
+        let writer = scope.spawn(move || stdin.write_all(text.as_bytes()).is_ok());
+        let ok = wait_helper(&mut child, HELPER_TIMEOUT);
+        // The helper is gone, and what it did not read with it.
+        writer.join().unwrap_or(false) && ok
+    })
 }
 
 /// Up to `max` bytes of what `program` writes, when it succeeds in time.
