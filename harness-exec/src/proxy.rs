@@ -13,9 +13,10 @@ use std::thread;
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::tcp::{ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{oneshot, Semaphore};
-use tokio::time::{sleep, timeout};
+use tokio::time::{sleep, sleep_until, timeout, Instant};
 use url::Url;
 
 use crate::{lock, Hosts};
@@ -278,32 +279,50 @@ async fn refuse(client: &mut TcpStream, refusal: &Refusal) -> io::Result<()> {
     client.write_all(response.as_bytes()).await
 }
 
-/// Relay bytes both ways until both sides are done, or both stay quiet for
-/// [`IDLE_TIMEOUT`].
+/// Relay bytes both ways until both sides are done, or nothing moves
+/// either way for [`IDLE_TIMEOUT`]: no byte read, and none written to a
+/// side that stopped reading.
 async fn relay(client: &mut TcpStream, server: &mut TcpStream) -> io::Result<()> {
-    let (mut client_read, mut client_write) = client.split();
-    let (mut server_read, mut server_write) = server.split();
-    let mut up = [0u8; 8192];
-    let mut down = [0u8; 8192];
-    let (mut up_open, mut down_open) = (true, true);
-    while up_open || down_open {
-        tokio::select! {
-            n = client_read.read(&mut up), if up_open => match n? {
-                0 => {
-                    up_open = false;
-                    server_write.shutdown().await?;
-                }
-                n => server_write.write_all(&up[..n]).await?,
-            },
-            n = server_read.read(&mut down), if down_open => match n? {
-                0 => {
-                    down_open = false;
-                    client_write.shutdown().await?;
-                }
-                n => client_write.write_all(&down[..n]).await?,
-            },
-            () = sleep(IDLE_TIMEOUT) => return Err(io::ErrorKind::TimedOut.into()),
+    let (client_read, client_write) = client.split();
+    let (server_read, server_write) = server.split();
+    // When a byte last moved. Each way runs on its own: one waiting for
+    // its reader does not keep the other from going on.
+    let moved = Mutex::new(Instant::now());
+    let idle = async {
+        loop {
+            let last = *lock(&moved);
+            if last.elapsed() >= IDLE_TIMEOUT {
+                break;
+            }
+            sleep_until(last + IDLE_TIMEOUT).await;
         }
+    };
+    tokio::select! {
+        res = async {
+            tokio::try_join!(
+                forward(client_read, server_write, &moved),
+                forward(server_read, client_write, &moved),
+            )
+        } => res.map(|_| ()),
+        () = idle => Err(io::ErrorKind::TimedOut.into()),
     }
-    Ok(())
+}
+
+/// Write what `from` sends to `to` until it is done sending, which `to`
+/// is told, noting in `moved` when bytes went through.
+async fn forward(
+    mut from: ReadHalf<'_>,
+    mut to: WriteHalf<'_>,
+    moved: &Mutex<Instant>,
+) -> io::Result<()> {
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = from.read(&mut buf).await?;
+        *lock(moved) = Instant::now();
+        if n == 0 {
+            return to.shutdown().await;
+        }
+        to.write_all(&buf[..n]).await?;
+        *lock(moved) = Instant::now();
+    }
 }
