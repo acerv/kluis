@@ -4,8 +4,8 @@
 use std::collections::VecDeque;
 use std::io::{self, Stdout, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Once};
-use std::thread;
+use std::sync::{Arc, Mutex, Once, PoisonError};
+use std::thread::{self, ThreadId};
 use std::time::Duration;
 
 use crossterm::cursor::{MoveTo, Show};
@@ -44,6 +44,10 @@ static ALTERNATE: AtomicBool = AtomicBool::new(false);
 
 /// The terminal is in raw mode, to restore it only once.
 static ENTERED: AtomicBool = AtomicBool::new(false);
+
+/// The thread that draws the terminal: its panic ends the interface, the
+/// one of another thread does not.
+static OWNER: Mutex<Option<ThreadId>> = Mutex::new(None);
 
 /// Reads crossterm events on a background thread with a short poll timeout so
 /// `crossterm::cursor::position()` (called by ratatui's inline viewport on
@@ -140,6 +144,7 @@ impl InlineTerminal {
     pub fn enter(height: u16) -> io::Result<Self> {
         install_panic_hook();
         enable_raw_mode()?;
+        *OWNER.lock().unwrap_or_else(PoisonError::into_inner) = Some(thread::current().id());
         ENTERED.store(true, Ordering::Relaxed);
         let mut stdout = io::stdout();
         if let Err(err) = execute!(stdout, EnableBracketedPaste, Print(PUSH_TITLE)) {
@@ -465,7 +470,12 @@ fn install_panic_hook() {
     PANIC_HOOK.call_once(|| {
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            restore_terminal();
+            // Not for a thread the interface goes on without: it would be
+            // left running on a terminal put back.
+            let owner = *OWNER.lock().unwrap_or_else(PoisonError::into_inner);
+            if owner.is_none_or(|owner| owner == thread::current().id()) {
+                restore_terminal();
+            }
             prev(info);
         }));
     });
