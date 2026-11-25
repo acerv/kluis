@@ -36,7 +36,8 @@ use harness_core::tools::{
 };
 use harness_core::{
     provider_name, Agent, AuthConfig, Command, CredentialSource, Error, Event, Installed,
-    OutputSchema, SessionData, SessionStore, SessionSummary, Skill, Skills, Thinking, TokenUsage,
+    OutputSchema, Permission, Permissions, SessionData, SessionStore, SessionSummary, Skill,
+    Skills, Thinking, TokenUsage,
 };
 use harness_sandbox::{GitGuard, NetworkAccess};
 use harness_tui::{
@@ -207,6 +208,25 @@ pub struct Args {
     /// any), which decides the sockets they may create.
     #[arg(long, hide = true, requires = "tool_executor", default_value = "none")]
     network_access: NetworkAccess,
+
+    /// Let this tool run without asking, whatever the config file says
+    /// (repeatable).
+    #[arg(long, value_name = "TOOL")]
+    allow_tool: Vec<String>,
+
+    /// Ask before each call of this tool; without a terminal UI to ask
+    /// in, the tool is not offered (repeatable).
+    #[arg(long, value_name = "TOOL")]
+    ask_tool: Vec<String>,
+
+    /// Do not offer this tool to the model (repeatable).
+    #[arg(long, value_name = "TOOL")]
+    deny_tool: Vec<String>,
+
+    /// The permissions of the config file, which the options above replace
+    /// tool by tool.
+    #[arg(skip)]
+    config_permissions: config::PermissionsConfig,
 
     /// Run the prompt once and exit, with standard input appended to it
     /// when it is not a terminal.
@@ -428,6 +448,7 @@ fn apply_config(args: &mut Args) -> Result<Option<String>, Error> {
     args.max_processes = args.max_processes.or(config.sandbox.max_processes);
     args.tmp_size = args.tmp_size.or(config.sandbox.tmp_size);
     args.max_memory = args.max_memory.or(config.sandbox.max_memory);
+    args.config_permissions = config.permissions;
     args.pass_env.extend(config.sandbox.env);
     args.config = Some(path);
     Ok(config.generic.model)
@@ -734,9 +755,31 @@ fn executor(args: &Args, cwd: &Path) -> Result<(Executor, Option<GitGuard>), Err
     Ok((Executor::Local(tools), None))
 }
 
+/// The permission of each tool: what the config file says, then what the
+/// options say. In each, `deny` wins over `ask`, which wins over `allow`.
+fn permissions(args: &Args) -> Result<Permissions, Error> {
+    let config = &args.config_permissions;
+    let rules = [
+        (&config.allow, Permission::Allow),
+        (&config.ask, Permission::Ask),
+        (&config.deny, Permission::Deny),
+        (&args.allow_tool, Permission::Allow),
+        (&args.ask_tool, Permission::Ask),
+        (&args.deny_tool, Permission::Deny),
+    ];
+    let mut permissions = Permissions::default();
+    for (tools, permission) in rules {
+        for tool in tools {
+            permissions.set(tool, permission)?;
+        }
+    }
+    Ok(permissions)
+}
+
 /// `agent` with what `args` turn on: background commands, the size to
-/// compact at, and the web tools.
+/// compact at, the web tools, and the permissions of the tools.
 fn with_options(mut agent: Agent, args: &Args) -> Result<Agent, Error> {
+    agent = agent.with_permissions(permissions(args)?);
     if args.background_commands {
         agent = agent.with_background_commands();
     }

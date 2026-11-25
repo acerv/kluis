@@ -97,15 +97,27 @@ impl Emulator {
         }
     }
 
+    /// Show the output that arrived.
+    fn feed_output(&mut self) {
+        for bytes in self.output.try_iter().collect::<Vec<_>>() {
+            self.feed(&bytes);
+        }
+    }
+
     /// Show output until `done`, which tells `what` happened.
     fn wait_until(&mut self, what: &str, done: impl Fn() -> bool) {
         wait_until(what, || {
-            self.output
-                .try_iter()
-                .collect::<Vec<_>>()
-                .iter()
-                .for_each(|bytes| self.feed(bytes));
+            self.feed_output();
             done()
+        });
+    }
+
+    /// Show output until `text` is on screen, even if more keeps coming,
+    /// as while a prompt runs.
+    fn wait_for_busy(&mut self, text: &str) {
+        wait_until(text, || {
+            self.feed_output();
+            self.row_of(text).is_some()
         });
     }
 
@@ -349,10 +361,89 @@ fn diff_panel_shows_changes_and_keeps_the_output() {
     child.wait().unwrap();
 }
 
-#[test]
-fn undo_puts_files_back_and_drops_the_prompt() {
+/// A home folder whose config makes the model served at `port` the
+/// default one, followed by `config`.
+fn home_for_model(port: u16, config: &str) -> tempfile::TempDir {
     use std::os::unix::fs::PermissionsExt;
 
+    let home = tempfile::tempdir().unwrap();
+    let kluis = home.path().join(".kluis");
+    std::fs::create_dir_all(&kluis).unwrap();
+    std::fs::write(
+        kluis.join("config.toml"),
+        format!("[generic]\nmodel = \"genai_1::test-model\"\n{config}"),
+    )
+    .unwrap();
+    let auth = kluis.join("auth.toml");
+    let endpoint = format!("http://127.0.0.1:{port}/v1/");
+    std::fs::write(
+        &auth,
+        format!("[genai_1]\nendpoint = \"{endpoint}\"\napi_key = \"test-key\"\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&auth, std::fs::Permissions::from_mode(0o600)).unwrap();
+    home
+}
+
+#[test]
+fn tool_call_waits_for_the_approval_of_the_user() {
+    // A model that writes a file, then answers "done", in turn.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for (turn, stream) in listener.incoming().flatten().enumerate() {
+            read_request(&stream);
+            let call = json!({
+                "index": 0,
+                "id": format!("call_{turn}"),
+                "type": "function",
+                "function": {
+                    "name": "write",
+                    "arguments": json!({ "path": "new.txt", "content": "hello\n" }).to_string(),
+                },
+            });
+            let chunks = if turn % 2 == 0 {
+                [
+                    delta(json!({ "tool_calls": [call] }), None),
+                    delta(json!({}), Some("tool_calls")),
+                ]
+            } else {
+                [
+                    delta(json!({ "content": "done" }), None),
+                    delta(json!({}), Some("stop")),
+                ]
+            };
+            write_sse(stream, &chunks);
+        }
+    });
+    let home = home_for_model(port, "[permissions]\nask = [\"write\"]\n");
+    let project = tempfile::tempdir().unwrap();
+    let file = project.path().join("new.txt");
+
+    let (master, slave) = openpty(40, 100);
+    let mut child = spawn_tui_in(home.path(), project.path(), &slave);
+    let mut term = Emulator::new(&master, 40, 100);
+    term.wait_for("Type a message");
+
+    // Typed text refuses the call and tells the model why.
+    term.type_text("first\r");
+    term.wait_for_busy("Always in this session");
+    assert!(term.row_of("Allow write?").is_some(), "{:?}", term.rows());
+    term.type_text("not now\r");
+    term.wait_for("done");
+    assert!(!file.exists());
+
+    term.type_text("second\r");
+    term.wait_for_busy("Always in this session");
+    term.type_text("\r");
+    term.wait_until("the file", || file.exists());
+
+    kill(&child, libc::SIGTERM);
+    child.wait().unwrap();
+}
+
+#[test]
+fn undo_puts_files_back_and_drops_the_prompt() {
     const PROMPT: &str = "Type a message";
     // A model that answers "done" to every request.
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -367,22 +458,7 @@ fn undo_puts_files_back_and_drops_the_prompt() {
             write_sse(stream, &chunks);
         }
     });
-    let home = tempfile::tempdir().unwrap();
-    let kluis = home.path().join(".kluis");
-    std::fs::create_dir_all(&kluis).unwrap();
-    std::fs::write(
-        kluis.join("config.toml"),
-        "[generic]\nmodel = \"genai_1::test-model\"\n",
-    )
-    .unwrap();
-    let auth = kluis.join("auth.toml");
-    let endpoint = format!("http://127.0.0.1:{port}/v1/");
-    std::fs::write(
-        &auth,
-        format!("[genai_1]\nendpoint = \"{endpoint}\"\napi_key = \"test-key\"\n"),
-    )
-    .unwrap();
-    std::fs::set_permissions(&auth, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let home = home_for_model(port, "");
     let project = tempfile::tempdir().unwrap();
     let file = project.path().join("a.txt");
     std::fs::write(&file, "one\n").unwrap();
