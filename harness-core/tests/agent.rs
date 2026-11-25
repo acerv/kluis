@@ -1573,6 +1573,29 @@ async fn last_prompt_is_taken_with_what_followed_it() {
     assert_eq!(agent.take_last_prompt(), None);
 }
 
+#[tokio::test]
+async fn last_prompt_is_not_a_message_of_a_compaction() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = MockModel::start(vec![
+        text("first answer"),
+        text("summary"),
+        text("second answer"),
+    ])
+    .await;
+    let mut agent = agent(&model, dir.path());
+    prompt(&mut agent, "first").await.unwrap();
+    agent.compact(None, |_| {}).await.unwrap();
+    let compacted = agent.history().len();
+
+    // Nothing of the user is left to send again.
+    assert_eq!(agent.take_last_prompt(), None);
+    assert_eq!(agent.history().len(), compacted);
+
+    prompt(&mut agent, "second").await.unwrap();
+    assert_eq!(agent.take_last_prompt().as_deref(), Some("second"));
+    assert_eq!(agent.history().len(), compacted);
+}
+
 /// The first bytes of a PNG file.
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
 

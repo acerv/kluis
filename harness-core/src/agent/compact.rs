@@ -107,9 +107,10 @@ continue seamlessly without the earlier messages. Do not call any tools. Include
 - Important findings, errors, or command results\n\
 - Remaining tasks and next steps";
 
-const COMPACT_HEADER: &str = "Summary of the earlier conversation:";
+pub(super) const COMPACT_HEADER: &str = "Summary of the earlier conversation:";
 const COMPACT_ACK: &str = "Understood. Continuing from the compacted summary.";
-const COMPACT_CONTINUE: &str = "Continue with the task from the compacted summary above.";
+pub(super) const COMPACT_CONTINUE: &str =
+    "Continue with the task from the compacted summary above.";
 
 /// Whether to compact a conversation that is `context` tokens long (0
 /// when unknown), with `limit` the size to compact at. Once it is, it is

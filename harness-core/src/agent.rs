@@ -455,12 +455,19 @@ impl Agent {
 
     /// Remove the last message the user sent, and all after it, from the
     /// history, returning its text to send it again. The images attached
-    /// to it are attached to the next prompt again.
+    /// to it are attached to the next prompt again. `None` when a
+    /// compaction left none of the user's messages.
     pub fn take_last_prompt(&mut self) -> Option<String> {
-        // Its text comes first, before the files it names.
+        // Its text comes first, before the files it names. The messages
+        // of a compaction are not the user's.
+        let own = |text: &str| {
+            text != IMAGES
+                && text != compact::COMPACT_CONTINUE
+                && !text.starts_with(compact::COMPACT_HEADER)
+        };
         let idx = self.req.messages.iter().rposition(|m| {
             m.role == ChatRole::User
-                && matches!(m.content.parts().first(), Some(ContentPart::Text(text)) if text != IMAGES)
+                && matches!(m.content.parts().first(), Some(ContentPart::Text(text)) if own(text))
         })?;
         let message = &self.req.messages[idx];
         let text = message.content.first_text()?.to_owned();
