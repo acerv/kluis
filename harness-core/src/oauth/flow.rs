@@ -295,11 +295,13 @@ impl CallbackLogin {
         let wait = async {
             loop {
                 let (stream, _) = self.listener.accept().await?;
-                if let Ok(res) = tokio::time::timeout(REQUEST_TIMEOUT, self.callback(stream)).await
+                // A request cut short, or one that is not the redirect of
+                // this login, changes nothing: any program on this host,
+                // or page in the browser, can send one.
+                if let Ok(Some(redirect)) =
+                    tokio::time::timeout(REQUEST_TIMEOUT, self.callback(stream)).await
                 {
-                    if let Some(params) = res? {
-                        return Ok::<_, Error>(params);
-                    }
+                    return redirect;
                 }
             }
         };
@@ -309,20 +311,22 @@ impl CallbackLogin {
         self.code.exchange(&code, Some(&state)).await
     }
 
-    /// Answer one browser request; return its `code` and `state` when it is
-    /// the redirect.
-    async fn callback(&self, stream: TcpStream) -> Result<Option<(String, String)>, Error> {
+    /// Answer one browser request; when it is the redirect of this login,
+    /// which its `state` tells, return its `code` and `state`, or the
+    /// error the provider reports.
+    async fn callback(&self, stream: TcpStream) -> Option<Result<(String, String), Error>> {
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
         (&mut reader)
             .take(MAX_REQUEST_LINE)
             .read_line(&mut line)
-            .await?;
+            .await
+            .ok()?;
         let target = line.split_whitespace().nth(1).unwrap_or_default();
-        let url = Url::parse(&format!("http://localhost{target}"))?;
+        let url = Url::parse(&format!("http://localhost{target}")).ok()?;
         if url.path() != self.path {
             respond(reader.get_mut(), "404 Not Found", "Not found.").await;
-            return Ok(None);
+            return None;
         }
 
         let param = |name: &str| {
@@ -330,16 +334,21 @@ impl CallbackLogin {
                 .find(|(k, _)| k == name)
                 .map(|(_, v)| v.into_owned())
         };
+        let state = param("state").filter(|state| state == self.code.state.secret());
+        let Some(state) = state else {
+            respond(reader.get_mut(), "400 Bad Request", "Not this login.").await;
+            return None;
+        };
         if let Some(error) = param("error") {
             respond(reader.get_mut(), "400 Bad Request", "Login failed.").await;
             let detail = param("error_description")
                 .map(|d| format!(": {d}"))
                 .unwrap_or_default();
-            return Err(format!("login failed: {error}{detail}").into());
+            return Some(Err(format!("login failed: {error}{detail}").into()));
         }
-        let (Some(code), Some(state)) = (param("code"), param("state")) else {
+        let Some(code) = param("code") else {
             respond(reader.get_mut(), "400 Bad Request", "Missing code.").await;
-            return Err("login failed: redirect without code or state".into());
+            return Some(Err("login failed: redirect without code".into()));
         };
         respond(
             reader.get_mut(),
@@ -347,7 +356,7 @@ impl CallbackLogin {
             "Login complete. You can close this tab.",
         )
         .await;
-        Ok(Some((code, state)))
+        Some(Ok((code, state)))
     }
 }
 

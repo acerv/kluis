@@ -226,10 +226,23 @@ async fn callback_login_reports_provider_error() {
         panic!("expected a callback login");
     };
     let port = login.port();
-    let browser = tokio::spawn(async move { browse(port, "/cb?error=access_denied").await });
+    let state = query(login.url(), "state").unwrap();
+    let browser = tokio::spawn(async move {
+        // Not from the provider, which knows the state: the login goes on.
+        let stray = [
+            browse(port, "/cb?error=stray").await,
+            browse(port, "/cb?code=c-0&state=other").await,
+            browse(port, "/cb").await,
+        ];
+        let denied = browse(port, &format!("/cb?error=access_denied&state={state}")).await;
+        (stray, denied)
+    });
     let err = login.finish().await.unwrap_err().to_string();
     assert!(err.contains("access_denied"), "{err}");
-    assert!(browser.await.unwrap().starts_with("HTTP/1.1 400"));
+    let (stray, denied) = browser.await.unwrap();
+    for reply in stray.iter().chain([&denied]) {
+        assert!(reply.starts_with("HTTP/1.1 400"), "{reply}");
+    }
     assert!(server.requests().is_empty());
 }
 
