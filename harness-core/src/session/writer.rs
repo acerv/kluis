@@ -112,16 +112,20 @@ impl SessionWriter {
                 .mode(0o600)
                 .open(&self.path)?;
             let mut repaired = false;
-            if let Some(valid_len) = self.repair_len.take() {
+            if let Some(valid_len) = self.repair_len {
                 file.set_len(valid_len)?;
+                // Only now: a failure leaves it to the next write.
+                self.repair_len = None;
                 repaired = valid_len > 0;
             }
+            // A file that was removed since it was loaded starts again.
+            let empty = file.metadata()?.len() == 0;
             let mut buf = BufWriter::new(file);
             if repaired {
                 // Ensure the repaired file ends on a newline boundary.
                 buf.write_all(b"\n")?;
             }
-            if !self.initialized {
+            if !self.initialized || empty {
                 let header = SessionEntryRef::Header {
                     version: FORMAT_VERSION,
                     id: &self.id,
