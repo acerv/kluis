@@ -62,7 +62,8 @@ impl DiffView {
 
     /// Take a new snapshot, for a new session.
     pub fn restart(&mut self) -> io::Result<()> {
-        match self.root.take() {
+        // Kept when the watcher does not start, for the next session.
+        match self.root.clone() {
             Some(root) => self.watch(root),
             None => Ok(()),
         }
