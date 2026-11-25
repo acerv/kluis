@@ -55,6 +55,7 @@ toml = { version = "1", default-features = false, features = ["display", "parse"
 tokio = "1"
 tui-markdown = "0.3"
 unicode-width = "0.2"
+url = "2"
 uuid = { version = "1", features = ["v4"] }
 vt100 = "0.18"
 walkdir = "2"
