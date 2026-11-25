@@ -110,8 +110,14 @@
   with the commands. See [Using skills](#using-skills).
 - `/<command> [args]` sends a prompt template of yours from
   `~/.kluis/commands`. See [Custom commands](#custom-commands).
-- Slash commands: `/model`, `/thinking`, `/resume`, `/copy`, `/export`,
-  `/output`, `/diff`, `/retry`, `/compact`, `/status`, `/new`, `/help`, `/quit`.
+- Slash commands: `/model`, `/thinking`, `/resume`, `/fork`, `/copy`,
+  `/export`, `/output`, `/diff`, `/retry`, `/compact`, `/status`, `/new`,
+  `/help`, `/quit`.
+- `/fork` goes on in a copy of the session, so you can try another
+  direction: the session it copies stays as it was, and can be resumed.
+  `kl --continue --fork` and `kl --resume [ID] --fork` do the same at
+  start. The session list shows what a session is a fork of. Only the
+  conversation is copied, not the files.
 - `/retry` sends the last prompt again, dropping what it led to.
 - `/export [path]` writes the conversation as Markdown, the tool calls and
   their results included, to `path` or to `kl-<session>.md` in the working

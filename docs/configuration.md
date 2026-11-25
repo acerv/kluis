@@ -88,6 +88,7 @@ inline code, keep a plain style. With `NO_COLOR`, all of it stays plain.
 | --------------------- | -------------------------------------------------- |
 | `-c`, `--continue`    | Continue the latest session in this folder         |
 | `--resume [ID]`       | Resume a session, with a picker when no ID is given |
+| `--fork`              | With `--continue` or `--resume`, go on in a copy of the session |
 | `--no-session`        | Do not read or write session files                 |
 | `--strict`            | Make the current folder read-only                  |
 | `--no-sandbox`        | Run tools on the host                              |
