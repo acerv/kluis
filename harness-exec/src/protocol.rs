@@ -3,7 +3,7 @@
 
 //! Bounded NDJSON wire protocol between host and sandboxed tool worker.
 
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, BufRead, Read};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -68,13 +68,14 @@ pub fn reset_buf(buf: &mut Vec<u8>) {
     }
 }
 
-/// Write one NDJSON line and flush.
-pub fn write_line(writer: &mut impl Write, value: &impl Serialize) -> io::Result<()> {
+/// `value` as one NDJSON line, failing if the other side would not read
+/// it, as it exceeds [`MAX_FRAME_BYTES`].
+pub fn frame(value: &impl Serialize) -> io::Result<Vec<u8>> {
     let mut buf =
         serde_json::to_vec(value).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     buf.push(b'\n');
-    writer.write_all(&buf)?;
-    writer.flush()
+    check_frame_len(buf.len())?;
+    Ok(buf)
 }
 
 /// Read one `\n`-terminated line into `buf`, failing if it exceeds

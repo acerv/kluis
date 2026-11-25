@@ -20,7 +20,7 @@ use scopeguard::ScopeGuard;
 use thiserror::Error;
 use tokio::sync::mpsc;
 
-use crate::protocol::{read_line_bounded, write_line, Request, Response};
+use crate::protocol::{frame, read_line_bounded, Request, Response};
 use crate::{error_json, lock, Hosts, Proxy, ToolDetails, BASH_TOOL};
 
 /// Configuration for spawning the sandboxed tool worker container.
@@ -87,9 +87,10 @@ pub struct SandboxExecutor {
 
 struct Worker {
     child: Child,
-    /// What to write to the worker, taken by the writer thread: a worker
-    /// that stopped reading never keeps a caller waiting.
-    requests: Option<Sender<Request>>,
+    /// The requests to write to the worker, each as its line, taken by
+    /// the writer thread: a worker that stopped reading never keeps a
+    /// caller waiting.
+    requests: Option<Sender<Vec<u8>>>,
     pending: PendingMap,
     alive: Arc<AtomicBool>,
     reader: Option<thread::JoinHandle<()>>,
@@ -169,7 +170,9 @@ impl SandboxExecutor {
             lock(&pending).remove(&id);
             if let Some(worker) = lock(&self.worker).as_ref() {
                 if Arc::ptr_eq(&worker.pending, &pending) {
-                    let _ = worker.send(Request::Cancel { id });
+                    if let Ok(cancel) = frame(&Request::Cancel { id }) {
+                        let _ = worker.send(cancel);
+                    }
                 }
             }
         });
@@ -260,8 +263,11 @@ impl SandboxExecutor {
     fn send_call(
         &self,
         id: u64,
-        mut req: Request,
+        req: Request,
     ) -> Result<(PendingMap, mpsc::UnboundedReceiver<Response>), ExecError> {
+        // A request the worker would not read ends it, and all that runs
+        // in its container.
+        let mut req = frame(&req)?;
         let mut guard = lock(&self.worker);
 
         for attempt in 0..2 {
@@ -294,9 +300,9 @@ impl SandboxExecutor {
 }
 
 impl Worker {
-    /// Queue `req` for the worker, giving it back when a write failed
-    /// before, as the worker is then dead.
-    fn send(&self, req: Request) -> Result<(), Request> {
+    /// Queue the line `req` for the worker, giving it back when a write
+    /// failed before, as the worker is then dead.
+    fn send(&self, req: Vec<u8>) -> Result<(), Vec<u8>> {
         match &self.requests {
             Some(requests) => requests.send(req).map_err(|err| err.0),
             None => Err(req),
@@ -454,9 +460,9 @@ fn read_responses(mut stdout: impl BufRead, pending: &PendingMap, alive: &Atomic
 
 /// Write each of the `requests` to the worker, until there is none to
 /// wait for or a write fails: the worker is then dead.
-fn write_requests(mut stdin: impl Write, requests: &Receiver<Request>, alive: &AtomicBool) {
+fn write_requests(mut stdin: impl Write, requests: &Receiver<Vec<u8>>, alive: &AtomicBool) {
     for req in requests {
-        if write_line(&mut stdin, &req).is_err() {
+        if stdin.write_all(&req).and_then(|()| stdin.flush()).is_err() {
             alive.store(false, Ordering::Release);
             break;
         }
