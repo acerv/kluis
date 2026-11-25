@@ -125,9 +125,9 @@ async fn dispatch(
     match name {
         READ_TOOL => {
             let tool = ReadTool::deserialize(args)?;
-            let path = tool.path.clone();
+            let look = SeenFiles::look(cwd, &tool.path);
             let mut out = tool.run_in(cwd).await?;
-            ctx.seen.record(cwd, &path);
+            ctx.seen.remember(look);
             let image = out.image.take().map(ToolDetails::Image);
             Ok((serde_json::to_string(&out)?, image))
         }
