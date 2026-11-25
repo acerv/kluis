@@ -155,6 +155,29 @@ fn sandbox_info_prints_what_commands_get() {
 }
 
 #[test]
+fn sandbox_info_lists_the_hosts_of_the_proxy() {
+    let out = run_cli(&["--sandbox-info", "--allow-host", "crates.io"]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(out.stderr.is_empty(), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Network: none\n"), "{stdout}");
+    assert!(
+        stdout.contains("Hosts commands reach through kl's proxy, at 127.0.0.1:3128: crates.io\n"),
+        "{stdout}"
+    );
+
+    // Any network leaves nothing for the proxy to limit.
+    let out = run_cli(&["--sandbox-info", "--allow-host", "crates.io", "--network"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains("Hosts commands reach"), "{stdout}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--allow-host limits nothing here"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn sandbox_info_tells_when_there_is_no_sandbox() {
     let out = run_cli(&["--sandbox-info", "--no-sandbox"]);
     assert!(out.status.success(), "{out:?}");

@@ -35,6 +35,9 @@
 //! connect = [11434]
 //! # Allow any network, to commands too.
 //! network = false
+//! # Let commands reach only these hosts and their subdomains, through a
+//! # proxy kl runs, even without network. Not with `connect`.
+//! hosts = ["crates.io", "static.crates.io", "index.crates.io"]
 //! # Let web_fetch reach only these hosts and their subdomains, private
 //! # addresses included, even without network; any public host when
 //! # empty. Commands are not limited by it.
@@ -147,6 +150,8 @@ pub struct SandboxConfig {
     pub connect: Vec<u16>,
     /// Allow any network, like `--network`.
     pub network: bool,
+    /// Hosts commands reach through the proxy, like `--allow-host`.
+    pub hosts: Vec<String>,
     /// Only hosts `web_fetch` reaches, like `--web-host`.
     pub web_hosts: Vec<String>,
     /// Background commands, like `--background-commands`.
@@ -171,6 +176,7 @@ impl Default for SandboxConfig {
             deny: Vec::new(),
             connect: Vec::new(),
             network: false,
+            hosts: Vec::new(),
             web_hosts: Vec::new(),
             background_commands: false,
             max_processes: Some(1024),
