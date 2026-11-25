@@ -168,12 +168,16 @@ impl OAuthStore {
         let mut file = read(&self.path)?;
         let stored = p.slot(&mut file).clone();
         let creds = match stored {
-            Some(creds) if p.expires_soon(&creds) => {
-                let fresh = p.refresh(&creds).await?;
-                *p.slot(&mut file) = Some(fresh.clone());
-                write(&self.path, &file)?;
-                Some(fresh)
-            }
+            Some(creds) if p.expires_soon(&creds) => match p.refresh(&creds).await {
+                Ok(fresh) => {
+                    *p.slot(&mut file) = Some(fresh.clone());
+                    write(&self.path, &file)?;
+                    Some(fresh)
+                }
+                // Still good for now: the next request tries again.
+                Err(_) if !p.expired(&creds) => Some(creds),
+                Err(err) => return Err(err),
+            },
             stored => stored,
         };
         *self.cached() = file;
