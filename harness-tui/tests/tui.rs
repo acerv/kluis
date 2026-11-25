@@ -735,6 +735,30 @@ fn persistent_history_round_trip_multiline_dedup_and_compaction() {
 }
 
 #[test]
+fn up_and_down_keep_the_column_across_wide_characters() {
+    let mut app = App::new("m", status(), Theme::new(false));
+    app.handle_event(Event::Paste("日本語\nabcdef".into()));
+    for _ in 0..3 {
+        app.handle_event(key(KeyCode::Left));
+    }
+    // Column 3 is the second half of the second wide character.
+    app.handle_event(key(KeyCode::Up));
+    app.handle_event(key(KeyCode::Char('X')));
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Submit("日X本語\nabcdef".into())
+    );
+
+    app.handle_event(Event::Paste("abcdef\n日本語".into()));
+    app.handle_event(key(KeyCode::Up));
+    app.handle_event(key(KeyCode::Char('X')));
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Submit("abcdefX\n日本語".into())
+    );
+}
+
+#[test]
 fn history_compaction_keeps_the_prompts_of_another_instance() {
     use harness_tui::{History, MAX_HISTORY};
 
