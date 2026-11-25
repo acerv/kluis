@@ -34,6 +34,9 @@
 - `read` hands PNG, JPEG, GIF and WebP images (up to 3.5 MB) to the model.
   They are not saved in the session.
 - `edit` applies changes atomically and shows a diff with line numbers.
+- `edit` and `write` refuse a file that changed since the model last read
+  or wrote it, for example one you saved in your editor meanwhile: the
+  model has to read it again first, so your change is not lost.
 - `bash` streams cleaned output with a timeout and line limits. With
   `--background-commands`, a command such as a dev server can keep running
   across prompts: its output goes to a file, and it is stopped when `kl`
