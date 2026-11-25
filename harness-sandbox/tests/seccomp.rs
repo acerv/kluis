@@ -397,6 +397,24 @@ fn other_protocols_are_refused() {
     });
 }
 
+#[test]
+fn only_stream_and_datagram_ip_sockets() {
+    // The default protocol of the other types is one more module to look
+    // for, SCTP for `SOCK_SEQPACKET`, which the limit on ports misses.
+    for network in ["none", "ports", "any"] {
+        restricted("only_stream_and_datagram_ip_sockets", network, || {
+            const SOCK_DCCP: libc::c_int = 6;
+            let flags = libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC;
+            for family in [libc::AF_INET, libc::AF_INET6] {
+                for kind in [libc::SOCK_SEQPACKET, SOCK_DCCP, libc::SOCK_RAW] {
+                    assert_eq!(socket_error(family, kind), Some(libc::EACCES));
+                    assert_eq!(socket_error(family, kind | flags), Some(libc::EACCES));
+                }
+            }
+        });
+    }
+}
+
 /// The errors of sending with `flags` through `sendto`, `sendmsg` and
 /// `sendmmsg` on no socket: the filter answers first.
 fn send_errors(flags: libc::c_int) -> [Option<i32>; 3] {
