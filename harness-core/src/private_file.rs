@@ -30,14 +30,15 @@ pub(crate) fn sibling(path: &Path, suffix: &str) -> PathBuf {
 }
 
 /// Replace the file at `path` with what `write` writes, for the user only
-/// (`0600`). It is written next to `path` and takes its place only once
-/// complete and on disk, so a failure leaves `path` as it was.
+/// (`0600`). It is written next to `path`, under a name of this process,
+/// and takes its place only once complete and on disk, so a failure
+/// leaves `path` as it was, and so does another process replacing it.
 pub(crate) fn replace(
     path: &Path,
     write: impl FnOnce(&mut File) -> io::Result<()>,
 ) -> io::Result<()> {
-    let tmp = sibling(path, ".tmp");
-    // One left by a crash.
+    let tmp = sibling(path, &format!(".{}.tmp", std::process::id()));
+    // One left by a failure of this process.
     let _ = fs::remove_file(&tmp);
     let res = OpenOptions::new()
         .write(true)
@@ -51,8 +52,14 @@ pub(crate) fn replace(
         .and_then(|()| fs::rename(&tmp, path));
     if res.is_err() {
         let _ = fs::remove_file(&tmp);
+        return res;
     }
-    res
+    // The new name is on disk once its folder is. The file is in place
+    // either way.
+    if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
+        let _ = File::open(dir).and_then(|dir| dir.sync_all());
+    }
+    Ok(())
 }
 
 /// Read the private file at `path`, at most `max_bytes` long.
