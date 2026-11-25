@@ -399,10 +399,10 @@ where
     match err {
         RequestTokenError::ServerResponse(resp) => format!("login rejected: {resp}").into(),
         RequestTokenError::Request(err) => format!("request failed: {}", chain(&err)).into(),
-        RequestTokenError::Parse(err, body) => {
-            let body = String::from_utf8_lossy(&body);
-            let body: String = body.chars().take(200).collect();
-            format!("invalid token response ({err}): {body}").into()
+        // Neither its body nor the value that does not fit: a response
+        // that fails to parse may still hold the tokens.
+        RequestTokenError::Parse(err, _) => {
+            format!("invalid token response: unexpected `{}`", err.path()).into()
         }
         RequestTokenError::Other(msg) => msg.into(),
     }
