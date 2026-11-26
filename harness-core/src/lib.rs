@@ -32,7 +32,7 @@ mod skills;
 mod task;
 pub mod tools;
 
-pub use agent::{Agent, Error, Steering, Thinking, DEFAULT_AUTO_COMPACT_TOKENS, DEFAULT_MAX_TURNS};
+pub use agent::{Agent, Error, Steering, Thinking, DEFAULT_AUTO_COMPACT_TOKENS};
 pub use auth::{AuthConfig, CredentialSource, ProviderAuth};
 pub use bundled::{install_skills, outdated_skills, Installed, BUNDLED_SKILLS};
 pub use commands::{

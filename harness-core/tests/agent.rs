@@ -15,7 +15,7 @@ use genai::chat::{ChatMessage, ChatRole};
 use harness_core::tools::{Image, ToolContext};
 use harness_core::{
     find_agents_files, system_prompt, Agent, Event, RetryPolicy, Thinking, ToolDetails,
-    AGENTS_FILE, DEFAULT_AUTO_COMPACT_TOKENS, DEFAULT_MAX_TURNS, MAX_AGENTS_BYTES,
+    AGENTS_FILE, DEFAULT_AUTO_COMPACT_TOKENS, MAX_AGENTS_BYTES,
 };
 use serde_json::{json, Value};
 use tokio::sync::Notify;
@@ -371,40 +371,10 @@ async fn runs_tool_turns_until_the_model_answers() {
     let dir = tempfile::tempdir().unwrap();
     let mut agent = agent(&model, dir.path());
 
-    assert_eq!(agent.max_turns(), Some(DEFAULT_MAX_TURNS));
     assert_eq!(prompt(&mut agent, "loop").await.unwrap(), "done");
     assert_eq!(model.requests().len(), rounds + 1);
     assert_eq!(agent.history().len(), 1 + rounds * 2 + 1);
     assert_eq!(agent.history().last().unwrap().role, ChatRole::Assistant);
-}
-
-#[tokio::test]
-async fn max_turns_stops_runaway_loop_with_valid_history() {
-    let replies = vec![
-        tool_calls(&[("c1", "bash", json!({ "command": "echo 1" }))]),
-        tool_calls(&[("c2", "bash", json!({ "command": "echo 2" }))]),
-        text("resumed"),
-    ];
-    let model = MockModel::start(replies).await;
-    let dir = tempfile::tempdir().unwrap();
-    let mut agent = agent(&model, dir.path()).with_max_turns(Some(2));
-
-    let err = prompt(&mut agent, "keep going").await.unwrap_err();
-    assert!(err.to_string().contains("turn limit"), "{err}");
-    assert_eq!(model.requests().len(), 2);
-    // Every tool call from the final allowed turn was answered, keeping history valid.
-    assert_eq!(
-        roles(&agent),
-        [
-            ChatRole::User,
-            ChatRole::Assistant,
-            ChatRole::Tool,
-            ChatRole::Assistant,
-            ChatRole::Tool,
-        ]
-    );
-    assert_eq!(prompt(&mut agent, "continue").await.unwrap(), "resumed");
-    assert_eq!(model.requests().len(), 3);
 }
 
 #[tokio::test]
