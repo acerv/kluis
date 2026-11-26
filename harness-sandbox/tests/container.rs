@@ -946,3 +946,21 @@ fn fast_open_keeps_to_allowed_ports() {
     assert_eq!(err, libc::EACCES);
     assert!(blocked.accept().is_err(), "reached a blocked port");
 }
+
+#[test]
+fn listen_opens_no_port_with_ports() {
+    let sandbox = system().allow_connect(free_port());
+    // Landlock only checks `bind`, which `listen` skips on a socket not
+    // bound yet, binding it to any free port of the host.
+    let err = call_error(&sandbox, NetworkAccess::Ports, || {
+        // SAFETY: plain system calls.
+        unsafe {
+            let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0);
+            if fd < 0 {
+                return -1;
+            }
+            libc::listen(fd, 1) as libc::c_long
+        }
+    });
+    assert_eq!(err, libc::EOPNOTSUPP);
+}
