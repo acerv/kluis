@@ -205,8 +205,8 @@ impl SandboxExecutor {
     /// the commands the `bash` tool started in the background keep
     /// running. Call it when no call runs.
     ///
-    /// Returns whether such commands were running, as they may have
-    /// changed files since, or when this is not known.
+    /// Returns whether such commands were running, or ended since the last
+    /// call, as they may have changed files, or when this is not known.
     ///
     /// A worker that does not answer in time, as one a command stopped
     /// with `SIGSTOP`, is killed with its container: the next call starts
