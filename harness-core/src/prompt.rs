@@ -120,7 +120,7 @@ pub fn system_prompt(cwd: &Path, agents_files: &[PathBuf], skills: &[Skill]) -> 
         "You are a coding assistant running in a Linux terminal.\n\
          \n\
          Guidelines:\n\
-         - Use `read`, `grep`, `find`, and `ls` to inspect files instead of shell commands when possible.\n\
+         - Use `read`, `grep`, `find`, and `ls` to inspect files instead of shell commands.\n\
          - Use `edit` and `write` to modify files, and read a file before editing it.\n\
          - Use `bash` to run builds, tests, git, and other command-line tools.\n\
          - Use `todo` to plan and track multi-step tasks.\n\
