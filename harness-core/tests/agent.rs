@@ -362,7 +362,8 @@ async fn truncated_tool_calls_fail_without_running_and_ask_model_to_reissue() {
 
 #[tokio::test]
 async fn runs_tool_turns_until_the_model_answers() {
-    let rounds = 12;
+    // Long tool loops run until the model answers: there is no turn cap.
+    let rounds = 60;
     let mut replies: Vec<Reply> = (0..rounds)
         .map(|i| tool_calls(&[("call_1", "bash", json!({ "command": format!("echo {i}") }))]))
         .collect();
