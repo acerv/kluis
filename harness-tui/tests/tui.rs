@@ -1035,6 +1035,29 @@ fn slash_command_autocomplete_popup_and_tab_completion() {
 }
 
 #[test]
+fn history_browsing_walks_past_commands() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    app.set_history(vec!["first".into(), "/model".into(), "last".into()]);
+
+    // A recalled command does not open the popup, so Up/Down go on.
+    app.handle_event(key(KeyCode::Up));
+    app.handle_event(key(KeyCode::Up));
+    assert!(!app.is_completion_open());
+    app.handle_event(key(KeyCode::Up));
+    assert_eq!(
+        app.handle_event(key(KeyCode::Enter)),
+        Action::Submit("first".into())
+    );
+
+    // Editing a recalled command opens the popup again.
+    app.handle_event(key(KeyCode::Up));
+    app.handle_event(key(KeyCode::Up));
+    app.handle_event(key(KeyCode::Up));
+    app.handle_event(key(KeyCode::Backspace));
+    assert!(app.is_completion_open());
+}
+
+#[test]
 fn live_bash_preview_and_elapsed_spinner_timer() {
     use std::time::Duration;
 

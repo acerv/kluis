@@ -67,6 +67,10 @@ impl App {
         }
         if self.input.handle_key(key) {
             self.completion.update(self.input.text());
+            // Up/Down keep browsing history instead of moving in the popup.
+            if self.input.is_browsing_history() {
+                self.completion.dismiss();
+            }
             Action::Redraw
         } else {
             Action::None

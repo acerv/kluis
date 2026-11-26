@@ -31,6 +31,11 @@ impl Input {
         &self.buf
     }
 
+    /// Whether the editor shows a history entry recalled with Up/Down.
+    pub fn is_browsing_history(&self) -> bool {
+        self.history_idx.is_some()
+    }
+
     /// Replace the editor buffer with `text` and place the cursor at the end.
     pub fn set_text(&mut self, text: &str) {
         self.buf.clear();
