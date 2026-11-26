@@ -20,6 +20,10 @@ pub struct Theme {
     pub diff_remove: Style,
     pub error: Style,
     pub muted: Style,
+    /// The mark of a tool call that ended well.
+    pub success: Style,
+    /// What joins a tool result to its call.
+    pub gutter: Style,
     /// A finished `todo` item.
     pub todo_done: Style,
     /// The `todo` item in progress.
@@ -49,6 +53,8 @@ impl Theme {
                 diff_remove: plain,
                 error: plain,
                 muted: plain,
+                success: plain,
+                gutter: plain,
                 todo_done: plain,
                 todo_current: plain,
                 status_bar: plain,
@@ -78,6 +84,8 @@ impl Theme {
             diff_remove: Style::default().fg(Color::Red),
             error: Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             muted: Style::default().fg(Color::DarkGray),
+            success: Style::default().fg(Color::Green),
+            gutter: Style::default().fg(Color::DarkGray),
             todo_done: Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::CROSSED_OUT),

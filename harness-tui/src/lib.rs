@@ -27,6 +27,7 @@ mod stats;
 mod style;
 mod terminal;
 mod text;
+mod transcript;
 
 use std::io::Write;
 use std::path::PathBuf;

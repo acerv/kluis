@@ -253,15 +253,22 @@ impl App {
                 .filter(|s| !s.is_empty())
                 .map(|s| format!(" {s}"))
                 .unwrap_or_default();
-            let label = match &self.active_tool {
-                Some(tool) => format!("{spin} Running {}…{elapsed}  (esc to cancel)", tool.name),
-                None if !self.show_thinking => {
-                    format!("{spin} Thinking…{elapsed}  (Ctrl-O to show · esc to cancel)")
-                }
-                None if self.is_thinking => {
-                    format!("{spin} Thinking…{elapsed}  (Ctrl-O to hide · esc to cancel)")
-                }
-                None => format!("{spin} Working…{elapsed}  (Ctrl-O to hide · esc to cancel)"),
+            if let Some(tool) = &self.active_tool {
+                let mut spans = vec![Span::styled(format!("{spin} "), self.theme.muted)];
+                spans.extend(format_tool_call(&tool.name, &tool.args, self.theme).spans);
+                spans.push(Span::styled(
+                    format!("…{elapsed}  (esc to cancel)"),
+                    self.theme.muted,
+                ));
+                frame.render_widget(Paragraph::new(Line::from(spans)), area);
+                return;
+            }
+            let label = if !self.show_thinking {
+                format!("{spin} Thinking…{elapsed}  (Ctrl-O to show · esc to cancel)")
+            } else if self.is_thinking {
+                format!("{spin} Thinking…{elapsed}  (Ctrl-O to hide · esc to cancel)")
+            } else {
+                format!("{spin} Working…{elapsed}  (Ctrl-O to hide · esc to cancel)")
             };
             Line::styled(label, self.theme.muted)
         } else if let Some(notice) = &self.notice {
@@ -369,16 +376,6 @@ impl App {
             Span::styled(right, self.theme.status_bar),
         ]);
         frame.render_widget(Paragraph::new(line), area);
-    }
-}
-
-fn format_elapsed(secs: u64) -> String {
-    if secs == 0 {
-        String::new()
-    } else if secs < 60 {
-        format!("{secs}s")
-    } else {
-        format!("{}m{:02}s", secs / 60, secs % 60)
     }
 }
 

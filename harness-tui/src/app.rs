@@ -30,6 +30,7 @@ use crate::markdown::{render_markdown, MarkdownStream, MarkdownStyle};
 use crate::picker::{Picker, PickerKind, PickerOutcome};
 use crate::style::Theme;
 use crate::text::{char_width, truncate_width, wrap_lines, wrapped_line_count};
+use crate::transcript::Entry;
 use crate::Status;
 
 mod keys;
@@ -38,8 +39,9 @@ mod tool_view;
 mod update;
 
 pub(crate) use tool_view::render_diff;
+pub(crate) use tool_view::ToolRun;
 use tool_view::{
-    format_full_output, format_tool_call, format_tool_result, ToolCall, ToolPreview, ToolRun,
+    format_elapsed, format_tool_call, format_tool_run, ToolCall, ToolPreview, ToolReply,
 };
 pub use update::AgentUpdate;
 
@@ -213,7 +215,7 @@ pub struct App {
     todos: Vec<Todo>,
     /// The changes `/diff` shows.
     diff: DiffView,
-    scrollback: Vec<Line<'static>>,
+    scrollback: Vec<Entry>,
 }
 
 impl App {
@@ -275,11 +277,13 @@ impl App {
     pub fn ask(&mut self, question: &str, options: &[String]) {
         self.notice = None;
         self.completion.clear();
-        // The tool call line shows the question cut to one line.
-        if summary(question) != question {
-            for line in question.lines() {
-                self.scrollback.push(Line::raw(format!("  {line}")));
-            }
+        // The call shows once answered: show the question meanwhile.
+        for (i, line) in question.lines().enumerate() {
+            let mark = if i == 0 { "? " } else { "  " };
+            self.push_line(Line::from(vec![
+                Span::styled(mark, self.theme.prompt),
+                Span::raw(line.to_owned()),
+            ]));
         }
         self.picker = Some(Picker::answers(options));
         self.ring_if_long();
@@ -401,13 +405,12 @@ impl App {
     /// Push the logo into scrollback, with `info` next to it.
     pub fn push_banner(&mut self, info: &[BannerLine]) {
         let logo_w = LOGO.iter().map(|row| row.width()).max().unwrap_or(0);
-        self.scrollback.push(Line::raw(String::new()));
+        self.push_line(Line::raw(String::new()));
         for row in 0..LOGO.len().max(info.len()) {
             let logo = LOGO.get(row).copied().unwrap_or_default();
             let logo_style = self.theme.logo.get(row).copied().unwrap_or_default();
             let Some(line) = info.get(row) else {
-                self.scrollback
-                    .push(Line::styled(logo.to_owned(), logo_style));
+                self.push_line(Line::styled(logo.to_owned(), logo_style));
                 continue;
             };
             let pad = " ".repeat(logo_w - logo.width() + LOGO_GAP);
@@ -416,24 +419,23 @@ impl App {
             } else {
                 self.theme.muted
             };
-            self.scrollback.push(Line::from(vec![
+            self.push_line(Line::from(vec![
                 Span::styled(format!("{logo}{pad}"), logo_style),
                 Span::styled(line.text.clone(), style),
             ]));
         }
-        self.scrollback.push(Line::raw(String::new()));
+        self.push_line(Line::raw(String::new()));
     }
 
     /// Push informational muted text into scrollback (one line per `\n`).
     pub fn push_info(&mut self, msg: impl AsRef<str>) {
         let text = msg.as_ref();
         if text.is_empty() {
-            self.scrollback.push(Line::raw(String::new()));
+            self.push_line(Line::raw(String::new()));
             return;
         }
         for line in text.lines() {
-            self.scrollback
-                .push(Line::styled(line.to_owned(), self.theme.muted));
+            self.push_line(Line::styled(line.to_owned(), self.theme.muted));
         }
     }
 
@@ -610,9 +612,11 @@ impl App {
         self.context = 0;
         // The plan of the conversation shown until now is not of this one.
         self.todos.clear();
+        self.last_tool = None;
         self.sync_markdown_width();
-        let mut tool_calls: HashMap<&str, (&str, &Value)> = HashMap::new();
-        let mut last_tool = None;
+        // The calls waiting for their result, by id: where they show, none
+        // for a plan, and their name and arguments.
+        let mut tool_calls: HashMap<&str, (Option<usize>, &str, &Value)> = HashMap::new();
         for msg in messages {
             match msg.role {
                 // What the user typed, without the files and notes added.
@@ -625,23 +629,27 @@ impl App {
                     for part in msg.content.parts() {
                         match part {
                             ContentPart::Text(text) if !text.is_empty() => {
-                                self.scrollback
-                                    .extend(render_markdown(text, &self.markdown_style));
-                                self.scrollback.push(Line::raw(String::new()));
+                                let lines = render_markdown(text, &self.markdown_style);
+                                self.push_lines(lines);
+                                self.push_line(Line::raw(String::new()));
                             }
                             ContentPart::ToolCall(call) => {
+                                // Shown as interrupted until its result.
+                                let at = (call.fn_name != TODO_TOOL).then(|| {
+                                    self.scrollback.push(Entry::Tool(Box::new(ToolRun {
+                                        call: Some(ToolCall {
+                                            name: call.fn_name.clone(),
+                                            args: call.fn_arguments.to_string(),
+                                        }),
+                                        reply: None,
+                                        elapsed: None,
+                                    })));
+                                    self.scrollback.len() - 1
+                                });
                                 tool_calls.insert(
                                     call.call_id.as_str(),
-                                    (call.fn_name.as_str(), &call.fn_arguments),
+                                    (at, call.fn_name.as_str(), &call.fn_arguments),
                                 );
-                                if call.fn_name == TODO_TOOL {
-                                    continue;
-                                }
-                                self.scrollback.push(format_tool_call(
-                                    &call.fn_name,
-                                    &call.fn_arguments.to_string(),
-                                    self.theme,
-                                ));
                             }
                             _ => {}
                         }
@@ -649,38 +657,33 @@ impl App {
                 }
                 ChatRole::Tool => {
                     for resp in msg.content.tool_responses() {
-                        let entry = tool_calls.remove(resp.call_id.as_str());
-                        if let Some((TODO_TOOL, args)) = entry {
-                            self.set_todos(&resp.content, None, Some(args));
+                        let reply = ToolReply::new(resp.content.clone(), None);
+                        let (at, name, args) = match tool_calls.remove(resp.call_id.as_str()) {
+                            Some((at, name, args)) => (at, Some(name), Some(args)),
+                            None => (None, None, None),
+                        };
+                        if name == Some(TODO_TOOL) && self.set_todos(&resp.content, None, args) {
                             continue;
                         }
-                        self.push_tool_result(entry.map(|(name, _)| name), &resp.content, None);
-                        last_tool = Some((entry, resp.content.as_str()));
+                        let run = ToolRun {
+                            call: name.zip(args).map(|(name, args)| ToolCall {
+                                name: name.to_owned(),
+                                args: args.to_string(),
+                            }),
+                            reply: Some(reply),
+                            elapsed: None,
+                        };
+                        self.last_tool = Some(run.clone());
+                        match at {
+                            Some(at) => self.scrollback[at] = Entry::Tool(Box::new(run)),
+                            None => self.scrollback.push(Entry::Tool(Box::new(run))),
+                        }
                     }
                 }
                 ChatRole::System => {}
             }
         }
-        self.last_tool = last_tool.map(|(entry, content)| ToolRun {
-            call: entry.map(|(name, args)| ToolCall {
-                name: name.to_owned(),
-                args: args.to_string(),
-            }),
-            content: content.to_owned(),
-            details: None,
-        });
         self.drop_finished_plan();
-    }
-
-    /// Show the preview of a finished tool call.
-    fn push_tool_result(
-        &mut self,
-        tool: Option<&str>,
-        content: &str,
-        details: Option<&ToolDetails>,
-    ) {
-        format_tool_result(tool, content, details, self.theme, &mut self.scrollback);
-        self.scrollback.push(Line::raw(String::new()));
     }
 
     /// Show the whole output of the last tool call, as `/output` asks.
@@ -689,21 +692,22 @@ impl App {
             self.push_info("[no tool output]");
             return;
         };
-        format_full_output(run, self.theme, &mut self.scrollback);
-        self.scrollback.push(Line::raw(String::new()));
+        let mut lines = Vec::new();
+        format_tool_run(run, true, self.theme, &mut lines);
+        self.push_lines(lines);
     }
 
-    /// Show the plan of a `todo` result above the editor, or its error in
-    /// scrollback.
+    /// Show the plan of a `todo` result above the editor. Returns `false`
+    /// when the result holds no plan, as for an error.
     fn set_todos(
         &mut self,
         content: &str,
-        details: Option<ToolDetails>,
+        details: Option<&ToolDetails>,
         call_args: Option<&Value>,
-    ) {
+    ) -> bool {
         if let Some(ToolDetails::Todo(todos)) = details {
-            self.todos = todos;
-            return;
+            self.todos = todos.clone();
+            return true;
         }
         if let Ok(parsed) = serde_json::from_str::<Value>(content) {
             if parsed.get("error").is_none() {
@@ -712,14 +716,11 @@ impl App {
                     .or_else(|| TodoTool::deserialize(&parsed).ok())
                 {
                     self.todos = plan.todos;
-                    return;
+                    return true;
                 }
             }
         }
-        self.scrollback
-            .push(Line::styled(TODO_TOOL, self.theme.tool_name));
-        format_tool_result(None, content, None, self.theme, &mut self.scrollback);
-        self.scrollback.push(Line::raw(String::new()));
+        false
     }
 
     /// Hide the plan once all of it is done.
@@ -729,9 +730,72 @@ impl App {
         }
     }
 
-    /// Take lines queued for native terminal scrollback.
-    pub fn take_scrollback(&mut self) -> Vec<Line<'static>> {
+    /// Queue `line` for the native terminal scrollback.
+    fn push_line(&mut self, line: Line<'static>) {
+        self.scrollback.push(Entry::Line(line));
+    }
+
+    fn push_lines(&mut self, lines: impl IntoIterator<Item = Line<'static>>) {
+        self.scrollback.extend(lines.into_iter().map(Entry::Line));
+    }
+
+    /// Take the entries queued for the native terminal scrollback.
+    pub(crate) fn take_entries(&mut self) -> Vec<Entry> {
         std::mem::take(&mut self.scrollback)
+    }
+
+    /// Take the lines queued for the native terminal scrollback, as they
+    /// print.
+    pub fn take_scrollback(&mut self) -> Vec<Line<'static>> {
+        let entries = self.take_entries();
+        self.render_entries(&entries)
+    }
+
+    /// `entries` as they print.
+    pub(crate) fn render_entries<'a>(
+        &self,
+        entries: impl IntoIterator<Item = &'a Entry>,
+    ) -> Vec<Line<'static>> {
+        let mut out = Vec::new();
+        for entry in entries {
+            self.render_entry(entry, &mut out);
+        }
+        out
+    }
+
+    /// The last entries, as they print, up to about `max` lines.
+    pub(crate) fn render_tail<'a>(
+        &self,
+        entries: impl DoubleEndedIterator<Item = &'a Entry>,
+        max: usize,
+    ) -> Vec<Line<'static>> {
+        let mut parts = Vec::new();
+        let mut count = 0;
+        for entry in entries.rev() {
+            if count >= max {
+                break;
+            }
+            let mut lines = Vec::new();
+            self.render_entry(entry, &mut lines);
+            count += lines.len();
+            parts.push(lines);
+        }
+        parts.into_iter().rev().flatten().collect()
+    }
+
+    fn render_entry(&self, entry: &Entry, out: &mut Vec<Line<'static>>) {
+        match entry {
+            Entry::Line(line) => out.push(line.clone()),
+            Entry::Tool(run) => format_tool_run(run, false, self.theme, out),
+            Entry::Frozen(lines) => out.extend(lines.iter().cloned()),
+        }
+    }
+
+    /// The short form of `run`, for an entry that keeps only that.
+    pub(crate) fn freeze(&self, run: &ToolRun) -> Vec<Line<'static>> {
+        let mut out = Vec::new();
+        format_tool_run(run, false, self.theme, &mut out);
+        out
     }
 
     /// Advance the activity spinner while busy.
@@ -773,16 +837,15 @@ impl App {
     }
 
     fn push_user_message(&mut self, text: &str) {
-        self.scrollback.push(Line::raw(String::new()));
+        self.push_line(Line::raw(String::new()));
         for line in text.lines() {
             if self.theme.color {
-                self.scrollback
-                    .push(Line::styled(format!(" {line} "), self.theme.user));
+                self.push_line(Line::styled(format!(" {line} "), self.theme.user));
             } else {
-                self.scrollback.push(Line::raw(format!("> {line}")));
+                self.push_line(Line::raw(format!("> {line}")));
             }
         }
-        self.scrollback.push(Line::raw(String::new()));
+        self.push_line(Line::raw(String::new()));
     }
 
     /// Apply a streaming update from the running agent turn.
@@ -804,19 +867,23 @@ impl App {
                     return;
                 }
                 self.emitted_reasoning = true;
+                let mut lines = Vec::new();
                 stream_reasoning(
                     &mut self.live_reasoning,
                     &delta,
                     self.width.get() as usize,
                     self.theme.reasoning,
-                    &mut self.scrollback,
+                    &mut lines,
                 );
+                self.push_lines(lines);
             }
             AgentUpdate::TextDelta(delta) => {
                 self.flush_reasoning();
                 self.sync_markdown_width();
+                let mut lines = Vec::new();
                 self.markdown
-                    .push_delta(&delta, &self.markdown_style, &mut self.scrollback);
+                    .push_delta(&delta, &self.markdown_style, &mut lines);
+                self.push_lines(lines);
             }
             AgentUpdate::Text(text) => {
                 self.flush_reasoning();
@@ -835,7 +902,7 @@ impl App {
                 // Keep what the failed attempt showed, marked as such.
                 self.flush_reasoning();
                 self.flush_text();
-                self.scrollback.push(Line::styled(
+                self.push_line(Line::styled(
                     retry_notice(attempt, delay, &reason),
                     self.theme.muted,
                 ));
@@ -845,10 +912,7 @@ impl App {
                 self.flush_text();
                 self.tool_preview.clear();
                 self.activity_started = Some(Instant::now());
-                if name != TODO_TOOL {
-                    self.scrollback
-                        .push(format_tool_call(&name, &args, self.theme));
-                }
+                // It shows once it ends, with how it ended.
                 self.active_tool = Some(ToolCall { name, args });
             }
             AgentUpdate::ToolOutput(chunk) => {
@@ -856,22 +920,24 @@ impl App {
             }
             AgentUpdate::ToolResult { content, details } => {
                 let call = self.active_tool.take();
+                let elapsed = self.activity_started.map(|t| t.elapsed());
                 self.tool_preview.clear();
                 self.activity_started = Some(Instant::now());
                 if call.as_ref().is_some_and(|c| !is_read_only(&c.name)) {
                     self.diff.refresh();
                 }
-                if call.as_ref().is_some_and(|c| c.name == TODO_TOOL) {
-                    self.set_todos(&content, details, None);
+                if call.as_ref().is_some_and(|c| c.name == TODO_TOOL)
+                    && self.set_todos(&content, details.as_ref(), None)
+                {
                     return;
                 }
-                let tool = call.as_ref().map(|c| c.name.as_str());
-                self.push_tool_result(tool, &content, details.as_ref());
-                self.last_tool = Some(ToolRun {
+                let run = ToolRun {
                     call,
-                    content,
-                    details,
-                });
+                    reply: Some(ToolReply::new(content, details)),
+                    elapsed,
+                };
+                self.last_tool = Some(run.clone());
+                self.scrollback.push(Entry::Tool(Box::new(run)));
             }
             AgentUpdate::Compacting(tokens) => {
                 self.push_notice(
@@ -906,27 +972,37 @@ impl App {
     fn push_notice(&mut self, text: String, style: Style) {
         self.flush_reasoning();
         self.flush_text();
-        self.scrollback.push(Line::styled(text, style));
-        self.scrollback.push(Line::raw(String::new()));
+        self.push_line(Line::styled(text, style));
+        self.push_line(Line::raw(String::new()));
+    }
+
+    /// Show the running tool call, if any, as one that never ended.
+    fn interrupt_tool(&mut self) {
+        if let Some(call) = self.active_tool.take() {
+            self.scrollback.push(Entry::Tool(Box::new(ToolRun {
+                call: Some(call),
+                reply: None,
+                elapsed: None,
+            })));
+        }
     }
 
     /// Leave the busy state when the prompt finishes or fails.
     pub fn finish_prompt(&mut self, outcome: Result<(), String>) {
         self.flush_reasoning();
         self.flush_text();
+        self.interrupt_tool();
         self.ring_if_long();
         self.busy = false;
         self.queued.clear();
         self.activity_started = None;
         self.prompt_started = None;
-        self.active_tool = None;
         self.clear_live();
         self.drop_finished_plan();
         self.diff.refresh();
         if let Err(err) = outcome {
-            self.scrollback
-                .push(Line::styled(format!("error: {err}"), self.theme.error));
-            self.scrollback.push(Line::raw(String::new()));
+            self.push_line(Line::styled(format!("error: {err}"), self.theme.error));
+            self.push_line(Line::raw(String::new()));
         }
     }
 
@@ -947,18 +1023,17 @@ impl App {
     pub fn cancel_prompt(&mut self) {
         self.flush_reasoning();
         self.flush_text();
+        self.interrupt_tool();
         self.busy = false;
         self.queued.clear();
         self.activity_started = None;
         self.prompt_started = None;
-        self.active_tool = None;
         self.clear_live();
         // The work was dropped; the model sends the plan again to go on.
         self.todos.clear();
         self.diff.refresh();
-        self.scrollback
-            .push(Line::styled("[cancelled]", self.theme.muted));
-        self.scrollback.push(Line::raw(String::new()));
+        self.push_line(Line::styled("[cancelled]", self.theme.muted));
+        self.push_line(Line::raw(String::new()));
     }
 
     fn toggle_thinking(&mut self) {
@@ -967,13 +1042,15 @@ impl App {
             if !self.hidden_reasoning.is_empty() {
                 let hidden = std::mem::take(&mut self.hidden_reasoning);
                 self.emitted_reasoning = true;
+                let mut lines = Vec::new();
                 stream_reasoning(
                     &mut self.live_reasoning,
                     &hidden,
                     self.width.get() as usize,
                     self.theme.reasoning,
-                    &mut self.scrollback,
+                    &mut lines,
                 );
+                self.push_lines(lines);
             }
             self.notice = Some("Thinking visible (Ctrl-O to hide)".to_owned());
         } else {
@@ -1003,11 +1080,10 @@ impl App {
         self.hidden_reasoning.clear();
         if !self.live_reasoning.is_empty() {
             let tail = std::mem::take(&mut self.live_reasoning);
-            self.scrollback
-                .push(Line::styled(tail, self.theme.reasoning));
+            self.push_line(Line::styled(tail, self.theme.reasoning));
         }
         if self.emitted_reasoning {
-            self.scrollback.push(Line::raw(String::new()));
+            self.push_line(Line::raw(String::new()));
             self.emitted_reasoning = false;
         }
     }
@@ -1020,12 +1096,14 @@ impl App {
         if self.sync_markdown_width() {
             self.markdown.rerender_live(&self.markdown_style);
         }
+        let mut lines = Vec::new();
         if self
             .markdown
-            .finish(fallback, &self.markdown_style, &mut self.scrollback)
+            .finish(fallback, &self.markdown_style, &mut lines)
         {
-            self.scrollback.push(Line::raw(String::new()));
+            lines.push(Line::default());
         }
+        self.push_lines(lines);
     }
 }
 
