@@ -81,6 +81,24 @@ endpoint = "http://127.0.0.1:8000/v1/"
     assert!(AuthConfig::parse("[openai]\nextra = true\n").is_err());
 }
 
+#[test]
+fn parse_errors_hide_the_keys() {
+    for text in [
+        "[anthropic]\napi_key = sk-ant-SECRET\n",
+        "[anthropic]\napikey = \"sk-ant-SECRET\"\n",
+        "anthropic = \"sk-ant-SECRET\"\n",
+    ] {
+        let err = AuthConfig::parse(text).unwrap_err();
+        assert!(!err.contains("SECRET"), "{err}");
+        assert!(err.starts_with("line "), "{err}");
+    }
+    let err = AuthConfig::parse("[anthropic]\napikey = \"x\"\n").unwrap_err();
+    assert!(
+        err.starts_with("line 2, column 1: unknown field `apikey`"),
+        "{err}"
+    );
+}
+
 fn env_unset(kind: AdapterKind) -> bool {
     kind.default_key_env_name()
         .is_none_or(|name| std::env::var_os(name).is_none_or(|v| v.is_empty()))

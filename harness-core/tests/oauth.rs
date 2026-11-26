@@ -403,6 +403,12 @@ fn store_load_validates_file() {
     let err = OAuthStore::load(&path).unwrap_err().to_string();
     assert!(err.contains("unknown field"), "{err}");
 
+    // Without the token on the line.
+    write_private(&path, "[anthropic]\naccess_token = tok-SECRET\n");
+    let err = OAuthStore::load(&path).unwrap_err().to_string();
+    assert!(err.contains("line 2, column 16"), "{err}");
+    assert!(!err.contains("SECRET"), "{err}");
+
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
     let err = OAuthStore::load(&path).unwrap_err().to_string();
     assert!(err.contains("chmod 600"), "{err}");

@@ -91,8 +91,7 @@ impl AuthConfig {
 
     /// Parse `auth.toml` contents without touching the filesystem.
     pub fn parse(toml_str: &str) -> Result<Self, String> {
-        let raw: HashMap<String, ProviderAuth> =
-            toml::from_str(toml_str).map_err(|e| e.to_string())?;
+        let raw: HashMap<String, ProviderAuth> = private_file::parse_toml(toml_str)?;
         let mut providers = HashMap::with_capacity(raw.len());
         for (name, mut entry) in raw {
             let kind = parse_adapter(&name).ok_or_else(|| format!("unknown provider '{name}'"))?;
