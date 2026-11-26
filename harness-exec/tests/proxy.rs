@@ -62,14 +62,18 @@ fn forwards_plain_http_requests_one_per_connection() {
     let answer = ask(
         port,
         &format!(
-            "GET http://127.0.0.1:{target}/crates?q=1 HTTP/1.1\r\nHost: 127.0.0.1\r\n\
+            "GET http://127.0.0.1:{target}/crates?q=1 HTTP/1.1\r\nHost: other.example\r\n\
              Proxy-Connection: keep-alive\r\nAccept: */*\r\n\r\n"
         ),
     );
     assert_eq!(answer, "pong");
+    // For the host checked, not the one the client named.
     assert_eq!(
         server.join().unwrap(),
-        "GET /crates?q=1 HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+        format!(
+            "GET /crates?q=1 HTTP/1.1\r\nHost: 127.0.0.1:{target}\r\nAccept: */*\r\n\
+             Connection: close\r\n\r\n"
+        )
     );
 }
 
