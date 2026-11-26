@@ -38,33 +38,6 @@ pub(crate) fn truncate_width(text: &str, max_width: usize) -> String {
     out
 }
 
-/// Count how many rows `lines` occupy when soft-wrapped to `width` cells,
-/// without allocating wrapped lines.
-pub(crate) fn wrapped_line_count(lines: &[Line<'static>], width: usize) -> usize {
-    let width = width.max(1);
-    let mut total = 0usize;
-    for line in lines {
-        if line.width() <= width {
-            total += 1;
-            continue;
-        }
-        let mut col = 0usize;
-        let mut rows = 1usize;
-        for span in &line.spans {
-            for ch in span.content.chars() {
-                let ch_w = char_width(ch);
-                if col > 0 && col + ch_w > width {
-                    rows += 1;
-                    col = 0;
-                }
-                col += ch_w;
-            }
-        }
-        total += rows;
-    }
-    total
-}
-
 /// Wrap styled lines so each resulting line fits within `width` cells. The
 /// rows of a line with a background fill the whole width, as a tinted diff
 /// line.

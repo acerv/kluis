@@ -111,16 +111,8 @@ impl App {
     }
 
     fn live_rows(&self, width: u16) -> u16 {
-        let width = (width as usize).max(1);
-        let count = if !self.markdown.live_lines().is_empty() {
-            wrapped_line_count(self.markdown.live_lines(), width)
-        } else if !self.tool_preview.is_empty() {
-            let lines = self.tool_preview.render_lines(self.theme.muted);
-            wrapped_line_count(&lines, width)
-        } else {
-            1
-        };
-        (count as u16).clamp(1, MAX_LIVE_ROWS)
+        let (head, body) = self.wrapped_live_lines(width as usize);
+        live_height(&head, &body)
     }
 
     fn editor_rows(&self, width: u16) -> u16 {
@@ -129,18 +121,22 @@ impl App {
         (layout.rows.len() as u16).clamp(1, MAX_EDITOR_ROWS)
     }
 
-    fn wrapped_live_lines(&self, width: usize) -> Vec<Line<'static>> {
+    /// What shows above the spinner, wrapped to `width`: the lines that
+    /// stay, the running tool call, then those whose tail shows.
+    fn wrapped_live_lines(&self, width: usize) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
         let width = width.max(1);
         if !self.markdown.live_lines().is_empty() {
-            wrap_lines(self.markdown.live_lines(), width)
-        } else if !self.tool_preview.is_empty() {
-            let lines = self.tool_preview.render_lines(self.theme.muted);
-            wrap_lines(&lines, width)
+            (Vec::new(), wrap_lines(self.markdown.live_lines(), width))
+        } else if let Some(tool) = &self.active_tool {
+            let mut call = Vec::new();
+            format_running_tool(tool, self.verbose, self.theme, &mut call);
+            let output = self.tool_preview.render_lines(self.theme.muted);
+            (wrap_lines(&call, width), wrap_lines(&output, width))
         } else if self.verbose && !self.live_reasoning.is_empty() {
             let line = Line::styled(self.live_reasoning.clone(), self.theme.reasoning);
-            wrap_lines(&[line], width)
+            (Vec::new(), wrap_lines(&[line], width))
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         }
     }
 
@@ -191,7 +187,7 @@ impl App {
             self.render_footer(frame, footer_area);
             return;
         }
-        let live_lines = self.wrapped_live_lines(area.width as usize);
+        let (live_head, live_body) = self.wrapped_live_lines(area.width as usize);
         let panel_lines = self.panel_lines();
         let completion_h = self
             .completion
@@ -204,8 +200,8 @@ impl App {
         let max_live = area
             .height
             .saturating_sub(FIXED_CHROME_ROWS + completion_h + panel_h + 1)
-            .clamp(1, MAX_LIVE_ROWS);
-        let live_h = (live_lines.len() as u16).clamp(1, max_live);
+            .max(1);
+        let live_h = live_height(&live_head, &live_body).min(max_live);
         let editor_h = area
             .height
             .saturating_sub(FIXED_CHROME_ROWS + live_h + panel_h + completion_h)
@@ -223,7 +219,7 @@ impl App {
             ])
             .areas(area);
 
-        self.render_live(frame, live_area, live_lines);
+        render_live(frame, live_area, live_head, live_body);
         self.render_spinner(frame, spinner_area);
         frame.render_widget(Paragraph::new(panel_lines), panel_area);
         let mode = self.editor_mode();
@@ -232,17 +228,6 @@ impl App {
         self.render_rule(frame, bottom_rule, mode.map(|(_, style)| ("", style)));
         self.completion.render(frame, completion_area, self.theme);
         self.render_footer(frame, footer_area);
-    }
-
-    fn render_live(&self, frame: &mut Frame<'_>, area: Rect, mut lines: Vec<Line<'static>>) {
-        if area.height == 0 || area.width == 0 || lines.is_empty() {
-            return;
-        }
-        let visible = area.height as usize;
-        if lines.len() > visible {
-            lines.drain(..lines.len() - visible);
-        }
-        frame.render_widget(Paragraph::new(lines), area);
     }
 
     fn render_spinner(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -254,13 +239,13 @@ impl App {
                 format!("{} ", SPINNER[self.spinner]),
                 self.theme.status_accent,
             )];
-            match &self.active_tool {
-                Some(tool) => {
-                    spans.extend(format_tool_call(&tool.name, &tool.args, self.theme).spans);
-                }
-                None if self.is_thinking => spans.push(Span::raw("Thinking")),
-                None => spans.push(Span::raw("Working")),
-            }
+            spans.push(Span::raw(if self.active_tool.is_some() {
+                "Running"
+            } else if self.is_thinking {
+                "Thinking"
+            } else {
+                "Working"
+            }));
             let elapsed = self
                 .activity_started
                 .map(|t| format_elapsed(t.elapsed().as_secs()))
@@ -438,6 +423,34 @@ impl App {
         left.push(Span::styled(right, theme.status_bar));
         frame.render_widget(Paragraph::new(Line::from(left)), area);
     }
+}
+
+/// Rows the live lines take: all of `head`, and up to [`MAX_LIVE_ROWS`]
+/// of `body`, at least one.
+fn live_height(head: &[Line<'static>], body: &[Line<'static>]) -> u16 {
+    let rows = head.len() + body.len().min(MAX_LIVE_ROWS as usize);
+    u16::try_from(rows).unwrap_or(u16::MAX).max(1)
+}
+
+/// Draw `head` at the top of `area`, then as much of the tail of `body` as
+/// fits below it.
+fn render_live(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    mut head: Vec<Line<'static>>,
+    mut body: Vec<Line<'static>>,
+) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let visible = area.height as usize;
+    head.truncate(visible);
+    let room = visible - head.len();
+    if body.len() > room {
+        body.drain(..body.len() - room);
+    }
+    head.append(&mut body);
+    frame.render_widget(Paragraph::new(head), area);
 }
 
 struct EditorLayout {

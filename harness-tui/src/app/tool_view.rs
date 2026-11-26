@@ -37,7 +37,7 @@ const RESULT_JOINT: &str = "  ⎿ ";
 const RESULT_INDENT: &str = "    ";
 
 /// The name of a tool and what it works on, in one line.
-pub(super) fn format_tool_call(name: &str, args: &str, theme: Theme) -> Line<'static> {
+fn format_tool_call(name: &str, args: &str, theme: Theme) -> Line<'static> {
     tool_line(name, summary(&call_detail(name, args)), theme)
 }
 
@@ -92,9 +92,10 @@ fn call_detail(name: &str, args: &str) -> String {
     detail.unwrap_or_else(|| args.to_owned())
 }
 
-/// How a tool call ended.
+/// How a tool call ended, if it did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RunStatus {
+    Running,
     Done,
     Failed,
     /// It never ended: the prompt was cancelled or failed meanwhile.
@@ -118,7 +119,7 @@ pub(super) fn format_tool_run(
         (Some(_), Some(v)) if failed(v) => RunStatus::Failed,
         _ => RunStatus::Done,
     };
-    run_header(run, status, verbose, theme, out);
+    run_header(run.call.as_ref(), status, run.elapsed, verbose, theme, out);
     let Some(reply) = &run.reply else {
         out.push(Line::default());
         return;
@@ -144,22 +145,34 @@ fn failed(v: &Value) -> bool {
         || v["timed_out"].as_bool() == Some(true)
 }
 
-/// The mark of how `run` ended, its call, and how long it took. The call
-/// shows in full when `verbose`, over as many lines as it takes.
+/// `call` while it runs, as its run will show once it ends.
+pub(super) fn format_running_tool(
+    call: &ToolCall,
+    verbose: bool,
+    theme: Theme,
+    out: &mut Vec<Line<'static>>,
+) {
+    run_header(Some(call), RunStatus::Running, None, verbose, theme, out);
+}
+
+/// The mark of how a run of `call` ended, the call, and how long it took.
+/// The call shows in full when `verbose`, over as many lines as it takes.
 fn run_header(
-    run: &ToolRun,
+    call: Option<&ToolCall>,
     status: RunStatus,
+    elapsed: Option<Duration>,
     verbose: bool,
     theme: Theme,
     out: &mut Vec<Line<'static>>,
 ) {
     let (mark, style) = match status {
+        RunStatus::Running => ("●", theme.status_accent),
         RunStatus::Done => ("✓", theme.success),
         RunStatus::Failed => ("✗", theme.error),
         RunStatus::Interrupted => ("✗", theme.muted),
     };
     let start = out.len();
-    match &run.call {
+    match call {
         Some(call) if verbose => {
             let detail = call_detail(&call.name, &call.args);
             let mut lines = detail.lines();
@@ -181,7 +194,7 @@ fn run_header(
     let tail = &mut out[last].spans;
     if status == RunStatus::Interrupted {
         tail.push(Span::styled(" · interrupted", theme.muted));
-    } else if let Some(elapsed) = run.elapsed.filter(|e| *e >= MIN_SHOWN_ELAPSED) {
+    } else if let Some(elapsed) = elapsed.filter(|e| *e >= MIN_SHOWN_ELAPSED) {
         let elapsed = format_elapsed(elapsed.as_secs());
         tail.push(Span::styled(format!(" · {elapsed}"), theme.muted));
     }
@@ -512,10 +525,6 @@ pub(super) struct ToolPreview {
 }
 
 impl ToolPreview {
-    pub(super) fn is_empty(&self) -> bool {
-        self.lines.is_empty() && self.current.is_empty()
-    }
-
     pub(super) fn clear(&mut self) {
         self.lines.clear();
         self.current.clear();
@@ -549,7 +558,8 @@ impl ToolPreview {
 
     pub(super) fn render_lines(&self, style: Style) -> Vec<Line<'static>> {
         let mut out = Vec::with_capacity(self.lines.len() + usize::from(!self.current.is_empty()));
-        let indent = |text: &str| Line::styled(format!("  {}", expand_tabs(text)), style);
+        let indent =
+            |text: &str| Line::styled(format!("{RESULT_INDENT}{}", expand_tabs(text)), style);
         for line in &self.lines {
             out.push(indent(line));
         }

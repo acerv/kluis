@@ -1082,7 +1082,8 @@ fn live_bash_preview_and_elapsed_spinner_timer() {
     let mut term = inline_terminal_with(80, 14, h);
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
-    assert!(screen.contains("bash cargo test… 12s"), "{screen}");
+    assert!(screen.contains("● bash cargo test"), "{screen}");
+    assert!(screen.contains("Running… 12s"), "{screen}");
     assert!(screen.contains("building 100%"), "{screen}");
     assert!(
         !screen.contains("compiling"),
@@ -1094,7 +1095,7 @@ fn live_bash_preview_and_elapsed_spinner_timer() {
     // >= 60s formats as minutes + zero-padded seconds.
     app.set_elapsed(Duration::from_secs(65));
     term.draw(|f| app.render(f)).unwrap();
-    assert!(render_text(&term).contains("bash cargo test… 1m05s"));
+    assert!(render_text(&term).contains("Running… 1m05s"));
 
     // Completing the tool clears the transient live preview.
     app.apply_update(AgentUpdate::ToolResult {
@@ -1102,6 +1103,56 @@ fn live_bash_preview_and_elapsed_spinner_timer() {
         details: None,
     });
     assert_eq!(app.viewport_height(80), VIEWPORT_HEIGHT);
+}
+
+#[test]
+fn running_tool_call_stays_above_the_spinner_and_expands() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    app.start_prompt("go");
+    app.apply_update(AgentUpdate::ToolCall {
+        name: "bash".into(),
+        args: r#"{"command":"sleep 9\necho done"}"#.into(),
+    });
+    let draw = |app: &App| {
+        let mut term = inline_terminal_with(80, 20, app.viewport_height(80));
+        term.draw(|f| app.render(f)).unwrap();
+        render_text(&term)
+    };
+
+    // Without output, the call shows above the spinner.
+    let screen = draw(&app);
+    let lines: Vec<&str> = screen.lines().collect();
+    let call = lines
+        .iter()
+        .position(|l| *l == "● bash sleep 9")
+        .expect(&screen);
+    assert!(lines[call + 1].contains("Running…"), "{screen}");
+    assert!(!screen.contains("echo done"), "{screen}");
+
+    // Verbose shows the whole of it.
+    app.handle_event(ctrl('o'));
+    let screen = draw(&app);
+    let lines: Vec<&str> = screen.lines().collect();
+    let call = lines
+        .iter()
+        .position(|l| *l == "● bash sleep 9")
+        .expect(&screen);
+    assert_eq!(lines[call + 1], "    echo done", "{screen}");
+    assert!(lines[call + 2].contains("Running…"), "{screen}");
+
+    // The output scrolls below the call, which stays.
+    let output: String = (1..=20).map(|i| format!("line {i}\n")).collect();
+    app.apply_update(AgentUpdate::ToolOutput(output));
+    let screen = draw(&app);
+    let lines: Vec<&str> = screen.lines().collect();
+    let call = lines
+        .iter()
+        .position(|l| *l == "● bash sleep 9")
+        .expect(&screen);
+    assert_eq!(lines[call + 1], "    echo done", "{screen}");
+    assert_eq!(lines[call + 2], "    line 15", "{screen}");
+    assert_eq!(lines[call + 7], "    line 20", "{screen}");
+    assert!(lines[call + 8].contains("Running…"), "{screen}");
 }
 
 #[test]
@@ -2576,7 +2627,7 @@ fn task_shows_its_prompt_the_work_of_the_subagent_and_the_answer() {
     let mut term = inline_terminal_with(80, 14, app.viewport_height(80));
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
-    assert!(screen.contains("task find the parser…"), "{screen}");
+    assert!(screen.contains("● task find the parser"), "{screen}");
     assert!(screen.contains(r#"grep {"pattern":"parse"}"#), "{screen}");
 
     app.apply_update(AgentUpdate::ToolResult {
