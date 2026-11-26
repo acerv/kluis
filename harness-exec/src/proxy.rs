@@ -228,17 +228,23 @@ fn target(buf: &[u8], head: usize, hosts: &Hosts) -> Result<Target, Refusal> {
     let mut first = Vec::new();
     if !tunnel {
         let path = &url[url::Position::BeforePath..url::Position::AfterQuery];
-        first.extend_from_slice(format!("{method} {path} {version}\r\n").as_bytes());
+        // The host checked, never another one the client names, which a
+        // server for many sites would serve instead.
+        let authority = &url[url::Position::BeforeHost..url::Position::AfterPort];
+        first.extend_from_slice(
+            format!("{method} {path} {version}\r\nHost: {authority}\r\n").as_bytes(),
+        );
         // One request per connection: the next may be for another host.
         for header in headers.split("\r\n").filter(|h| !h.is_empty()) {
             let name = header.split(':').next().unwrap_or_default().trim();
-            let hop = [
+            let dropped = [
+                "host",
                 "connection",
                 "keep-alive",
                 "proxy-connection",
                 "proxy-authorization",
             ];
-            if !hop.iter().any(|hop| name.eq_ignore_ascii_case(hop)) {
+            if !dropped.iter().any(|d| name.eq_ignore_ascii_case(d)) {
                 first.extend_from_slice(header.as_bytes());
                 first.extend_from_slice(b"\r\n");
             }
