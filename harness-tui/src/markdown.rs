@@ -5,16 +5,57 @@ use harness_core::Error;
 use ratatui::text::{Line, Span};
 use tui_markdown::{BuiltinCodeTheme, CodeTheme, Options};
 
-/// The built-in code block themes, by the names settings use.
-const CODE_THEMES: [(&str, BuiltinCodeTheme); 7] = [
-    ("base16-ocean-dark", BuiltinCodeTheme::Base16OceanDark),
-    ("base16-ocean-light", BuiltinCodeTheme::Base16OceanLight),
-    ("base16-eighties-dark", BuiltinCodeTheme::Base16EightiesDark),
-    ("base16-mocha-dark", BuiltinCodeTheme::Base16MochaDark),
-    ("inspired-github", BuiltinCodeTheme::InspiredGitHub),
-    ("solarized-dark", BuiltinCodeTheme::SolarizedDark),
-    ("solarized-light", BuiltinCodeTheme::SolarizedLight),
+/// Where the colors of a code block theme come from.
+enum Source {
+    Builtin(BuiltinCodeTheme),
+    /// A TextMate theme shipped with the binary.
+    TextMate(&'static str),
+}
+
+/// The code block themes, by the names settings use.
+const CODE_THEMES: [(&str, Source); 8] = [
+    (
+        "tokyo-night",
+        Source::TextMate(include_str!("tokyo-night.tmTheme")),
+    ),
+    (
+        "base16-ocean-dark",
+        Source::Builtin(BuiltinCodeTheme::Base16OceanDark),
+    ),
+    (
+        "base16-ocean-light",
+        Source::Builtin(BuiltinCodeTheme::Base16OceanLight),
+    ),
+    (
+        "base16-eighties-dark",
+        Source::Builtin(BuiltinCodeTheme::Base16EightiesDark),
+    ),
+    (
+        "base16-mocha-dark",
+        Source::Builtin(BuiltinCodeTheme::Base16MochaDark),
+    ),
+    (
+        "inspired-github",
+        Source::Builtin(BuiltinCodeTheme::InspiredGitHub),
+    ),
+    (
+        "solarized-dark",
+        Source::Builtin(BuiltinCodeTheme::SolarizedDark),
+    ),
+    (
+        "solarized-light",
+        Source::Builtin(BuiltinCodeTheme::SolarizedLight),
+    ),
 ];
+
+/// The code block theme used when settings pick none.
+pub fn default_code_theme(light: bool) -> Result<CodeTheme, Error> {
+    code_theme(if light {
+        "inspired-github"
+    } else {
+        "tokyo-night"
+    })
+}
 
 /// The code block theme `value` names: a built-in one, or the TextMate
 /// theme file at `value` when it holds a `/`.
@@ -23,7 +64,8 @@ pub fn code_theme(value: &str) -> Result<CodeTheme, Error> {
         return Ok(CodeTheme::from_file(value)?);
     }
     match CODE_THEMES.iter().find(|(name, _)| *name == value) {
-        Some(&(_, theme)) => Ok(theme.into()),
+        Some((_, Source::Builtin(theme))) => Ok((*theme).into()),
+        Some((_, Source::TextMate(source))) => Ok(CodeTheme::from_textmate(source)?),
         None => {
             let names: Vec<_> = CODE_THEMES.iter().map(|(name, _)| *name).collect();
             Err(format!(

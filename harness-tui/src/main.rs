@@ -70,7 +70,7 @@ pub struct Args {
     #[arg(long, value_name = "dark|light")]
     theme: Option<ThemeName>,
 
-    /// Code block theme or .tmTheme file [default: base16-ocean-dark]
+    /// Code block theme or .tmTheme file [default: tokyo-night]
     #[arg(long, value_name = "NAME|PATH")]
     code_theme: Option<String>,
 

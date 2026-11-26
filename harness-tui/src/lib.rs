@@ -56,7 +56,6 @@ pub use signals::Signals;
 pub use stats::PromptStats;
 pub use style::{Theme, ThemeName};
 pub use terminal::flush_scrollback;
-use tui_markdown::BuiltinCodeTheme;
 pub use tui_markdown::CodeTheme;
 
 use drive::{handle_event_batch, restore_queued, run_shell, run_turn, Ui};
@@ -195,13 +194,11 @@ pub async fn run(
     app.set_thinking(agent.thinking());
     app.set_notify(notify);
     app.set_compact_at(agent.auto_compact());
-    let code_theme = code_theme.or_else(|| {
-        // The default code theme is dark.
-        (theme == ThemeName::Light).then(|| CodeTheme::from(BuiltinCodeTheme::InspiredGitHub))
-    });
-    if let Some(code_theme) = code_theme {
-        app.set_code_theme(code_theme);
-    }
+    let code_theme = match code_theme {
+        Some(code_theme) => code_theme,
+        None => markdown::default_code_theme(theme == ThemeName::Light)?,
+    };
+    app.set_code_theme(code_theme);
     app.set_custom(&commands, agent.skills());
     if let Ok(cwd) = std::env::current_dir() {
         if let Err(err) = app.watch_changes(cwd.clone()) {

@@ -46,6 +46,7 @@ impl FromStr for ThemeName {
 /// The colors a theme is made of.
 struct Palette {
     accent: Color,
+    /// The background of a sent message.
     user_bg: Color,
     /// Rules around the editor while idle.
     faint: Color,
@@ -65,32 +66,54 @@ struct Palette {
     thinking: [Color; 7],
 }
 
-const DARK: Palette = Palette {
-    accent: Color::Cyan,
-    user_bg: Color::Indexed(236),
-    faint: Color::DarkGray,
-    muted: Color::DarkGray,
-    tool: Color::Yellow,
-    tool_arg: Color::Gray,
-    add: Color::Green,
-    remove: Color::Red,
-    // #005f00 and #5f0000.
-    add_bg: Color::Indexed(22),
-    remove_bg: Color::Indexed(52),
-    error: Color::Red,
-    warn: Color::Yellow,
-    plan: Color::Magenta,
-    // #ff5f87.
-    shell: Color::Indexed(204),
-    thinking: [
-        Color::Green,
-        Color::Gray,
-        Color::Cyan,
-        Color::Yellow,
-        Color::Indexed(208),
-        Color::Red,
-        Color::Magenta,
-    ],
+/// The Tokyo Night colors [`DARK`] is made of.
+mod tokyo_night {
+    use ratatui::style::Color;
+
+    /// #292e42.
+    pub const BG_HIGHLIGHT: Color = Color::Rgb(41, 46, 66);
+    /// #565f89.
+    pub const COMMENT: Color = Color::Rgb(86, 95, 137);
+    /// #a9b1d6.
+    pub const FG_DARK: Color = Color::Rgb(169, 177, 214);
+    /// #7dcfff.
+    pub const CYAN: Color = Color::Rgb(125, 207, 255);
+    /// #9ece6a.
+    pub const GREEN: Color = Color::Rgb(158, 206, 106);
+    /// #e0af68.
+    pub const YELLOW: Color = Color::Rgb(224, 175, 104);
+    /// #ff9e64.
+    pub const ORANGE: Color = Color::Rgb(255, 158, 100);
+    /// #f7768e.
+    pub const RED: Color = Color::Rgb(247, 118, 142);
+    /// #bb9af7.
+    pub const MAGENTA: Color = Color::Rgb(187, 154, 247);
+    /// #20303b.
+    pub const DIFF_ADD: Color = Color::Rgb(32, 48, 59);
+    /// #37222c.
+    pub const DIFF_DELETE: Color = Color::Rgb(55, 34, 44);
+}
+
+/// The colors of the Tokyo Night theme.
+const DARK: Palette = {
+    use tokyo_night::*;
+    Palette {
+        accent: CYAN,
+        user_bg: BG_HIGHLIGHT,
+        faint: BG_HIGHLIGHT,
+        muted: COMMENT,
+        tool: YELLOW,
+        tool_arg: FG_DARK,
+        add: GREEN,
+        remove: RED,
+        add_bg: DIFF_ADD,
+        remove_bg: DIFF_DELETE,
+        error: RED,
+        warn: YELLOW,
+        plan: MAGENTA,
+        shell: ORANGE,
+        thinking: [GREEN, FG_DARK, CYAN, YELLOW, ORANGE, RED, MAGENTA],
+    }
 };
 
 /// Darker text and lighter backgrounds than [`DARK`], for a light

@@ -1757,6 +1757,16 @@ fn code_theme_colors_code_blocks() {
 }
 
 #[test]
+fn tokyo_night_colors_code_blocks() {
+    let mut default = App::new("model", status(), Theme::new(true));
+    let mut tokyo = App::new("model", status(), Theme::new(true));
+    tokyo.set_code_theme(code_theme("tokyo-night").unwrap());
+    let colors = code_colors(&mut tokyo);
+    assert!(!colors.is_empty());
+    assert_ne!(code_colors(&mut default), colors);
+}
+
+#[test]
 fn code_theme_from_a_textmate_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("red.tmTheme");
@@ -1787,7 +1797,7 @@ fn code_theme_names() {
         .and_then(|(_, rest)| rest.split_once(", nor"))
         .map(|(names, _)| names)
         .expect(&err);
-    assert_eq!(names.split(", ").count(), 7, "{err}");
+    assert_eq!(names.split(", ").count(), 8, "{err}");
     for name in names.split(", ") {
         code_theme(name).unwrap();
     }

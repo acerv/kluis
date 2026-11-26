@@ -14,8 +14,8 @@
 //! auto_compact_tokens = 100000
 //! # Colors for a "dark" (default) or "light" terminal.
 //! theme = "dark"
-//! # Colors of code blocks: base16-ocean-dark (default, inspired-github
-//! # with the light theme), base16-ocean-light,
+//! # Colors of code blocks: tokyo-night (default, inspired-github with
+//! # the light theme), base16-ocean-dark, base16-ocean-light,
 //! # base16-eighties-dark, base16-mocha-dark, inspired-github,
 //! # solarized-dark, solarized-light, or a TextMate theme file.
 //! code_theme = "solarized-dark"

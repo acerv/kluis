@@ -53,7 +53,7 @@ tool by tool.
 | `generic.model`         | Model to use                                         | `deepseek-chat`     |
 | `generic.thinking`      | Thinking effort: `default`, `off`, `low`, `medium`, `high`, `xhigh`, `max` | `default`           |
 | `generic.theme`               | Colors for a `dark` or `light` terminal                          | `dark`              |
-| `generic.code_theme`          | Colors of code blocks, see [Code theme](#code-theme)            | `base16-ocean-dark`, `inspired-github` with the light theme |
+| `generic.code_theme`          | Colors of code blocks, see [Code theme](#code-theme)            | `tokyo-night`, `inspired-github` with the light theme |
 | `generic.auto_compact_tokens` | Auto-compact context at this many prompt tokens (`0` disables) | `100000`            |
 | `generic.searxng_url`   | SearXNG instance for `web_search`, with its JSON format on | DuckDuckGo          |
 | `generic.notify`        | Ring the terminal bell when a prompt that ran for 10 seconds or more ends or asks a question | `false` |
@@ -78,6 +78,7 @@ or the path of a TextMate theme file (`.tmTheme`), as many editor themes come.
 
 | Theme                  | Background |
 | ---------------------- | ---------- |
+| `tokyo-night`          | dark       |
 | `base16-ocean-dark`    | dark       |
 | `base16-eighties-dark` | dark       |
 | `base16-mocha-dark`    | dark       |
