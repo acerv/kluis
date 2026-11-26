@@ -1056,7 +1056,7 @@ dependencies = [
 
 [[package]]
 name = "harness-core"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "chrono",
  "encoding_rs",
@@ -1079,7 +1079,7 @@ dependencies = [
 
 [[package]]
 name = "harness-exec"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anstyle-parse",
  "base64 0.23.1",
@@ -1104,7 +1104,7 @@ dependencies = [
 
 [[package]]
 name = "harness-sandbox"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "caps",
  "hakoniwa",
@@ -1121,7 +1121,7 @@ dependencies = [
 
 [[package]]
 name = "harness-tui"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "base64 0.23.1",
  "clap",
