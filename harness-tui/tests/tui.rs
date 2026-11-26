@@ -2642,3 +2642,40 @@ fn footer_shows_context_against_the_compaction_size_and_keys_while_busy() {
     assert!(!screen.contains("sandboxed"), "{screen}");
     assert!(screen.contains("Working… · ↓ 1.5K tokens"), "{screen}");
 }
+
+#[test]
+fn editor_rule_names_the_mode() {
+    let mut term = inline_terminal(60, 14);
+    let mut app = App::new("model", status(), Theme::new(true));
+    let rule = |term: &Terminal<TestBackend>| {
+        render_text(term)
+            .lines()
+            .find(|line| line.starts_with("──"))
+            .unwrap_or_default()
+            .to_owned()
+    };
+
+    term.draw(|f| app.render(f)).unwrap();
+    assert!(!rule(&term).contains(' '), "{}", rule(&term));
+
+    type_str(&mut app, "!ls");
+    term.draw(|f| app.render(f)).unwrap();
+    assert!(rule(&term).starts_with("── shell ──"), "{}", rule(&term));
+
+    app.handle_event(ctrl('c'));
+    type_str(&mut app, "/he");
+    term.draw(|f| app.render(f)).unwrap();
+    assert!(rule(&term).starts_with("── command ──"), "{}", rule(&term));
+
+    app.handle_event(ctrl('c'));
+    app.handle_event(shift(KeyCode::BackTab));
+    term.draw(|f| app.render(f)).unwrap();
+    let screen = render_text(&term);
+    assert!(rule(&term).starts_with("── plan ──"), "{screen}");
+    assert!(screen.contains("Describe what to plan…"), "{screen}");
+    let buf = term.backend().buffer();
+    let y = (0..buf.area.height)
+        .find(|&y| buf[(0, y)].symbol() == "─")
+        .unwrap();
+    assert_eq!(buf[(0, y)].fg, Color::Magenta);
+}
