@@ -19,7 +19,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::render_diff;
 use crate::changes::{ChangeKind, ChangesUpdate, FileChange, Undo, UndoPlan, Watcher, MAX_FILES};
 use crate::style::Theme;
-use crate::text::char_width;
+use crate::text::{char_width, fill_row};
 
 /// Spinner ticks between two scans while a tool runs: about 2 seconds.
 const RESCAN_TICKS: u32 = 16;
@@ -309,6 +309,9 @@ impl DiffView {
         let scroll = self.scroll.min(lines.len().saturating_sub(1));
         lines.drain(..scroll);
         lines.truncate(area.height as usize);
+        for line in lines.iter_mut().filter(|line| line.style.bg.is_some()) {
+            fill_row(line, area.width as usize);
+        }
         frame.render_widget(Paragraph::new(lines), area);
     }
 }
