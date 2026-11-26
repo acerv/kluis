@@ -78,6 +78,7 @@ Settings live in `~/.kluis/config.toml`:
 [generic]
 model = "ollama::qwen2.5-coder"   # a local model, no API key needed
 thinking = "medium"               # default, off, low, medium, high, xhigh or max
+theme = "light"                   # colors for a light terminal (default: dark)
 code_theme = "solarized-dark"     # colors of code blocks
 
 [sandbox]

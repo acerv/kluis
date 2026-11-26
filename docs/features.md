@@ -99,8 +99,26 @@ away from the rest of the system.
 ## Terminal UI
 
 - Inline terminal UI that keeps native scrollback.
-- Live streaming Markdown and reasoning. `Ctrl-O` toggles thinking display.
-- Spinner with elapsed time and live `bash` output preview.
+- Live streaming Markdown and reasoning.
+- Each tool call shows once it ends, with a mark for how it ended (`✓`
+  done, `✗` failed or interrupted), how long it ran when it took a second
+  or more, and its result below it. While it runs, the spinner line shows
+  it with its elapsed time, over a live preview of its output.
+- `Ctrl-O` switches between quiet output, the default, and verbose output.
+  Quiet shows the short form of tool results (the first 8 lines of a
+  command, 24 lines of a diff, a count for the others) and hides the
+  thinking. Verbose shows every result in full and the thinking. The
+  output so far is printed again in the new mode, past calls included.
+  Results past 4 MiB in all keep only their short form.
+- Added and removed lines of a diff are tinted green and red.
+- The footer shows the model and its thinking effort, plan mode, the size
+  of the conversation against the size it is compacted at (in the warning
+  color from 80% on), and the sandbox and folder, or the keys while the
+  agent works. The spinner line adds the tokens the prompt wrote so far.
+- The rules around the editor take the color of what is typed and name
+  it: `shell` for `!`, `command` for `/`, `plan` in plan mode.
+- `--theme light`, or `theme = "light"` in the config file, picks colors
+  for a light terminal.
 - The terminal title shows what kl is doing (`kl: Running bash`, `kl:
   Thinking`, `kl: Question`), and goes back to the old one on exit.
 - With `notify = true` in the config file, or `--notify`, kl rings the
@@ -123,7 +141,6 @@ away from the rest of the system.
   tools are refused. Switch back and send a message to have the plan carried out.
 - `!<command>` runs a shell command as the `bash` tool does, in the sandbox
   when the tools run there, without adding it to the conversation.
-- `/output` shows the whole output of the last tool call.
 - `/diff` opens a panel on the right: the files the session added,
   changed or deleted, with the lines added and removed, over the diff of
   the one selected (Alt+Up/Down, or Ctrl, to select, PgUp/PgDn to scroll
@@ -139,7 +156,7 @@ away from the rest of the system.
 - `/<command> [args]` sends a prompt template of yours from
   `~/.kluis/commands`. See [Custom commands](#custom-commands).
 - Slash commands: `/model`, `/thinking`, `/resume`, `/fork`, `/remember`,
-  `/copy`, `/export`, `/output`, `/diff`, `/retry`, `/undo`, `/compact`,
+  `/copy`, `/export`, `/diff`, `/retry`, `/undo`, `/compact`,
   `/status`, `/new`, `/help`, `/quit`.
 - `/undo` puts the files of the project back as they were before the
   last prompt, and drops that prompt and what it led to from the

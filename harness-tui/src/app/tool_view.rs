@@ -398,14 +398,14 @@ pub(super) fn format_elapsed(secs: u64) -> String {
 }
 
 /// A tool call, with its arguments as JSON text.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct ToolCall {
     pub(super) name: String,
     pub(super) args: String,
 }
 
 /// What a tool returned.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct ToolReply {
     pub(super) content: String,
     /// The change of an `edit` call.
@@ -424,7 +424,7 @@ impl ToolReply {
 }
 
 /// A tool call and how it ended.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct ToolRun {
     /// Unknown for a restored result whose call is missing.
     pub(super) call: Option<ToolCall>,

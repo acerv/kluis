@@ -7,6 +7,7 @@ option: see [Command-line options](#command-line-options).
 [generic]
 model = "deepseek-chat"
 thinking = "medium"
+theme = "dark"
 code_theme = "solarized-dark"
 auto_compact_tokens = 100000
 searxng_url = "https://searx.example.org"
@@ -51,7 +52,8 @@ tool by tool.
 | ----------------------- | ---------------------------------------------------- | ------------------- |
 | `generic.model`         | Model to use                                         | `deepseek-chat`     |
 | `generic.thinking`      | Thinking effort: `default`, `off`, `low`, `medium`, `high`, `xhigh`, `max` | `default`           |
-| `generic.code_theme`          | Colors of code blocks, see [Code theme](#code-theme)            | `base16-ocean-dark` |
+| `generic.theme`               | Colors for a `dark` or `light` terminal                          | `dark`              |
+| `generic.code_theme`          | Colors of code blocks, see [Code theme](#code-theme)            | `base16-ocean-dark`, `inspired-github` with the light theme |
 | `generic.auto_compact_tokens` | Auto-compact context at this many prompt tokens (`0` disables) | `100000`            |
 | `generic.searxng_url`   | SearXNG instance for `web_search`, with its JSON format on | DuckDuckGo          |
 | `generic.notify`        | Ring the terminal bell when a prompt that ran for 10 seconds or more ends or asks a question | `false` |
@@ -91,6 +93,7 @@ code_theme = "~/.kluis/dracula.tmTheme"
 
 A value with a `/` is a file. Code blocks without a known language, and
 inline code, keep a plain style. With `NO_COLOR`, all of it stays plain.
+Without `code_theme`, the light theme uses `inspired-github`.
 
 ## Command-line options
 
@@ -100,6 +103,7 @@ Options with a config key take the same values as the key.
 | ------------------------------ | ----------------------------- | ------------ |
 | `--model NAME`                 | `generic.model`               | Model to use; its name picks the provider |
 | `--thinking LEVEL`             | `generic.thinking`            | Thinking effort |
+| `--theme dark\|light`          | `generic.theme`               | Colors for a dark or light terminal |
 | `--code-theme NAME\|PATH`      | `generic.code_theme`          | Colors of code blocks, see [Code theme](#code-theme) |
 | `--auto-compact-tokens N`      | `generic.auto_compact_tokens` | Auto-compact the conversation at this many prompt tokens (`0` disables) |
 | `--notify`                     | `generic.notify`              | Ring the terminal bell when a prompt that ran for 10 seconds or more ends or asks a question |
