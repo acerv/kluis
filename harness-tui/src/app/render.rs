@@ -5,6 +5,9 @@
 
 use super::*;
 
+/// Marks the line the user types on.
+const PROMPT: &str = "❯ ";
+
 impl App {
     /// Desired inline viewport height for `width`, growing with live streaming
     /// preview lines (up to [`MAX_LIVE_ROWS`]) and editor lines (up to
@@ -327,7 +330,7 @@ impl App {
             return;
         }
         let visible_rows = area.height as usize;
-        let prefix_w = 2usize;
+        let prefix_w = PROMPT.width();
         let prompt = match mode {
             Some((_, style)) => style,
             None => self.theme.prompt,
@@ -343,7 +346,7 @@ impl App {
                 "Type a message… (/help for commands)"
             };
             let line = Line::from(vec![
-                Span::styled("> ", prompt),
+                Span::styled(PROMPT, prompt),
                 Span::styled(hint, self.theme.muted),
             ]);
             frame.render_widget(Paragraph::new(line), area);
@@ -368,7 +371,7 @@ impl App {
             .take(visible_rows)
         {
             let prefix = if idx == 0 {
-                Span::styled("> ", prompt)
+                Span::styled(PROMPT, prompt)
             } else {
                 Span::raw("  ")
             };
