@@ -9,7 +9,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use nix::unistd::Uid;
-use rustix::fs::{access, renameat_with, Access, RenameFlags, CWD};
+use rustix::fs::{access, openat, renameat_with, Access, Mode, OFlags, RenameFlags, CWD};
 use rustix::io::Errno;
 use walkdir::WalkDir;
 
@@ -140,7 +140,7 @@ impl GitGuard {
             .into_iter()
             .filter(|path| self.known.get(path) != Some(&link_id(path)))
             .map(|path| {
-                let moved_to = disable(&path);
+                let moved_to = disable(&self.roots, &path);
                 NewRepository { path, moved_to }
             })
             .collect();
@@ -167,17 +167,34 @@ impl GitGuard {
     }
 }
 
-/// Move `git` to a free name next to it that git does not look for.
-fn disable(git: &Path) -> io::Result<PathBuf> {
+/// Move `git`, found in one of the `roots`, to a free name next to it that
+/// git does not look for. The folders from the root to it are opened
+/// without following symbolic links: a command could swap one for a link
+/// since the scan, which would lead to a `.git` outside.
+fn disable(roots: &[(PathBuf, PathBuf)], git: &Path) -> io::Result<PathBuf> {
+    let not_found = || io::Error::new(io::ErrorKind::NotFound, "no longer in the folder");
+    let (root, _) = roots
+        .iter()
+        .find(|(root, _)| git.starts_with(root))
+        .ok_or_else(not_found)?;
+    let rel = git.strip_prefix(root).map_err(|_| not_found())?;
+    let (Some(parent), Some(name)) = (rel.parent(), rel.file_name()) else {
+        return Err(not_found());
+    };
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+    let mut dir = openat(CWD, root, flags, Mode::empty())?;
+    for folder in parent.components() {
+        let flags = flags | OFlags::NOFOLLOW;
+        dir = openat(&dir, folder.as_os_str(), flags, Mode::empty())?;
+    }
     for n in 1.. {
-        let name = match n {
+        let target = match n {
             1 => DISABLED.to_owned(),
             _ => format!("{DISABLED}-{n}"),
         };
-        let target = git.with_file_name(name);
         // Never over something there, even if it appears meanwhile.
-        match renameat_with(CWD, git, CWD, &target, RenameFlags::NOREPLACE) {
-            Ok(()) => return Ok(target),
+        match renameat_with(&dir, name, &dir, target.as_str(), RenameFlags::NOREPLACE) {
+            Ok(()) => return Ok(git.with_file_name(target)),
             Err(Errno::EXIST) => continue,
             Err(e) => return Err(e.into()),
         }
@@ -283,4 +300,28 @@ fn writable_by_commands(path: &Path) -> bool {
     std::fs::symlink_metadata(path).map_or(true, |meta| {
         meta.uid() == Uid::effective().as_raw() || access(path, Access::WRITE_OK).is_ok()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disable_follows_no_link_swapped_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, outside) = (dir.path().join("root"), dir.path().join("outside"));
+        std::fs::create_dir_all(outside.join(".git")).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        // A folder that held a new `.git` at the scan, now a link.
+        std::os::unix::fs::symlink(&outside, root.join("sub")).unwrap();
+        let roots = [(root.clone(), root.clone())];
+
+        assert!(disable(&roots, &root.join("sub/.git")).is_err());
+        assert!(outside.join(".git").is_dir());
+
+        std::fs::create_dir_all(root.join("real/.git")).unwrap();
+        let moved = disable(&roots, &root.join("real/.git")).unwrap();
+        assert_eq!(moved, root.join("real").join(DISABLED));
+        assert!(moved.is_dir());
+    }
 }
