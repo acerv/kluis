@@ -34,6 +34,23 @@ use output::{Filter, Tail};
 /// Name of the `bash` tool.
 pub const BASH_TOOL: &str = "bash";
 
+/// What the `bash` tool is not for, ending its description.
+const BASH_RULES: &str = "
+
+IMPORTANT: Avoid using this tool to run `find`, `grep`, `cat`, `head`, \
+`tail`, `sed`, `awk`, or `echo` commands, unless explicitly instructed or \
+when these commands are truly necessary for the task. Instead, always \
+prefer using the dedicated tools for these commands:
+- File search: Use the find tool (NOT the find or ls commands)
+- Content search: Use the grep tool (NOT the grep or rg commands)
+- Read files: Use the read tool (NOT cat/head/tail)
+- Edit files: Use the edit tool (NOT sed/awk)
+- Write files: Use the write tool (NOT echo >/cat <<EOF)
+- Communication: Output text directly (NOT echo/printf)
+
+Try to maintain your current working directory throughout the session by \
+using absolute paths and avoiding usage of `cd`.";
+
 /// Bytes kept from the end of the output.
 pub const MAX_BASH_OUTPUT: usize = 16 * 1024;
 
@@ -186,6 +203,7 @@ impl BashTool {
                  pid and a file with its output; stop it with `kill -- -PID`.",
             );
         }
+        description.push_str(BASH_RULES);
         Tool::new(BASH_TOOL)
             .with_description(description)
             .with_schema(Self::schema(background))
