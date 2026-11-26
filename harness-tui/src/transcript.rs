@@ -19,7 +19,7 @@ const MAX_TOOL_BYTES: usize = 4 * 1024 * 1024;
 
 /// A piece of the conversation as the scrollback shows it, rendered when
 /// printed, so that it can follow the output mode.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum Entry {
     Line(Line<'static>),
     /// A row of thinking, shown in verbose mode only.
