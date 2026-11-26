@@ -477,3 +477,24 @@ fn searxng_url_is_accepted_and_validated() {
     );
     assert!(out.status.success(), "{}", stderr(&out));
 }
+
+#[test]
+fn theme_is_accepted_and_validated() {
+    let home = tempdir();
+    write_default(home.path(), "[generic]\ntheme = \"light\"\n");
+    let out = run_cli(home.path(), &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    write_default(home.path(), "[generic]\ntheme = \"blue\"\n");
+    let out = run_cli(home.path(), &[]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("blue"), "{}", stderr(&out));
+
+    let out = run_cli(home.path(), &["--theme", "blue"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("expected dark or light"),
+        "{}",
+        stderr(&out)
+    );
+}

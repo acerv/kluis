@@ -12,7 +12,10 @@
 //! thinking = "medium"
 //! # Auto-compact context at this many prompt tokens (`0` disables it).
 //! auto_compact_tokens = 100000
-//! # Colors of code blocks: base16-ocean-dark (default), base16-ocean-light,
+//! # Colors for a "dark" (default) or "light" terminal.
+//! theme = "dark"
+//! # Colors of code blocks: base16-ocean-dark (default, inspired-github
+//! # with the light theme), base16-ocean-light,
 //! # base16-eighties-dark, base16-mocha-dark, inspired-github,
 //! # solarized-dark, solarized-light, or a TextMate theme file.
 //! code_theme = "solarized-dark"
@@ -73,6 +76,7 @@ use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 use harness_core::{Error, Thinking};
+use harness_tui::ThemeName;
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// Environment variable naming the config file, like `--config`.
@@ -101,6 +105,7 @@ impl Default for Config {
             generic: GenericConfig {
                 model: Some(DEFAULT_MODEL.to_owned()),
                 thinking: None,
+                theme: None,
                 code_theme: None,
                 auto_compact_tokens: None,
                 searxng_url: None,
@@ -122,6 +127,9 @@ pub struct GenericConfig {
     /// Default thinking effort (`default`, `off`, `low` ... `max`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<Thinking>,
+    /// Colors for a dark or light terminal, like `--theme`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub theme: Option<ThemeName>,
     /// Colors of code blocks, like `--code-theme`: a built-in theme, or a
     /// TextMate theme file when it holds a `/`.
     #[serde(skip_serializing_if = "Option::is_none")]

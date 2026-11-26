@@ -2573,3 +2573,25 @@ fn changed_diff_lines_are_tinted_across_the_terminal() {
     assert_eq!(buf[(39, added)].bg, Color::Indexed(22));
     assert_eq!(buf[(0, added)].bg, Color::Reset);
 }
+
+#[test]
+fn light_theme_keeps_text_off_near_white() {
+    use harness_tui::ThemeName;
+
+    let light = Theme::named(ThemeName::Light, true);
+    assert_ne!(light, Theme::new(true));
+    // Gray and white text vanish on a light background.
+    for style in [
+        light.tool_arg,
+        light.muted,
+        light.reasoning,
+        light.status_bar,
+    ] {
+        assert!(
+            !matches!(style.fg, Some(Color::Gray | Color::White)),
+            "{style:?}"
+        );
+    }
+    assert_eq!(Theme::named(ThemeName::Light, false), Theme::new(false));
+    assert_eq!("Light".parse::<ThemeName>(), Ok(ThemeName::Light));
+}

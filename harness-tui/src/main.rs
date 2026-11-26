@@ -42,7 +42,8 @@ use harness_core::{
 use harness_sandbox::{GitGuard, NetworkAccess};
 use harness_tui::{
     after_commands, out, outln, printable, pruned_notice, retry_notice, summary, BannerLine,
-    History, PromptSaver, PromptStats, RunOptions, Session, Signals, Status, TRUNCATED_NOTICE,
+    History, PromptSaver, PromptStats, RunOptions, Session, Signals, Status, ThemeName,
+    TRUNCATED_NOTICE,
 };
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::runtime::Runtime;
@@ -64,6 +65,10 @@ pub struct Args {
     /// Thinking effort: default, off, low, medium, high, xhigh, max
     #[arg(long, env = "HARNESS_THINKING", value_name = "LEVEL")]
     thinking: Option<Thinking>,
+
+    /// Colors for a dark or light terminal [default: dark]
+    #[arg(long, value_name = "dark|light")]
+    theme: Option<ThemeName>,
 
     /// Code block theme or .tmTheme file [default: base16-ocean-dark]
     #[arg(long, value_name = "NAME|PATH")]
@@ -414,6 +419,7 @@ fn apply_config(args: &mut Args) -> Result<Option<String>, Error> {
     };
     let config = config::load(&path, required)?;
     args.thinking = args.thinking.or(config.generic.thinking);
+    args.theme = args.theme.or(config.generic.theme);
     args.code_theme = args.code_theme.take().or(config.generic.code_theme);
     args.notify |= config.generic.notify;
     args.auto_compact_tokens = args
@@ -579,6 +585,7 @@ async fn run(
             adapters,
             banner,
             git_guard,
+            theme: args.theme.unwrap_or_default(),
             code_theme,
             commands: commands.commands,
             notify: args.notify,
