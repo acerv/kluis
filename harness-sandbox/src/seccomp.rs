@@ -67,7 +67,9 @@ impl FromStr for NetworkAccess {
 /// Landlock only limits TCP. It also only checks `connect`, so sending
 /// with `MSG_FASTOPEN`, which connects without it, fails with
 /// `EOPNOTSUPP`, as when the host does not use TCP Fast Open: programs
-/// connect instead.
+/// connect instead. And it only checks `bind`, so `listen`, which binds a
+/// socket not bound yet to a port of the host without it, fails with
+/// `EOPNOTSUPP` too: with no port to bind, nothing could listen anyway.
 ///
 /// A socket pair, also refused with `EACCES` unless Unix, is a datagram one
 /// only with [`NetworkAccess::Any`]: given an address, such a socket sends
@@ -157,7 +159,7 @@ fn programs(network: NetworkAccess) -> Fallible<Vec<BpfProgram>> {
         (libc::EACCES, socket_rules(network)?),
     ];
     if network == NetworkAccess::Ports {
-        filters.push((libc::EOPNOTSUPP, fast_open_rules()?));
+        filters.push((libc::EOPNOTSUPP, ports_rules()?));
     }
     let arch = std::env::consts::ARCH.try_into()?;
     filters
@@ -226,18 +228,21 @@ fn socket_rules(network: NetworkAccess) -> Fallible<Rules> {
     ])
 }
 
-/// Rules matching sends with `MSG_FASTOPEN`.
-fn fast_open_rules() -> Fallible<Rules> {
+/// Rules matching what goes past Landlock: sends with `MSG_FASTOPEN`, and
+/// `listen`.
+fn ports_rules() -> Fallible<Rules> {
     let fast_open = libc::MSG_FASTOPEN as u64;
     // `sendmsg` takes its flags third, `sendto` and `sendmmsg` fourth.
-    [
+    let mut rules = [
         (libc::SYS_sendmsg, 2),
         (libc::SYS_sendto, 3),
         (libc::SYS_sendmmsg, 3),
     ]
     .into_iter()
     .map(|(nr, arg)| Ok((nr, vec![rule([has(arg, fast_open)])?])))
-    .collect()
+    .collect::<Fallible<Rules>>()?;
+    rules.push((libc::SYS_listen, vec![]));
+    Ok(rules)
 }
 
 /// A comparison of an argument, on its low 32 bits, with a value.
