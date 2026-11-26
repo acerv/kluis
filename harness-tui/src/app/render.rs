@@ -246,31 +246,32 @@ impl App {
             return;
         }
         let line = if self.busy {
-            let spin = SPINNER[self.spinner];
+            let mut spans = vec![Span::styled(
+                format!("{} ", SPINNER[self.spinner]),
+                self.theme.status_accent,
+            )];
+            match &self.active_tool {
+                Some(tool) => {
+                    spans.extend(format_tool_call(&tool.name, &tool.args, self.theme).spans);
+                }
+                None if self.is_thinking => spans.push(Span::raw("Thinking")),
+                None => spans.push(Span::raw("Working")),
+            }
             let elapsed = self
                 .activity_started
                 .map(|t| format_elapsed(t.elapsed().as_secs()))
                 .filter(|s| !s.is_empty())
                 .map(|s| format!(" {s}"))
                 .unwrap_or_default();
-            if let Some(tool) = &self.active_tool {
-                let mut spans = vec![Span::styled(format!("{spin} "), self.theme.muted)];
-                spans.extend(format_tool_call(&tool.name, &tool.args, self.theme).spans);
-                spans.push(Span::styled(
-                    format!("…{elapsed}  (esc to cancel)"),
-                    self.theme.muted,
-                ));
-                frame.render_widget(Paragraph::new(Line::from(spans)), area);
-                return;
-            }
-            let doing = if self.is_thinking {
-                "Thinking"
-            } else {
-                "Working"
+            let tokens = match self.prompt_output {
+                0 => String::new(),
+                n => format!(" · ↓ {} tokens", ScaledTokens(n)),
             };
-            let mode = if self.verbose { "quiet" } else { "verbose" };
-            let label = format!("{spin} {doing}…{elapsed}  (Ctrl-O for {mode} · esc to cancel)");
-            Line::styled(label, self.theme.muted)
+            spans.push(Span::styled(
+                format!("…{elapsed}{tokens}"),
+                self.theme.muted,
+            ));
+            Line::from(spans)
         } else if let Some(notice) = &self.notice {
             Line::styled(notice.as_str(), self.theme.muted)
         } else {
@@ -356,26 +357,48 @@ impl App {
         if area.height == 0 || area.width == 0 {
             return;
         }
-        let width = area.width as usize;
-        let model_label = format!("{} ({})", self.model, self.thinking);
-        let plan = if self.plan { " · plan mode" } else { "" };
-        let right = format!("{} · {}", self.status.sandbox, self.status.folder);
+        let theme = self.theme;
+        let mut left = vec![Span::styled(
+            format!("{} ({})", self.model, self.thinking),
+            theme.thinking_model(self.thinking),
+        )];
+        if self.plan {
+            let badge = if theme.color { " plan " } else { "[plan]" };
+            left.push(Span::raw(" "));
+            left.push(Span::styled(badge, theme.plan_badge));
+        }
+        if self.verbose {
+            left.push(Span::styled(" · verbose", theme.status_bar));
+        }
         // Unknown before the first request of the conversation.
-        let context = match self.context {
-            0 => String::new(),
-            tokens => format!(" · {} context", ScaledTokens(tokens)),
+        if self.context > 0 {
+            let (text, near) = match self.compact_at {
+                Some(limit) => (
+                    format!(
+                        " · {}/{} context",
+                        ScaledTokens(self.context),
+                        ScaledTokens(limit)
+                    ),
+                    self.context.saturating_mul(100) >= limit.saturating_mul(NEAR_COMPACT_PERCENT),
+                ),
+                None => (format!(" · {} context", ScaledTokens(self.context)), false),
+            };
+            let style = if near { theme.warn } else { theme.status_bar };
+            left.push(Span::styled(text, style));
+        }
+        let right = if self.busy {
+            let mode = if self.verbose { "quiet" } else { "verbose" };
+            format!("esc to cancel · ctrl+o {mode}")
+        } else {
+            format!("{} · {}", self.status.sandbox, self.status.folder)
         };
-        let left_w = model_label.width() + plan.width() + context.width();
-        let gap = width.saturating_sub(left_w + right.width()).max(2);
-
-        let line = Line::from(vec![
-            Span::styled(model_label, self.theme.thinking_model(self.thinking)),
-            Span::styled(plan, self.theme.status_accent),
-            Span::styled(context, self.theme.status_bar),
-            Span::raw(" ".repeat(gap)),
-            Span::styled(right, self.theme.status_bar),
-        ]);
-        frame.render_widget(Paragraph::new(line), area);
+        let left_w: usize = left.iter().map(Span::width).sum();
+        let gap = (area.width as usize)
+            .saturating_sub(left_w + right.width())
+            .max(2);
+        left.push(Span::raw(" ".repeat(gap)));
+        left.push(Span::styled(right, theme.status_bar));
+        frame.render_widget(Paragraph::new(Line::from(left)), area);
     }
 }
 

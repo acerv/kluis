@@ -194,6 +194,7 @@ pub async fn run(
     app.set_width(term.width());
     app.set_thinking(agent.thinking());
     app.set_notify(notify);
+    app.set_compact_at(agent.auto_compact());
     let code_theme = code_theme.or_else(|| {
         // The default code theme is dark.
         (theme == ThemeName::Light).then(|| CodeTheme::from(BuiltinCodeTheme::InspiredGitHub))
