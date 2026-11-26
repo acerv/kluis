@@ -29,6 +29,28 @@ pub(crate) fn sibling(path: &Path, suffix: &str) -> PathBuf {
     name.into()
 }
 
+/// Parse `text`, a TOML file holding secrets. An error tells where, but
+/// not the line itself, nor the strings it quotes from it, as the line
+/// may hold a key or a token.
+pub(crate) fn parse_toml<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, String> {
+    toml::from_str(text).map_err(|e: toml::de::Error| {
+        let mut message = String::new();
+        for (i, part) in e.message().split('"').enumerate() {
+            if i > 0 {
+                message.push('"');
+            }
+            message.push_str(if i % 2 == 1 { "..." } else { part });
+        }
+        let Some(span) = e.span() else {
+            return message;
+        };
+        let before = text.get(..span.start).unwrap_or_default();
+        let line = before.matches('\n').count() + 1;
+        let column = before.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
+        format!("line {line}, column {column}: {message}")
+    })
+}
+
 /// Replace the file at `path` with what `write` writes, for the user only
 /// (`0600`). It is written next to `path`, under a name of this process,
 /// and takes its place only once complete and on disk, so a failure

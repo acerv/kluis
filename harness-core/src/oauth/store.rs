@@ -224,7 +224,7 @@ fn read(path: &Path) -> Result<OAuthFile, Error> {
     let Some(raw) = private_file::read(path, MAX_OAUTH_BYTES)? else {
         return Ok(OAuthFile::default());
     };
-    toml::from_str(&raw).map_err(|e| format!("{}: {e}", path.display()).into())
+    private_file::parse_toml(&raw).map_err(|e| format!("{}: {e}", path.display()).into())
 }
 
 /// Atomically replace `path` with `file`, or remove it when empty.
