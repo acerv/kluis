@@ -13,7 +13,7 @@ use genai::chat::{
     ToolResponse, Usage,
 };
 use harness_core::tools::{diff_lines, ToolContext};
-use harness_core::{Agent, SessionStore, TokenUsage};
+use harness_core::{Agent, SessionStore, Thinking, TokenUsage};
 use serde_json::json;
 
 #[test]
@@ -735,4 +735,51 @@ fn fork_copies_the_diffs_of_the_conversation() {
     let loaded = store.load(fork.id()).unwrap();
     assert_eq!(loaded.diffs.len(), 1);
     assert_eq!(loaded.diffs["c1"], diff);
+}
+
+#[test]
+fn thinking_effort_is_saved_and_survives_compaction() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(root.path(), cwd.path());
+    let mut writer = store.create("deepseek-chat").with_thinking(Thinking::Low);
+    // Before the first message, it only changes the pending header.
+    writer.append_thinking(Thinking::Medium).unwrap();
+    assert!(!writer.path().exists());
+
+    writer
+        .append_messages(&[ChatMessage::user("task"), ChatMessage::assistant("done")])
+        .unwrap();
+    let file = std::fs::read_to_string(writer.path()).unwrap();
+    assert_eq!(file.lines().count(), 3, "{file}");
+    assert_eq!(
+        store.load(writer.id()).unwrap().meta.thinking,
+        Some(Thinking::Medium)
+    );
+
+    writer.append_thinking(Thinking::High).unwrap();
+    writer
+        .append_compact(&[ChatMessage::user("summary")])
+        .unwrap();
+    let loaded = store.load(writer.id()).unwrap();
+    assert_eq!(loaded.meta.thinking, Some(Thinking::High));
+    assert_eq!(loaded.messages.len(), 1);
+
+    // The list does not count it as a message.
+    assert_eq!(store.list().unwrap()[0].message_count, 1);
+}
+
+#[test]
+fn session_without_a_thinking_effort_loads_none() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(root.path(), cwd.path());
+    let mut writer = store.create("deepseek-chat");
+    writer
+        .append_messages(&[ChatMessage::user("hello")])
+        .unwrap();
+
+    let file = std::fs::read_to_string(writer.path()).unwrap();
+    assert!(!file.contains("thinking"), "{file}");
+    assert_eq!(store.load(writer.id()).unwrap().meta.thinking, None);
 }

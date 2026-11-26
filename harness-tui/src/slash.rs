@@ -280,7 +280,7 @@ pub(crate) async fn handle_slash(
             Some(_) if agent.history().is_empty() => ui.app.push_info("[nothing to fork]"),
             Some(session) => {
                 let from = session.short_id().to_owned();
-                match session.fork(agent.model(), agent.history()) {
+                match session.fork(agent.model(), agent.thinking(), agent.history()) {
                     Ok(()) => ui.app.push_info(format!(
                         "[forked session {from}: now in {}, {from} stays as it was]",
                         session.short_id()
@@ -293,7 +293,7 @@ pub(crate) async fn handle_slash(
             agent.clear();
             ui.app.reset_session();
             if let Some(session) = session {
-                session.rotate(agent.model());
+                session.rotate(agent.model(), agent.thinking());
             }
             ui.term.request_clear();
             ui.app.push_info("[new session]");
@@ -314,8 +314,7 @@ pub(crate) async fn handle_slash(
                     ));
                 }
                 None => {
-                    agent.set_thinking(level);
-                    ui.app.set_thinking(level);
+                    set_thinking(level, agent, &mut ui.app, session);
                     ui.app.push_info(format!("thinking: {level}"));
                 }
             },
@@ -331,7 +330,7 @@ pub(crate) async fn handle_slash(
                 .push_info(format!("thinking: {}{takes}", agent.thinking()));
         }
         SlashCommand::Resume(Some(id)) => {
-            resume_session(&id, None, false, agent, &mut ui.app, session);
+            resume_session(&id, ResumeWith::default(), agent, &mut ui.app, session);
         }
         SlashCommand::Resume(None) => match session {
             None => ui.app.push_info("[sessions disabled (--no-session)]"),
@@ -356,7 +355,11 @@ pub(crate) async fn handle_slash(
 
 /// Ask which thinking levels the model takes, and fall back to the
 /// default level when it does not take the current one.
-pub(crate) async fn check_thinking(agent: &mut Agent, app: &mut App) {
+pub(crate) async fn check_thinking(
+    agent: &mut Agent,
+    app: &mut App,
+    session: Option<&mut Session>,
+) {
     let levels = agent.thinking_levels().await;
     let thinking = agent.thinking();
     if levels.as_ref().is_some_and(|l| !l.contains(&thinking)) {
@@ -364,10 +367,20 @@ pub(crate) async fn check_thinking(agent: &mut Agent, app: &mut App) {
             "[{} does not take thinking {thinking}; using default]",
             agent.model()
         ));
-        agent.set_thinking(Thinking::Default);
-        app.set_thinking(Thinking::Default);
+        set_thinking(Thinking::Default, agent, app, session);
     }
     app.set_thinking_levels(levels);
+}
+
+/// Use the thinking effort `level`, saved in `session` if any.
+fn set_thinking(level: Thinking, agent: &mut Agent, app: &mut App, session: Option<&mut Session>) {
+    agent.set_thinking(level);
+    app.set_thinking(level);
+    if let Some(session) = session {
+        if let Err(err) = session.record_thinking(level) {
+            app.push_info(format!("[session save error: {err}]"));
+        }
+    }
 }
 
 /// `levels` as a comma-separated list.
@@ -483,12 +496,20 @@ async fn fetch_models(
     }
 }
 
-/// Switch to the session `id`, with its own model unless `model` is given,
-/// or with `fork` to a copy of it.
+/// What a resumed session goes on with instead of what it saved.
+#[derive(Default)]
+pub(crate) struct ResumeWith {
+    pub model: Option<String>,
+    pub thinking: Option<Thinking>,
+    /// Go on in a copy of it.
+    pub fork: bool,
+}
+
+/// Switch to the session `id`, with its own model and thinking effort
+/// unless `with` names others.
 pub(crate) fn resume_session(
     id: &str,
-    model: Option<String>,
-    fork: bool,
+    with: ResumeWith,
     agent: &mut Agent,
     app: &mut App,
     session: Option<&mut Session>,
@@ -511,19 +532,21 @@ pub(crate) fn resume_session(
     session.activate(&data);
     // The files as they were before the prompts of another conversation.
     app.forget_checkpoints(true);
+    let ResumeWith {
+        model,
+        thinking,
+        fork,
+    } = with;
     let model = model.unwrap_or_else(|| data.meta.model.clone());
-    let saved = if fork {
-        session.fork(&model, &data.messages)
-    } else if model != data.meta.model {
-        session.record_model(&model)
-    } else {
-        Ok(())
-    };
-    if let Err(err) = saved {
+    // Sessions saved before it was recorded keep the current one.
+    let thinking = thinking.or(data.meta.thinking).unwrap_or(agent.thinking());
+    if let Err(err) = session.resume(&data, &model, thinking, fork) {
         app.push_info(format!("[session save error: {err}]"));
     }
     agent.set_model(&model);
     app.set_model(&model);
+    agent.set_thinking(thinking);
+    app.set_thinking(thinking);
     agent.set_history(data.messages);
     let short = short_id(&data.meta.id);
     let what = if fork { "forked" } else { "resumed" };

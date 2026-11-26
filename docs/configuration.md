@@ -103,7 +103,7 @@ Options with a config key take the same values as the key.
 | Option                         | Config key                    | What it does |
 | ------------------------------ | ----------------------------- | ------------ |
 | `--model NAME`                 | `generic.model`               | Model to use; its name picks the provider |
-| `--thinking LEVEL`             | `generic.thinking`            | Thinking effort |
+| `--thinking LEVEL`             | `generic.thinking`            | Thinking effort; a resumed session keeps its own unless this is given |
 | `--theme dark\|light`          | `generic.theme`               | Colors for a dark or light terminal |
 | `--code-theme NAME\|PATH`      | `generic.code_theme`          | Colors of code blocks, see [Code theme](#code-theme) |
 | `--auto-compact-tokens N`      | `generic.auto_compact_tokens` | Auto-compact the conversation at this many prompt tokens (`0` disables) |

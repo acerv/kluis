@@ -36,7 +36,7 @@ use std::path::PathBuf;
 use genai::adapter::AdapterKind;
 use genai::chat::ChatMessage;
 use harness_core::tools::{is_read_only, Diff};
-use harness_core::{expand_command, Agent, Command, Error, SessionSummary};
+use harness_core::{expand_command, Agent, Command, Error, SessionSummary, Thinking};
 use harness_sandbox::GitGuard;
 use tokio::sync::mpsc;
 
@@ -62,7 +62,7 @@ pub use tui_markdown::CodeTheme;
 use drive::{handle_event_batch, restore_queued, run_shell, run_turn, Ui};
 use slash::{
     check_thinking, handle_slash, history_tag, resume_session, switch_model, sync_checkpoints,
-    undo, ModelCatalog,
+    undo, ModelCatalog, ResumeWith,
 };
 use terminal::{EventReader, InlineTerminal};
 
@@ -106,6 +106,9 @@ pub struct RunOptions {
     pub picker_entries: Vec<SessionSummary>,
     /// The changes the `edit` calls of `history` made, by call id.
     pub diffs: HashMap<String, Diff>,
+    /// The thinking effort the user asked for, which the session picked at
+    /// startup switches to: it keeps its own effort otherwise.
+    pub thinking: Option<Thinking>,
     /// Go on in a copy of the session picked at startup.
     pub fork: bool,
     pub adapters: Vec<AdapterKind>,
@@ -177,11 +180,12 @@ pub async fn run(
     let mut agent = agent.with_asker(asker);
     let RunOptions {
         mut session,
-        model: mut startup_model,
+        model,
         mut history,
         picker_entries,
         diffs,
-        fork: mut startup_fork,
+        thinking,
+        fork,
         adapters,
         banner,
         mut git_guard,
@@ -191,6 +195,11 @@ pub async fn run(
         notify,
         agents_file,
     } = opts;
+    let mut startup = ResumeWith {
+        model,
+        thinking,
+        fork,
+    };
     let mut models = ModelCatalog::new(adapters);
     let term = InlineTerminal::enter(VIEWPORT_HEIGHT)?;
     let mut app = App::new(agent.model().to_owned(), status, Theme::from_env(theme));
@@ -245,7 +254,7 @@ pub async fn run(
             checked_model = agent.model().to_owned();
             tokio::select! {
                 _ = signals.recv() => break,
-                () = check_thinking(&mut agent, &mut ui.app) => {}
+                () = check_thinking(&mut agent, &mut ui.app, session.as_mut()) => {}
             }
             ui.draw()?;
         }
@@ -268,13 +277,9 @@ pub async fn run(
             }
         };
         // Only for the picker shown at startup, until anything else is done.
-        let model = match action {
-            Action::None | Action::Redraw => None,
-            _ => startup_model.take(),
-        };
-        let fork = match action {
-            Action::None | Action::Redraw => false,
-            _ => std::mem::take(&mut startup_fork),
+        let with = match action {
+            Action::None | Action::Redraw => ResumeWith::default(),
+            _ => std::mem::take(&mut startup),
         };
         match action {
             Action::Answer(answer) if ui.undo_asked.is_some() => {
@@ -310,7 +315,9 @@ pub async fn run(
                 ui.draw()?;
             }
             Action::ResumeSession(id) => {
-                resume_session(&id, model, fork, &mut agent, &mut ui.app, session.as_mut());
+                resume_session(&id, with, &mut agent, &mut ui.app, session.as_mut());
+                // The restored effort may not suit the model.
+                checked_model.clear();
                 ui.draw()?;
             }
             Action::SelectModel(name) => {

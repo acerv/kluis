@@ -297,11 +297,11 @@ fn launch(mut args: Args) -> Result<ExitCode, Error> {
     } else if let Some(provider) = args.logout {
         runtime.block_on(logout(provider))?;
     } else {
-        let config_model = apply_config(&mut args)?;
+        let defaults = apply_config(&mut args)?;
         if args.sandbox_info {
             return sandbox_info(&args);
         }
-        return run_until_signal(runtime, args, config_model);
+        return run_until_signal(runtime, args, defaults);
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -407,19 +407,27 @@ async fn logout(provider: OAuthProvider) -> Result<(), Error> {
     Ok(())
 }
 
+/// What the config file picks when neither the command line nor a resumed
+/// session does.
+#[derive(Default)]
+struct Defaults {
+    model: Option<String>,
+    thinking: Option<Thinking>,
+}
+
 /// Add the settings of the config file to `args`, leave in `args.config` the
-/// path of the file used (if any), and return the config's default model so
-/// resumed sessions keep their own model unless `--model` was explicitly set.
-fn apply_config(args: &mut Args) -> Result<Option<String>, Error> {
+/// path of the file used (if any), and return the config's defaults so
+/// resumed sessions keep their own model and thinking effort unless
+/// `--model` or `--thinking` was explicitly set.
+fn apply_config(args: &mut Args) -> Result<Defaults, Error> {
     let (path, required) = match args.config.take() {
         Some(path) => (std::path::absolute(path)?, true),
         None => match config::default_path() {
             Some(path) => (path, false),
-            None => return Ok(None),
+            None => return Ok(Defaults::default()),
         },
     };
     let config = config::load(&path, required)?;
-    args.thinking = args.thinking.or(config.generic.thinking);
     args.theme = args.theme.or(config.generic.theme);
     args.code_theme = args.code_theme.take().or(config.generic.code_theme);
     args.notify |= config.generic.notify;
@@ -441,20 +449,19 @@ fn apply_config(args: &mut Args) -> Result<Option<String>, Error> {
     args.config_permissions = config.permissions;
     args.pass_env.extend(config.sandbox.env);
     args.config = Some(path);
-    Ok(config.generic.model)
+    Ok(Defaults {
+        model: config.generic.model,
+        thinking: config.generic.thinking,
+    })
 }
 
 /// [`run`] on `runtime`, leaving with `128 + signal` when a signal stopped it.
-fn run_until_signal(
-    runtime: Runtime,
-    args: Args,
-    config_model: Option<String>,
-) -> Result<ExitCode, Error> {
+fn run_until_signal(runtime: Runtime, args: Args, defaults: Defaults) -> Result<ExitCode, Error> {
     let signals = {
         let _runtime = runtime.enter();
         Signals::listen()?
     };
-    let res = runtime.block_on(run(args, config_model, signals.clone()));
+    let res = runtime.block_on(run(args, defaults, signals.clone()));
     let Some(signal) = signals.received() else {
         return res;
     };
@@ -466,11 +473,7 @@ fn run_until_signal(
     Ok(ExitCode::from(128 + signal as u8))
 }
 
-async fn run(
-    mut args: Args,
-    config_model: Option<String>,
-    signals: Signals,
-) -> Result<ExitCode, Error> {
+async fn run(mut args: Args, defaults: Defaults, signals: Signals) -> Result<ExitCode, Error> {
     let cwd = std::env::current_dir()?;
     let schema = args.output_schema.as_deref().map(read_schema).transpose()?;
     if args.print || args.output_format != OutputFormat::Text || schema.is_some() {
@@ -501,14 +504,14 @@ async fn run(
         .warnings
         .extend(clash_warnings(&mut commands.commands, &skills.skills));
     let system = harness_core::system_prompt(&cwd, &agents, &skills.skills);
-    let default_model = config_model.as_deref().unwrap_or(config::DEFAULT_MODEL);
     let Opened {
         model,
+        thinking,
         history,
         mut session,
         picker_entries,
         diffs,
-    } = open_session(&args, &cwd, default_model)?;
+    } = open_session(&args, &cwd, &defaults)?;
     let credential = AdapterKind::from_model(&model)
         .ok()
         .map(|kind| (kind, auth.credential_source(kind)));
@@ -517,7 +520,7 @@ async fn run(
     let (executor, mut git_guard) = executor(&args, &cwd)?;
     let agent = Agent::with_client(client, &model)
         .with_oauth(oauth)
-        .with_thinking(args.thinking.unwrap_or_default())
+        .with_thinking(thinking)
         .with_system(system)
         .with_history(history)
         .with_executor(executor)
@@ -583,6 +586,7 @@ async fn run(
             history,
             picker_entries,
             diffs,
+            thinking: args.thinking,
             fork: args.fork,
             agents_file: config::agents_path(),
             adapters,
@@ -676,6 +680,7 @@ fn find_skills(args: &Args, cwd: &Path) -> Skills {
 /// The session a run starts with.
 struct Opened {
     model: String,
+    thinking: Thinking,
     history: Vec<ChatMessage>,
     /// The changes the `edit` calls of `history` made, by call id.
     diffs: HashMap<String, Diff>,
@@ -685,19 +690,24 @@ struct Opened {
 }
 
 /// Open the session `args` ask for in `cwd`: the last one, the one named,
-/// or a new one using `default_model` unless `args` name a model.
-fn open_session(args: &Args, cwd: &Path, default_model: &str) -> Result<Opened, Error> {
+/// or a new one using `defaults` for what `args` do not name.
+fn open_session(args: &Args, cwd: &Path, defaults: &Defaults) -> Result<Opened, Error> {
     let store = (!args.no_session)
         .then(config::sessions_dir)
         .flatten()
         .map(|root| SessionStore::new(root, cwd));
-    let model = args.model.as_deref().unwrap_or(default_model).to_owned();
+    let model = (args.model.as_deref())
+        .or(defaults.model.as_deref())
+        .unwrap_or(config::DEFAULT_MODEL)
+        .to_owned();
+    let thinking = args.thinking.or(defaults.thinking).unwrap_or_default();
     let new = |store: Option<SessionStore>, picker_entries| Opened {
         session: store.map(|store| {
-            let writer = store.create(&model);
+            let writer = store.create(&model).with_thinking(thinking);
             Session::new(store, writer, TokenUsage::default(), 0)
         }),
         model: model.clone(),
+        thinking,
         history: Vec::new(),
         diffs: HashMap::new(),
         picker_entries,
@@ -707,7 +717,7 @@ fn open_session(args: &Args, cwd: &Path, default_model: &str) -> Result<Opened, 
         let Some(data) = store.latest()? else {
             return Err(format!("no session to continue for {}", cwd.display()).into());
         };
-        return open_loaded_session(store, data, args);
+        return open_loaded_session(store, data, args, defaults);
     }
     let Some(query) = &args.resume_session else {
         return Ok(new(store, Vec::new()));
@@ -715,7 +725,7 @@ fn open_session(args: &Args, cwd: &Path, default_model: &str) -> Result<Opened, 
     let store = store.ok_or("cannot resume session: HOME is not set")?;
     if !query.is_empty() {
         let data = store.load(query)?;
-        return open_loaded_session(store, data, args);
+        return open_loaded_session(store, data, args, defaults);
     }
     if !args.prompt.is_empty() || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(
@@ -997,17 +1007,20 @@ fn open_loaded_session(
     store: SessionStore,
     data: SessionData,
     args: &Args,
+    defaults: &Defaults,
 ) -> Result<Opened, Error> {
     let model = args.model.as_deref().unwrap_or(&data.meta.model);
+    // Sessions saved before it was recorded use the default.
+    let thinking = (args.thinking)
+        .or(data.meta.thinking)
+        .or(defaults.thinking)
+        .unwrap_or_default();
     let writer = store.open(&data);
     let mut session = Session::new(store, writer, data.usage, data.context);
-    if args.fork {
-        session.fork(model, &data.messages)?;
-    } else if model != data.meta.model {
-        session.record_model(model)?;
-    }
+    session.resume(&data, model, thinking, args.fork)?;
     Ok(Opened {
         model: model.to_owned(),
+        thinking,
         session: Some(session),
         history: data.messages,
         diffs: data.diffs,

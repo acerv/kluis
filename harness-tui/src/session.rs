@@ -7,7 +7,8 @@ use std::io;
 
 use genai::chat::ChatMessage;
 use harness_core::{
-    Error, Event, SessionData, SessionStore, SessionSummary, SessionWriter, TokenUsage, ToolDetails,
+    Error, Event, SessionData, SessionStore, SessionSummary, SessionWriter, Thinking, TokenUsage,
+    ToolDetails,
 };
 
 /// Active persistence handle for an interactive or single-shot session.
@@ -88,6 +89,11 @@ impl Session {
         self.writer.append_model(model)
     }
 
+    /// Persist a thinking effort change.
+    pub fn record_thinking(&mut self, thinking: Thinking) -> io::Result<()> {
+        self.writer.append_thinking(thinking)
+    }
+
     pub fn current_id(&self) -> &str {
         self.writer.id()
     }
@@ -117,17 +123,44 @@ impl Session {
 
     /// Go on in a new session holding a copy of this conversation, its
     /// `history`, leaving the file of this one as it is.
-    pub fn fork(&mut self, model: &str, history: &[ChatMessage]) -> io::Result<()> {
+    pub fn fork(
+        &mut self,
+        model: &str,
+        thinking: Thinking,
+        history: &[ChatMessage],
+    ) -> io::Result<()> {
         self.writer =
             self.store
                 .fork(self.writer.id(), model, history, self.usage, self.context)?;
+        self.writer.append_thinking(thinking)
+    }
+
+    /// Go on with the loaded session `data` using `model` and `thinking`,
+    /// saving them where they differ from its own, or with `fork` in a copy
+    /// of it.
+    pub fn resume(
+        &mut self,
+        data: &SessionData,
+        model: &str,
+        thinking: Thinking,
+        fork: bool,
+    ) -> io::Result<()> {
+        if fork {
+            return self.fork(model, thinking, &data.messages);
+        }
+        if model != data.meta.model {
+            self.writer.append_model(model)?;
+        }
+        if data.meta.thinking != Some(thinking) {
+            self.writer.append_thinking(thinking)?;
+        }
         Ok(())
     }
 
     /// Start a fresh lazy session file (e.g. after `/new`), leaving the
     /// previous session file intact on disk.
-    pub fn rotate(&mut self, model: &str) {
-        self.writer = self.store.create(model);
+    pub fn rotate(&mut self, model: &str, thinking: Thinking) {
+        self.writer = self.store.create(model).with_thinking(thinking);
         self.usage = TokenUsage::default();
         self.context = 0;
     }

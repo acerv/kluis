@@ -107,6 +107,7 @@ impl<'a> Lines<'a> {
             model,
             created_at,
             forked_from,
+            thinking,
         } = serde_json::from_str(line.trim())
             .map_err(|e| format!("{}: invalid session header: {e}", path.display()))?
         else {
@@ -124,6 +125,7 @@ impl<'a> Lines<'a> {
             model,
             created_at,
             forked_from,
+            thinking,
         };
         Ok((meta, end))
     }
@@ -139,6 +141,7 @@ enum SummaryEntryLight {
     Model {
         model: String,
     },
+    Thinking {},
     Message {
         #[allow(dead_code)]
         message: IgnoredAny,
@@ -180,6 +183,7 @@ pub(super) fn summarize_file(path: &Path, modified: SystemTime) -> Option<Sessio
                 Ok(SummaryEntryLight::Model { model: next }) => model = next,
                 Ok(
                     SummaryEntryLight::Diff {}
+                    | SummaryEntryLight::Thinking {}
                     | SummaryEntryLight::Usage {}
                     | SummaryEntryLight::Header {},
                 ) => {}
@@ -204,6 +208,7 @@ pub(super) fn summarize_file(path: &Path, modified: SystemTime) -> Option<Sessio
                 Ok(SessionEntry::Model { model: next }) => model = next,
                 Ok(
                     SessionEntry::Diff { .. }
+                    | SessionEntry::Thinking { .. }
                     | SessionEntry::Usage { .. }
                     | SessionEntry::Header { .. },
                 ) => {}
@@ -303,6 +308,10 @@ pub(super) fn load_file(path: &Path) -> Result<SessionData, Error> {
             }
             Ok(SessionEntry::Model { model: next }) => {
                 meta.model = next;
+                last_valid_end = line_end;
+            }
+            Ok(SessionEntry::Thinking { thinking }) => {
+                meta.thinking = Some(thinking);
                 last_valid_end = line_end;
             }
             Ok(SessionEntry::Header { .. }) => {

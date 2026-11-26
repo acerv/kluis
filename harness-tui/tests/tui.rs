@@ -1697,6 +1697,39 @@ fn edit_diffs_are_saved_with_the_prompt() {
 }
 
 #[test]
+fn resume_saves_only_the_settings_that_changed() {
+    let home = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(home.path(), home.path());
+    let mut writer = store.create("model").with_thinking(Thinking::Low);
+    writer.append_messages(&[ChatMessage::user("go")]).unwrap();
+    let data = store.latest().unwrap().unwrap();
+    let mut session = Session::new(store.clone(), writer, TokenUsage::default(), 0);
+    let file = || std::fs::read_to_string(&data.meta.path).unwrap();
+    let before = file();
+
+    session
+        .resume(&data, "model", Thinking::Low, false)
+        .unwrap();
+    assert_eq!(file(), before);
+
+    session
+        .resume(&data, "other", Thinking::High, false)
+        .unwrap();
+    let changed = store.latest().unwrap().unwrap();
+    assert_eq!(changed.meta.id, data.meta.id);
+    assert_eq!(changed.meta.model, "other");
+    assert_eq!(changed.meta.thinking, Some(Thinking::High));
+
+    session
+        .resume(&changed, "other", Thinking::Off, true)
+        .unwrap();
+    assert_ne!(session.current_id(), data.meta.id);
+    let fork = store.load(session.current_id()).unwrap();
+    assert_eq!(fork.meta.thinking, Some(Thinking::Off));
+    assert_eq!(fork.messages.len(), 1);
+}
+
+#[test]
 fn retry_keeps_partial_text_and_shows_notice() {
     let mut app = App::new("model", status(), Theme::new(false));
     app.start_prompt("go");

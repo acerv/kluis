@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use super::{answered_calls, TokenUsage, FORMAT_VERSION};
 use crate::private_file;
 use crate::tools::Diff;
+use crate::Thinking;
 
 /// Writer for a single `.jsonl` session file, which only grows but on
 /// compaction.
@@ -27,6 +28,7 @@ pub struct SessionWriter {
     pub(super) model: String,
     pub(super) created_at: u64,
     pub(super) forked_from: Option<String>,
+    pub(super) thinking: Option<Thinking>,
     pub(super) file: Option<BufWriter<File>>,
     pub(super) initialized: bool,
     pub(super) repair_len: Option<u64>,
@@ -124,6 +126,24 @@ impl SessionWriter {
         writer.flush()
     }
 
+    /// Record `thinking` in the header of the file it creates.
+    pub fn with_thinking(mut self, thinking: Thinking) -> Self {
+        self.thinking = Some(thinking);
+        self
+    }
+
+    /// Record a thinking effort change. Before any message is written, this
+    /// updates the pending header without creating an empty file.
+    pub fn append_thinking(&mut self, thinking: Thinking) -> io::Result<()> {
+        self.thinking = Some(thinking);
+        if !self.initialized {
+            return Ok(());
+        }
+        let writer = self.writer()?;
+        write_entry(writer, &SessionEntryRef::Thinking { thinking })?;
+        writer.flush()
+    }
+
     fn writer(&mut self) -> io::Result<&mut BufWriter<File>> {
         if self.file.is_none() {
             if let Some(parent) = self.path.parent() {
@@ -156,6 +176,7 @@ impl SessionWriter {
                     model: &self.model,
                     created_at: self.created_at,
                     forked_from: self.forked_from.as_deref(),
+                    thinking: self.thinking,
                 };
                 write_entry(&mut buf, &header)?;
                 self.initialized = true;
@@ -255,9 +276,14 @@ enum SessionEntryRef<'a> {
         created_at: u64,
         #[serde(skip_serializing_if = "Option::is_none")]
         forked_from: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        thinking: Option<Thinking>,
     },
     Model {
         model: &'a str,
+    },
+    Thinking {
+        thinking: Thinking,
     },
     Message {
         message: &'a ChatMessage,

@@ -13,6 +13,7 @@ use genai::chat::{ChatMessage, Usage};
 use serde::{Deserialize, Serialize};
 
 use crate::tools::Diff;
+use crate::Thinking;
 
 mod load;
 mod store;
@@ -40,9 +41,15 @@ pub enum SessionEntry {
         /// The session this one started as a copy of.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         forked_from: Option<String>,
+        /// Missing in files saved before it was recorded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thinking: Option<Thinking>,
     },
     Model {
         model: String,
+    },
+    Thinking {
+        thinking: Thinking,
     },
     Message {
         message: ChatMessage,
@@ -129,6 +136,8 @@ pub struct SessionMeta {
     pub created_at: u64,
     /// The session this one started as a copy of.
     pub forked_from: Option<String>,
+    /// The thinking effort last used, unless never recorded.
+    pub thinking: Option<Thinking>,
 }
 
 /// Lightweight entry shown in session lists and pickers without keeping full
