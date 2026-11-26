@@ -194,9 +194,11 @@ impl InlineTerminal {
     /// When the terminal width changes, the screen and scrollback are
     /// cleared and the transcript is printed again at the new width: a
     /// terminal that rewraps its text also rewraps the old viewport, in its
-    /// own way, leaving pieces of it behind. When only the height changes,
-    /// the viewport follows the cursor, which the terminal moves along with
-    /// the text, so the output above stays in place.
+    /// own way, leaving pieces of it behind. The same happens when the
+    /// output mode changes, to show the transcript in the new mode. When
+    /// only the height changes, the viewport follows the cursor, which the
+    /// terminal moves along with the text, so the output above stays in
+    /// place.
     ///
     /// While the `/diff` panel is open, the whole screen is drawn instead,
     /// on the alternate screen: the last lines of the transcript and the
@@ -208,13 +210,20 @@ impl InlineTerminal {
             let _ = execute!(io::stdout(), EndSynchronizedUpdate);
         });
         let res = (|| -> io::Result<()> {
+            // The output mode changed: print the transcript again.
+            let reprint = app.take_reprint();
             let split = app.is_diff_open() && self.terminal.size()?.width >= MIN_SPLIT_WIDTH;
             if split && self.split.is_none() {
                 self.enter_split()?;
             } else if !split && self.split.is_some() {
                 self.leave_split()?;
             }
-            if self.split.is_some() {
+            if let Some(split) = &mut self.split {
+                if reprint {
+                    // Printed again once the panel closes.
+                    split.unprinted.clear();
+                    split.cleared = true;
+                }
                 return self.draw_split(app);
             }
             let size = self.terminal.size()?;
@@ -222,7 +231,7 @@ impl InlineTerminal {
             if self.pending_clear {
                 self.transcript.clear();
             }
-            if self.pending_clear || size.width != self.size.width {
+            if self.pending_clear || reprint || size.width != self.size.width {
                 // Purge after clearing the screen: some terminals (kitty,
                 // tmux) move a cleared screen into the scrollback.
                 execute!(

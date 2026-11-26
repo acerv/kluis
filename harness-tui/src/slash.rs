@@ -260,7 +260,6 @@ pub(crate) async fn handle_slash(
                 .map(|s| if messages == 0 { "new" } else { s.short_id() });
             ui.app.push_info(ui.app.status_text(label, messages));
         }
-        SlashCommand::Output => ui.app.show_tool_output(),
         SlashCommand::Diff => ui.app.toggle_diff(),
         SlashCommand::Copy => match clipboard::last_assistant_text(agent.history()) {
             None => ui.app.push_info("[nothing to copy]"),

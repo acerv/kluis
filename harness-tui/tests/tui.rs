@@ -251,7 +251,6 @@ fn slash_commands() {
         ),
         ("/retry", Action::Slash(SlashCommand::Retry)),
         ("/status", Action::Slash(SlashCommand::Status)),
-        ("/output", Action::Slash(SlashCommand::Output)),
         ("/quit", Action::Slash(SlashCommand::Quit)),
         ("/help", Action::Slash(SlashCommand::Help)),
     ] {
@@ -272,12 +271,12 @@ fn slash_commands() {
 fn ctrl_c_esc_ctrl_o_and_ctrl_d_behavior() {
     let mut app = App::new("model", status(), Theme::new(true));
 
-    // Ctrl-O toggles thinking visibility (idle and mid-stream).
-    assert!(app.show_thinking());
+    // Ctrl-O switches quiet (the default) and verbose output.
+    assert!(!app.verbose());
     assert_eq!(app.handle_event(ctrl('o')), Action::Redraw);
-    assert!(!app.show_thinking());
+    assert!(app.verbose());
     assert_eq!(app.handle_event(ctrl('o')), Action::Redraw);
-    assert!(app.show_thinking());
+    assert!(!app.verbose());
 
     // Idle with non-empty input: Ctrl-C clears it; Ctrl-D does not quit.
     app.handle_event(key(KeyCode::Char('a')));
@@ -305,31 +304,28 @@ fn realtime_multiline_thinking_and_ctrl_o_toggle() {
     let _ = app.take_scrollback();
     app.apply_update(AgentUpdate::TurnStart);
 
-    // Long thinking paragraph without '\n' soft-wraps in real time at word
-    // boundaries into scrollback as soon as it exceeds terminal width (20 cols).
+    // Quiet: the thinking does not show, in scrollback or live.
     app.apply_update(AgentUpdate::ReasoningDelta(
         "Thinking about how to solve this cleanly".into(),
     ));
-    let wrapped = app.take_scrollback();
-    let rows: Vec<String> = wrapped.iter().map(ToString::to_string).collect();
-    assert_eq!(rows, vec!["Thinking about how", "to solve this"]);
-
-    // Hide thinking mid-turn with Ctrl-O: the live tail ("cleanly") is hidden
-    // and new reasoning chunks buffer silently without emitting to scrollback.
-    assert_eq!(app.handle_event(ctrl('o')), Action::Redraw);
-    assert!(!app.show_thinking());
-    app.apply_update(AgentUpdate::ReasoningDelta(" right now\n".into()));
     assert!(app.take_scrollback().is_empty());
+    assert_eq!(app.viewport_height(20), VIEWPORT_HEIGHT);
 
-    // Reveal thinking mid-turn with Ctrl-O: buffered reasoning flushes immediately.
+    // Verbose: a long paragraph without '\n' soft-wraps in real time at
+    // word boundaries into scrollback as soon as it exceeds terminal width
+    // (20 cols), its tail live.
     assert_eq!(app.handle_event(ctrl('o')), Action::Redraw);
-    assert!(app.show_thinking());
-    let revealed: Vec<String> = app
+    assert!(app.verbose());
+    app.apply_update(AgentUpdate::ReasoningDelta(" right now, I think".into()));
+    let rows: Vec<String> = app
         .take_scrollback()
         .iter()
         .map(ToString::to_string)
         .collect();
-    assert_eq!(revealed, vec!["cleanly right now"]);
+    assert_eq!(rows, vec!["cleanly right now, I"]);
+    let mut term = inline_terminal_with(20, 14, app.viewport_height(20));
+    term.draw(|f| app.render(f)).unwrap();
+    assert!(render_text(&term).contains("think"));
 
     // Multi-line live Markdown preview grows viewport_height while streaming a
     // long paragraph before '\n' arrives, then shrinks back when finished.
@@ -381,7 +377,8 @@ fn streaming_lines_thinking_and_tool_diff() {
     app.start_prompt("fix it");
     flush_scrollback(&mut term, &app.take_scrollback()).unwrap();
 
-    // Thinking streams line-by-line into scrollback.
+    // Verbose: thinking streams line-by-line into scrollback.
+    app.handle_event(ctrl('o'));
     app.apply_update(AgentUpdate::TurnStart);
     app.apply_update(AgentUpdate::ReasoningDelta("checking file\n".into()));
     let thought_lines = app.take_scrollback();
@@ -2059,23 +2056,14 @@ fn edit_diff_shows_line_numbers_of_each_hunk() {
 }
 
 #[test]
-fn output_command_shows_the_whole_last_tool_output() {
+fn verbose_output_shows_whole_tool_results() {
     let mut app = App::new("model", status(), Theme::new(false));
-
-    app.show_tool_output();
-    assert_eq!(scrollback_lines(&mut app), ["[no tool output]"]);
-
     app.start_prompt("run it");
     app.take_scrollback();
     let output: Vec<String> = (1..=20).map(|i| format!("line {i}")).collect();
-    let content = serde_json::json!({ "exit_code": 0, "output": output.join("\n") });
-    run_tool(
-        &mut app,
-        "bash",
-        r#"{"command":"seq"}"#,
-        &content.to_string(),
-        None,
-    );
+    let content = serde_json::json!({ "exit_code": 0, "output": output.join("\n") }).to_string();
+    let seq = r#"{"command":"seq"}"#;
+    run_tool(&mut app, "bash", seq, &content, None);
     let preview = scrollback_lines(&mut app);
     assert!(
         preview.contains(&"    … +12 more lines (Ctrl-O to show)".to_owned()),
@@ -2083,7 +2071,8 @@ fn output_command_shows_the_whole_last_tool_output() {
     );
     assert!(!preview.contains(&"    line 20".to_owned()), "{preview:#?}");
 
-    app.show_tool_output();
+    app.handle_event(ctrl('o'));
+    run_tool(&mut app, "bash", seq, &content, None);
     let full = scrollback_lines(&mut app);
     assert_eq!(full[0], "✓ bash seq");
     let expected: Vec<String> = output
@@ -2094,15 +2083,8 @@ fn output_command_shows_the_whole_last_tool_output() {
     assert_eq!(full[1..21], expected[..]);
 
     // Lists show one item per line; other results show their JSON.
-    run_tool(
-        &mut app,
-        "ls",
-        "{}",
-        r#"{"entries":["a/","b"],"total":2}"#,
-        None,
-    );
-    app.take_scrollback();
-    app.show_tool_output();
+    let ls = r#"{"entries":["a/","b"],"total":2}"#;
+    run_tool(&mut app, "ls", "{}", ls, None);
     assert_eq!(
         scrollback_lines(&mut app),
         ["✓ ls .", "  ⎿ a/", "    b", ""]
@@ -2115,15 +2097,13 @@ fn output_command_shows_the_whole_last_tool_output() {
         r#"{"error":"no such file"}"#,
         None,
     );
-    app.take_scrollback();
-    app.show_tool_output();
     assert_eq!(
         scrollback_lines(&mut app),
         ["✗ read x", "  ⎿ no such file", ""]
     );
 
     // A long edit diff is shown whole.
-    let lines = (0..30).map(|i| DiffLine::Added(format!("l{i}"))).collect();
+    let lines: Vec<_> = (0..30).map(|i| DiffLine::Added(format!("l{i}"))).collect();
     let diff = Diff {
         hunks: vec![DiffHunk {
             old_start: 0,
@@ -2136,31 +2116,24 @@ fn output_command_shows_the_whole_last_tool_output() {
         truncated: false,
     };
     let args = r#"{"path":"a.rs","edits":[]}"#;
-    run_tool(
-        &mut app,
-        "edit",
-        args,
-        r#"{"replacements":1}"#,
-        Some(ToolDetails::Edit(diff)),
-    );
-    let preview = scrollback_lines(&mut app);
+    let edit = |app: &mut App| {
+        let details = Some(ToolDetails::Edit(diff.clone()));
+        run_tool(app, "edit", args, r#"{"replacements":1}"#, details);
+        scrollback_lines(app)
+    };
+    let full = edit(&mut app);
+    assert_eq!(full.len(), 32, "{full:#?}");
+    assert_eq!(full[30], "    30 +l29");
+    app.handle_event(ctrl('o'));
+    let preview = edit(&mut app);
     assert!(
         preview.contains(&"    … +6 more diff lines (Ctrl-O to show)".to_owned()),
         "{preview:#?}"
     );
-    app.show_tool_output();
-    let full = scrollback_lines(&mut app);
-    assert_eq!(full.len(), 32, "{full:#?}");
-    assert_eq!(full[30], "    30 +l29");
-
-    // A new session forgets it.
-    app.reset_session();
-    app.show_tool_output();
-    assert_eq!(scrollback_lines(&mut app), ["[no tool output]"]);
 }
 
 #[test]
-fn output_command_shows_a_restored_tool_output() {
+fn verbose_output_shows_a_restored_tool_result() {
     let mut app = App::new("model", status(), Theme::new(false));
     let history = vec![
         ChatMessage::user("check main"),
@@ -2177,20 +2150,13 @@ fn output_command_shows_a_restored_tool_output() {
             r#"{"content":"fn main() {}\n","total_lines":1}"#,
         )),
     ];
+    app.handle_event(ctrl('o'));
     app.replay_history(&history);
-    app.take_scrollback();
-
-    app.show_tool_output();
+    let lines = scrollback_lines(&mut app);
     assert_eq!(
-        scrollback_lines(&mut app),
+        lines[lines.len() - 3..],
         ["✓ read src/main.rs", "  ⎿ fn main() {}", ""]
     );
-
-    // Replaying a history without tools forgets the previous output.
-    app.replay_history(&[ChatMessage::user("hi")]);
-    app.take_scrollback();
-    app.show_tool_output();
-    assert_eq!(scrollback_lines(&mut app), ["[no tool output]"]);
 }
 
 #[test]

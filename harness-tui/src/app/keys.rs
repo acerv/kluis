@@ -12,17 +12,8 @@ impl App {
             TermEvent::Resize(w, _) => {
                 if w > 0 {
                     self.set_width(w);
-                    if self.show_thinking && !self.live_reasoning.is_empty() {
-                        let mut lines = Vec::new();
-                        stream_reasoning(
-                            &mut self.live_reasoning,
-                            "",
-                            w as usize,
-                            self.theme.reasoning,
-                            &mut lines,
-                        );
-                        self.push_lines(lines);
-                    }
+                    // Commit the rows of the thinking wider than the terminal.
+                    self.push_reasoning("");
                 }
                 Action::Redraw
             }
@@ -110,13 +101,13 @@ impl App {
         }
     }
 
-    /// The keys that work whatever is open: show the thinking, cancel,
+    /// The keys that work whatever is open: verbose output, cancel,
     /// quit.
     fn control_key(&mut self, key: KeyEvent) -> Option<Action> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match (key.code, ctrl) {
             (KeyCode::Char('o'), true) => {
-                self.toggle_thinking();
+                self.toggle_verbose();
                 Some(Action::Redraw)
             }
             (KeyCode::Char('c'), true) => {

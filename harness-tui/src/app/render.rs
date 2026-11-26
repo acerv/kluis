@@ -133,7 +133,7 @@ impl App {
         } else if !self.tool_preview.is_empty() {
             let lines = self.tool_preview.render_lines(self.theme.muted);
             wrap_lines(&lines, width)
-        } else if self.show_thinking && !self.live_reasoning.is_empty() {
+        } else if self.verbose && !self.live_reasoning.is_empty() {
             let line = Line::styled(self.live_reasoning.clone(), self.theme.reasoning);
             wrap_lines(&[line], width)
         } else {
@@ -263,13 +263,13 @@ impl App {
                 frame.render_widget(Paragraph::new(Line::from(spans)), area);
                 return;
             }
-            let label = if !self.show_thinking {
-                format!("{spin} Thinking…{elapsed}  (Ctrl-O to show · esc to cancel)")
-            } else if self.is_thinking {
-                format!("{spin} Thinking…{elapsed}  (Ctrl-O to hide · esc to cancel)")
+            let doing = if self.is_thinking {
+                "Thinking"
             } else {
-                format!("{spin} Working…{elapsed}  (Ctrl-O to hide · esc to cancel)")
+                "Working"
             };
+            let mode = if self.verbose { "quiet" } else { "verbose" };
+            let label = format!("{spin} {doing}…{elapsed}  (Ctrl-O for {mode} · esc to cancel)");
             Line::styled(label, self.theme.muted)
         } else if let Some(notice) = &self.notice {
             Line::styled(notice.as_str(), self.theme.muted)
