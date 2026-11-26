@@ -16,6 +16,7 @@ fn call(pattern: &str, path: &Path) -> GrepTool {
         ignore_case: None,
         literal: None,
         context: None,
+        files_only: None,
         limit: None,
     }
 }
@@ -350,4 +351,42 @@ async fn relative_and_default_paths_start_at_cwd() {
     assert_eq!(out.output, "a:1: m");
     let out = tool(None).run_in(dir.path()).await.unwrap();
     assert_eq!(out.output, "b:1: m\nsub/a:1: m");
+}
+
+#[tokio::test]
+async fn files_only_shows_the_paths_of_matching_files() {
+    let dir = tempfile::tempdir().unwrap();
+    files(
+        dir.path(),
+        &[("b", "m\nm\n"), ("sub/a", "x\nm\n"), ("c", "none\n")],
+    );
+    let tool = |limit| GrepTool {
+        files_only: Some(true),
+        context: Some(3),
+        limit,
+        ..call("m", dir.path())
+    };
+
+    let out = tool(None).run().await.unwrap();
+    assert_eq!(out.output, "b\nsub/a");
+    assert_eq!(out.matches, 2);
+    assert!(!out.truncated);
+
+    // The limit counts files, not lines.
+    let out = tool(Some(1)).run().await.unwrap();
+    assert!(
+        ["b", "sub/a"].contains(&out.output.as_str()),
+        "{}",
+        out.output
+    );
+    assert_eq!(out.matches, 1);
+    assert!(out.truncated);
+
+    let file = GrepTool {
+        path: Some(p(&dir.path().join("b"))),
+        ..tool(None)
+    };
+    let out = file.run().await.unwrap();
+    assert_eq!(out.output, p(&dir.path().join("b")));
+    assert_eq!(out.matches, 1);
 }

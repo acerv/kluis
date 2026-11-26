@@ -52,8 +52,11 @@ pub struct GrepTool {
     /// Lines shown before and after each match.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<usize>,
-    /// Maximum number of matching lines (>= 1). Defaults to
-    /// [`DEFAULT_GREP_LIMIT`].
+    /// Show only the paths of the matching files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files_only: Option<bool>,
+    /// Maximum number of matching lines, or files with `files_only`
+    /// (>= 1). Defaults to [`DEFAULT_GREP_LIMIT`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
 }
@@ -61,9 +64,9 @@ pub struct GrepTool {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GrepOutput {
     /// One line per result: `path:line: text` for matching lines,
-    /// `path-line- text` for context lines.
+    /// `path-line- text` for context lines, or `path` with `files_only`.
     pub output: String,
-    /// Matching lines in the output.
+    /// Matching lines, or files with `files_only`, in the output.
     pub matches: usize,
     /// True when the limit or [`MAX_GREP_BYTES`] left matches out.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -82,6 +85,7 @@ impl GrepTool {
                 "ignoreCase": { "type": "boolean" },
                 "literal":    { "type": "boolean" },
                 "context":    { "type": "integer" },
+                "filesOnly":  { "type": "boolean" },
                 "limit":      { "type": "integer" }
             },
             "required": ["pattern"]
@@ -93,7 +97,8 @@ impl GrepTool {
         Tool::new(GREP_TOOL)
             .with_description(
                 "Search file contents for a regex, or plain text with literal. \
-                 Returns 'path:line: text' lines. Respects .gitignore.",
+                 Returns 'path:line: text' lines, or paths with filesOnly. \
+                 Respects .gitignore.",
             )
             .with_schema(Self::schema())
     }
@@ -112,7 +117,8 @@ impl GrepTool {
     /// searched directory; a searched file shows as given. At most `limit`
     /// matching lines are returned, with their context, and at most
     /// [`MAX_GREP_BYTES`]; lines longer than [`MAX_GREP_LINE_CHARS`] are
-    /// cut.
+    /// cut. With `files_only`, each matching file shows as its path, at
+    /// most `limit` of them, and its search stops at the first match.
     ///
     /// A leading `~` in the path expands to `$HOME`; an empty path searches
     /// the current directory.
@@ -127,7 +133,13 @@ impl GrepTool {
         if limit == 0 {
             return Err(ToolError::new("limit must be >= 1"));
         }
-        let context = self.context.unwrap_or(0);
+        let files_only = self.files_only.unwrap_or(false);
+        // Paths show without lines.
+        let context = if files_only {
+            0
+        } else {
+            self.context.unwrap_or(0)
+        };
         let matcher = RegexMatcherBuilder::new()
             .case_insensitive(self.ignore_case.unwrap_or(false))
             .fixed_strings(self.literal.unwrap_or(false))
@@ -153,19 +165,27 @@ impl GrepTool {
             _ => None,
         };
         let given = given.to_owned();
+        let mut merge = Merge::new(limit, context, files_only);
 
         // The search blocks; stop it when the caller drops this future.
         let (flag, stop) = stop_on_drop();
         let out = tokio::task::spawn_blocking(move || {
             if only_file {
-                let mut merge = Merge::new(limit, context);
                 let stopped = || flag.load(Ordering::Relaxed);
                 let mut searcher = searcher(context);
-                let lines = search_file(&mut searcher, &matcher, &root, context, limit, &stopped);
+                let file_limit = merge.file_limit();
+                let lines = search_file(
+                    &mut searcher,
+                    &matcher,
+                    &root,
+                    context,
+                    file_limit,
+                    &stopped,
+                );
                 merge.add(given, lines);
                 return merge.finish();
             }
-            search(&root, overrides, &matcher, context, limit, &flag)
+            search(&root, overrides, &matcher, context, merge, &flag)
         })
         .await
         .map_err(|e| ToolError::new(format!("grep: {e}")))?;
@@ -209,13 +229,13 @@ fn searcher(context: usize) -> Searcher {
 }
 
 /// Search the files below `root` like ripgrep: the walker threads search
-/// each file they find, and the walk stops once enough matches are found.
+/// each file they find, and the walk stops once `merge` has enough.
 fn search(
     root: &Path,
     overrides: Option<Override>,
     matcher: &RegexMatcher,
     context: usize,
-    limit: usize,
+    mut merge: Merge,
     cancel: &AtomicBool,
 ) -> GrepOutput {
     let mut builder = walk::builder(root);
@@ -224,7 +244,7 @@ fn search(
     }
     let done = AtomicBool::new(false);
     let stopped = || cancel.load(Ordering::Relaxed) || done.load(Ordering::Relaxed);
-    let mut merge = Merge::new(limit, context);
+    let file_limit = merge.file_limit();
 
     std::thread::scope(|scope| {
         let (tx, rx) = mpsc::channel();
@@ -244,7 +264,8 @@ fn search(
                         return WalkState::Continue;
                     }
                     let path = entry.path();
-                    let lines = search_file(&mut searcher, matcher, path, context, limit, &stopped);
+                    let lines =
+                        search_file(&mut searcher, matcher, path, context, file_limit, &stopped);
                     let Ok(rel) = path.strip_prefix(root) else {
                         return WalkState::Continue;
                     };
@@ -354,6 +375,8 @@ fn line_text(bytes: &[u8]) -> String {
 struct Merge {
     limit: usize,
     context: u64,
+    /// Report the paths of the matching files only.
+    files_only: bool,
     /// Name and output lines of each file shown.
     blocks: Vec<(String, String)>,
     /// Size of the output, newlines between lines included.
@@ -363,14 +386,25 @@ struct Merge {
 }
 
 impl Merge {
-    fn new(limit: usize, context: usize) -> Self {
+    fn new(limit: usize, context: usize, files_only: bool) -> Self {
         Self {
             limit,
             context: context as u64,
+            files_only,
             blocks: Vec::new(),
             bytes: 0,
             matches: 0,
             truncated: false,
+        }
+    }
+
+    /// The `limit` to search a file with: the first match is enough to
+    /// show a path.
+    fn file_limit(&self) -> usize {
+        if self.files_only {
+            0
+        } else {
+            self.limit
         }
     }
 
@@ -385,6 +419,9 @@ impl Merge {
     }
 
     fn fill(&mut self, block: &mut String, name: &str, lines: Vec<Line>) -> bool {
+        if self.files_only {
+            return lines.is_empty() || self.fill_path(block, name);
+        }
         // Last line of the context of the last match shown, in this file.
         let mut window_end = None;
         for line in lines {
@@ -418,10 +455,31 @@ impl Merge {
         !(self.matches == self.limit && self.truncated)
     }
 
-    /// Append a line; false when it does not fit in [`MAX_GREP_BYTES`].
+    /// Report the path of a matching file, like [`fill`](Self::fill).
+    fn fill_path(&mut self, block: &mut String, name: &str) -> bool {
+        // One more file proves results were left out.
+        if self.matches == self.limit {
+            self.truncated = true;
+            return false;
+        }
+        if !self.push(block, name.to_owned()) {
+            return false;
+        }
+        self.matches += 1;
+        true
+    }
+
+    /// Append a line of a file, like [`push`](Self::push).
     fn emit(&mut self, block: &mut String, name: &str, line: &Line, is_match: bool) -> bool {
         let sep = if is_match { ':' } else { '-' };
-        let text = format!("{name}{sep}{}{sep} {}", line.number, line.text);
+        self.push(
+            block,
+            format!("{name}{sep}{}{sep} {}", line.number, line.text),
+        )
+    }
+
+    /// Append `text`; false when it does not fit in [`MAX_GREP_BYTES`].
+    fn push(&mut self, block: &mut String, text: String) -> bool {
         // One byte for the newline between lines.
         let len = text.len() + usize::from(self.bytes > 0);
         if self.bytes + len > MAX_GREP_BYTES {

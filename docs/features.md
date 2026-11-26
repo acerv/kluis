@@ -44,6 +44,8 @@
   `--background-commands`, a command such as a dev server can keep running
   across prompts: its output goes to a file, and it is stopped when `kl`
   exits.
+- `grep` shows matching lines with optional context, or only the paths
+  of the matching files.
 - `todo` keeps the plan of a multi-step task.
 - `task` hands a part of the work, such as a wide search, to a subagent: a
   conversation of its own with the same model, tools and sandbox, starting
