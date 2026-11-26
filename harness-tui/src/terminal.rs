@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
-use std::collections::VecDeque;
 use std::io::{self, Stdout, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once, PoisonError};
@@ -26,11 +25,12 @@ use tokio::sync::mpsc;
 
 use crate::app::{App, MIN_SPLIT_WIDTH};
 use crate::text::wrap_lines;
+use crate::transcript::{Entry, Transcript};
 
 const EVENT_POLL: Duration = Duration::from_millis(10);
 
-/// Most lines kept to print again when the terminal width changes.
-const MAX_TRANSCRIPT_LINES: usize = 10_000;
+/// Most lines printed again when the terminal width changes.
+const MAX_REPRINT_LINES: usize = 10_000;
 
 /// Save the terminal title on the terminal's stack (xterm), to put it back
 /// on exit; terminals without the stack ignore it.
@@ -122,9 +122,9 @@ pub struct InlineTerminal {
     /// still tells where the viewport is once the terminal resizes.
     cursor_row: u16,
     pending_clear: bool,
-    /// The last lines written above the viewport, unwrapped, to print them
-    /// again at a new terminal width.
-    transcript: VecDeque<Line<'static>>,
+    /// The last entries written above the viewport, to print them again
+    /// at a new terminal width.
+    transcript: Transcript,
     /// The terminal title set last.
     title: String,
     /// While the `/diff` panel is open, on the alternate screen: the lines
@@ -133,7 +133,7 @@ pub struct InlineTerminal {
 }
 
 struct Split {
-    unprinted: usize,
+    unprinted: Vec<Line<'static>>,
     top: u16,
     /// The screen was cleared meanwhile.
     cleared: bool,
@@ -164,7 +164,7 @@ impl InlineTerminal {
                     size,
                     cursor_row: area.y,
                     pending_clear: false,
-                    transcript: VecDeque::new(),
+                    transcript: Transcript::default(),
                     title: String::new(),
                     split: None,
                 })
@@ -231,7 +231,8 @@ impl InlineTerminal {
                     Clear(ClearType::Purge),
                     MoveTo(0, 0),
                 )?;
-                print_lines(self.transcript.make_contiguous(), size.width)?;
+                let lines = app.render_tail(self.transcript.iter(), MAX_REPRINT_LINES);
+                print_lines(&lines, size.width)?;
                 self.recreate_viewport(desired)?;
             } else if size != self.size {
                 let top = self.follow_cursor(size)?;
@@ -253,9 +254,9 @@ impl InlineTerminal {
             self.size = size;
             self.pending_clear = false;
             self.set_title(app)?;
-            let lines = app.take_scrollback();
-            flush_scrollback(&mut self.terminal, &lines)?;
-            self.push_transcript(lines);
+            let entries = app.take_entries();
+            flush_scrollback(&mut self.terminal, &app.render_entries(&entries))?;
+            self.push_transcript(app, entries);
             self.terminal.draw(|frame| app.render(frame))?;
             ring_bell(app)?;
             self.cursor_row = match app.cursor_position() {
@@ -283,11 +284,9 @@ impl InlineTerminal {
         Ok(())
     }
 
-    /// Keep `lines` to print them again, up to [`MAX_TRANSCRIPT_LINES`].
-    fn push_transcript(&mut self, lines: Vec<Line<'static>>) {
-        self.transcript.extend(lines);
-        let extra = self.transcript.len().saturating_sub(MAX_TRANSCRIPT_LINES);
-        self.transcript.drain(..extra);
+    /// Keep `entries` to print them again.
+    fn push_transcript(&mut self, app: &App, entries: Vec<Entry>) {
+        self.transcript.push(entries, |run| app.freeze(run));
     }
 
     fn enter_split(&mut self) -> io::Result<()> {
@@ -295,7 +294,7 @@ impl InlineTerminal {
         execute!(io::stdout(), EnterAlternateScreen)?;
         ALTERNATE.store(true, Ordering::Relaxed);
         self.split = Some(Split {
-            unprinted: 0,
+            unprinted: Vec::new(),
             top,
             cleared: false,
         });
@@ -328,24 +327,24 @@ impl InlineTerminal {
             self.size = Size::default();
             return Ok(());
         }
-        let start = self.transcript.len().saturating_sub(split.unprinted);
-        let lines: Vec<_> = self.transcript.range(start..).cloned().collect();
-        flush_scrollback(&mut self.terminal, &lines)
+        flush_scrollback(&mut self.terminal, &split.unprinted)
     }
 
     fn draw_split(&mut self, app: &mut App) -> io::Result<()> {
-        let lines = app.take_scrollback();
+        let entries = app.take_entries();
         if let Some(split) = &mut self.split {
             if self.pending_clear {
                 self.pending_clear = false;
                 self.transcript.clear();
-                split.unprinted = 0;
+                split.unprinted.clear();
                 split.cleared = true;
             }
-            split.unprinted += lines.len();
+            if !split.cleared {
+                split.unprinted.extend(app.render_entries(&entries));
+            }
         }
         self.set_title(app)?;
-        self.push_transcript(lines);
+        self.push_transcript(app, entries);
         let transcript = &self.transcript;
         self.terminal.draw(|frame| {
             let [left, right] =
@@ -354,7 +353,8 @@ impl InlineTerminal {
             // The viewport right below the transcript, as on the inline
             // screen.
             let height = app.viewport_height(left.width).min(left.height);
-            let tail = last_rows(transcript, left.width, left.height - height);
+            let lines = app.render_tail(transcript.iter(), usize::from(left.height));
+            let tail = last_rows(&lines, left.width, left.height - height);
             let rows = tail.len() as u16;
             let [history, viewport, _] = Layout::vertical([
                 Constraint::Length(rows),
@@ -431,7 +431,7 @@ fn ring_bell(app: &mut App) -> io::Result<()> {
 
 /// The last `height` rows of `lines` wrapped to `width`, wrapping only
 /// the lines that show.
-fn last_rows(lines: &VecDeque<Line<'static>>, width: u16, height: u16) -> Vec<Line<'static>> {
+fn last_rows(lines: &[Line<'static>], width: u16, height: u16) -> Vec<Line<'static>> {
     let height = usize::from(height);
     let mut rows = Vec::with_capacity(height);
     for line in lines.iter().rev() {

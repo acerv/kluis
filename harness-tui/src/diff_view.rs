@@ -293,7 +293,12 @@ impl DiffView {
             Some((of, Ok(diff))) if of == path && diff.hunks.is_empty() => {
                 lines.push(Line::styled(" no changes", theme.muted));
             }
-            Some((of, Ok(diff))) if of == path => render_diff(diff, usize::MAX, theme, &mut lines),
+            Some((of, Ok(diff))) if of == path => {
+                render_diff(diff, usize::MAX, theme, &mut lines);
+                for line in &mut lines {
+                    line.spans.insert(0, Span::raw("  "));
+                }
+            }
             Some((of, Err(reason))) if of == path => {
                 lines.push(Line::styled(format!(" {reason}"), theme.muted));
             }

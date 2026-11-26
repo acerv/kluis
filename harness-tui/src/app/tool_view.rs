@@ -5,6 +5,7 @@
 
 use std::borrow::Cow;
 use std::collections::VecDeque;
+use std::time::Duration;
 
 use harness_core::tools::{
     Diff, DiffLine, BASH_TOOL, EDIT_TOOL, FIND_TOOL, GREP_TOOL, LS_TOOL, READ_TOOL, WRITE_TOOL,
@@ -27,6 +28,15 @@ const MAX_BASH_PREVIEW_LINES: usize = 8;
 /// Maximum bytes retained per live tool output preview line.
 const MAX_TOOL_PREVIEW_LINE_BYTES: usize = 1024;
 
+/// Shortest run of a tool that shows how long it took.
+const MIN_SHOWN_ELAPSED: Duration = Duration::from_secs(1);
+
+/// What joins the first line of a result to its call, and the indent of
+/// the others.
+const RESULT_JOINT: &str = "  ⎿ ";
+const RESULT_INDENT: &str = "    ";
+
+/// The name of a tool and what it works on, in one line.
 pub(super) fn format_tool_call(name: &str, args: &str, theme: Theme) -> Line<'static> {
     let parsed: Option<Value> = serde_json::from_str(args).ok();
     let detail = parsed.as_ref().and_then(|v| match name {
@@ -39,14 +49,7 @@ pub(super) fn format_tool_call(name: &str, args: &str, theme: Theme) -> Line<'st
         }
         WRITE_TOOL | EDIT_TOOL => v["path"].as_str().map(str::to_owned),
         BASH_TOOL => v["command"].as_str().map(summary),
-        GREP_TOOL => {
-            let pat = v["pattern"].as_str()?;
-            match v["path"].as_str() {
-                Some(path) if !path.is_empty() => Some(format!("{pat} {path}")),
-                _ => Some(pat.to_owned()),
-            }
-        }
-        FIND_TOOL => {
+        GREP_TOOL | FIND_TOOL => {
             let pat = v["pattern"].as_str()?;
             match v["path"].as_str() {
                 Some(path) if !path.is_empty() => Some(format!("{pat} {path}")),
@@ -75,34 +78,106 @@ pub(super) fn format_tool_call(name: &str, args: &str, theme: Theme) -> Line<'st
     ])
 }
 
-pub(super) fn format_tool_result(
-    tool: Option<&str>,
-    content: &str,
-    details: Option<&ToolDetails>,
+/// How a tool call ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunStatus {
+    Done,
+    Failed,
+    /// It never ended: the prompt was cancelled or failed meanwhile.
+    Interrupted,
+}
+
+/// `run` as the scrollback shows it: its call and how it ended, then the
+/// short form of its result, or the whole of it when `verbose`.
+pub(super) fn format_tool_run(
+    run: &ToolRun,
+    verbose: bool,
     theme: Theme,
     out: &mut Vec<Line<'static>>,
 ) {
-    let parsed: Option<Value> = serde_json::from_str(content).ok();
-    if let Some(err) = parsed.as_ref().and_then(|v| v["error"].as_str()) {
-        out.push(Line::styled(format!("  error: {err}"), theme.error));
+    let parsed: Option<Value> = run
+        .reply
+        .as_ref()
+        .and_then(|reply| serde_json::from_str(&reply.content).ok());
+    let status = match (&run.reply, &parsed) {
+        (None, _) => RunStatus::Interrupted,
+        (Some(_), Some(v)) if failed(v) => RunStatus::Failed,
+        _ => RunStatus::Done,
+    };
+    out.push(run_header(run, status, theme));
+    let Some(reply) = &run.reply else {
+        out.push(Line::default());
+        return;
+    };
+    let start = out.len();
+    if verbose {
+        format_full_reply(reply, parsed.as_ref(), theme, out);
+    } else {
+        let tool = run.call.as_ref().map(|c| c.name.as_str());
+        format_reply(tool, reply, parsed.as_ref(), theme, out);
+    }
+    for (i, line) in out[start..].iter_mut().enumerate() {
+        let joint = if i == 0 { RESULT_JOINT } else { RESULT_INDENT };
+        line.spans.insert(0, Span::styled(joint, theme.gutter));
+    }
+    out.push(Line::default());
+}
+
+/// Whether the result `v` of a tool says it failed.
+fn failed(v: &Value) -> bool {
+    v["error"].is_string()
+        || v["exit_code"].as_i64().is_some_and(|code| code != 0)
+        || v["timed_out"].as_bool() == Some(true)
+}
+
+/// The mark of how `run` ended, its call, and how long it took.
+fn run_header(run: &ToolRun, status: RunStatus, theme: Theme) -> Line<'static> {
+    let (mark, style) = match status {
+        RunStatus::Done => ("✓", theme.success),
+        RunStatus::Failed => ("✗", theme.error),
+        RunStatus::Interrupted => ("✗", theme.muted),
+    };
+    let mut spans = vec![Span::styled(mark, style), Span::raw(" ")];
+    match &run.call {
+        Some(call) => spans.extend(format_tool_call(&call.name, &call.args, theme).spans),
+        // A restored result whose call is missing.
+        None => spans.push(Span::styled("tool", theme.tool_name)),
+    }
+    if status == RunStatus::Interrupted {
+        spans.push(Span::styled(" · interrupted", theme.muted));
+    } else if let Some(elapsed) = run.elapsed.filter(|e| *e >= MIN_SHOWN_ELAPSED) {
+        let elapsed = format_elapsed(elapsed.as_secs());
+        spans.push(Span::styled(format!(" · {elapsed}"), theme.muted));
+    }
+    Line::from(spans)
+}
+
+/// The short form of the result of `tool`.
+fn format_reply(
+    tool: Option<&str>,
+    reply: &ToolReply,
+    parsed: Option<&Value>,
+    theme: Theme,
+    out: &mut Vec<Line<'static>>,
+) {
+    if let Some(err) = parsed.and_then(|v| v["error"].as_str()) {
+        out.push(Line::styled(format!("error: {err}"), theme.error));
         return;
     }
-
-    if let Some(ToolDetails::Edit(diff)) = details {
+    if let Some(diff) = &reply.diff {
         render_diff(diff, MAX_DIFF_PREVIEW_LINES, theme, out);
         return;
     }
-
     let Some(v) = parsed else {
-        out.push(Line::styled(format!("  {}", summary(content)), theme.muted));
+        out.push(Line::styled(summary(&reply.content), theme.muted));
         return;
     };
 
     let count = |key: &str| v[key].as_u64().unwrap_or(0);
     let len = |key: &str| v[key].as_array().map_or(0, Vec::len);
-    let suffix = truncated_suffix(&v);
+    let suffix = truncated_suffix(v);
     let text = match tool {
-        Some(BASH_TOOL) => return format_bash_result(&v, theme, out),
+        Some(BASH_TOOL) => return format_bash_result(v, theme, out),
         Some(READ_TOOL) => format!("{} lines{suffix}", count("total_lines")),
         Some(WRITE_TOOL) => format!("wrote {} bytes", count("bytes_written")),
         Some(LS_TOOL) => format!("{} entries", len("entries")),
@@ -117,39 +192,44 @@ pub(super) fn format_tool_result(
                 summary(v["answer"].as_str().unwrap_or_default())
             )
         }
-        _ => summary(content),
+        _ => summary(&reply.content),
     };
-    out.push(Line::styled(format!("  {text}"), theme.muted));
+    out.push(Line::styled(text, theme.muted));
 }
 
-/// The end of the output of a `bash` call, and how it ended.
+/// The start of the output of a `bash` call, and how it ended.
 fn format_bash_result(v: &Value, theme: Theme, out: &mut Vec<Line<'static>>) {
     if let Some(output) = v["output"].as_str() {
         let mut lines = output.lines();
         for line in lines.by_ref().take(MAX_BASH_PREVIEW_LINES) {
-            out.push(tool_line(line, theme.muted));
+            out.push(output_line(line, theme.muted));
         }
         let extra = lines.count();
         if extra > 0 {
             out.push(Line::styled(
-                format!("  … +{extra} more lines"),
+                format!("… +{extra} more lines (Ctrl-O to show)"),
                 theme.muted,
             ));
         }
     }
+    bash_notes(v, theme, out);
+}
+
+/// How a `bash` call ended, when not plainly.
+fn bash_notes(v: &Value, theme: Theme, out: &mut Vec<Line<'static>>) {
     if let Some(code) = v["exit_code"].as_i64().filter(|&c| c != 0) {
-        out.push(Line::styled(format!("  exit {code}"), theme.error));
+        out.push(Line::styled(format!("exit {code}"), theme.error));
     }
     if v["timed_out"].as_bool() == Some(true) {
-        out.push(Line::styled("  timed out", theme.error));
+        out.push(Line::styled("timed out", theme.error));
     }
     if let Some(path) = v["output_file"].as_str() {
-        out.push(Line::styled(format!("  full output: {path}"), theme.muted));
+        out.push(Line::styled(format!("full output: {path}"), theme.muted));
     }
     if let Some(hosts) = v["refused_hosts"].as_array() {
         let hosts: Vec<_> = hosts.iter().filter_map(Value::as_str).collect();
         out.push(Line::styled(
-            format!("  refused hosts: {} (see --allow-host)", hosts.join(", ")),
+            format!("refused hosts: {} (see --allow-host)", hosts.join(", ")),
             theme.error,
         ));
     }
@@ -163,26 +243,28 @@ fn truncated_suffix(v: &Value) -> &'static str {
     }
 }
 
-/// The whole output of `run`: its call, then the full diff or the text the
-/// tool returned.
-pub(super) fn format_full_output(run: &ToolRun, theme: Theme, out: &mut Vec<Line<'static>>) {
-    if let Some(call) = &run.call {
-        out.push(format_tool_call(&call.name, &call.args, theme));
-    }
-    if let Some(ToolDetails::Edit(diff)) = &run.details {
+/// The whole of a result: the full diff, or the text the tool returned.
+fn format_full_reply(
+    reply: &ToolReply,
+    parsed: Option<&Value>,
+    theme: Theme,
+    out: &mut Vec<Line<'static>>,
+) {
+    if let Some(diff) = &reply.diff {
         render_diff(diff, usize::MAX, theme, out);
         return;
     }
-    let parsed: Option<Value> = serde_json::from_str(&run.content).ok();
-    let style = match &parsed {
+    let style = match parsed {
         Some(v) if v.get("error").is_some() => theme.error,
         _ => theme.muted,
     };
     let text = parsed
-        .as_ref()
         .and_then(output_text)
-        .unwrap_or(Cow::Borrowed(&run.content));
-    out.extend(text.lines().map(|line| tool_line(line, style)));
+        .unwrap_or(Cow::Borrowed(&reply.content));
+    out.extend(text.lines().map(|line| output_line(line, style)));
+    if let Some(v) = parsed.filter(|v| v.get("output").is_some()) {
+        bash_notes(v, theme, out);
+    }
 }
 
 /// The text a tool result carries: its error, output or content, its
@@ -228,7 +310,7 @@ pub(crate) fn render_diff(
     };
     for (i, hunk) in diff.hunks.iter().enumerate() {
         if i > 0 {
-            push(Line::styled(format!("  {:>width$}", "⋮"), theme.diff_hunk));
+            push(Line::styled(format!("{:>width$}", "⋮"), theme.diff_hunk));
         }
         let mut old_line = hunk.old_start;
         let mut new_line = hunk.new_start;
@@ -242,18 +324,18 @@ pub(crate) fn render_diff(
                 DiffLine::Added(s) => (post_increment(&mut new_line), '+', s, theme.diff_add),
             };
             push(Line::from(vec![
-                Span::styled(format!("  {number:>width$} "), theme.muted),
+                Span::styled(format!("{number:>width$} "), theme.muted),
                 Span::styled(format!("{sign}{}", expand_tabs(text)), style),
             ]));
         }
     }
     if omitted > 0 {
         out.push(Line::styled(
-            format!("  … +{omitted} more diff lines"),
+            format!("… +{omitted} more diff lines (Ctrl-O to show)"),
             theme.muted,
         ));
     } else if diff.truncated {
-        out.push(Line::styled("  … diff truncated", theme.muted));
+        out.push(Line::styled("… diff truncated", theme.muted));
     }
 }
 
@@ -266,9 +348,9 @@ fn post_increment(n: &mut usize) -> usize {
 /// Columns between the tab stops of tool output.
 const TAB_WIDTH: usize = 4;
 
-/// A line of tool output, indented under its call.
-fn tool_line(text: &str, style: Style) -> Line<'static> {
-    Line::styled(format!("  {}", expand_tabs(text)), style)
+/// A line of tool output.
+fn output_line(text: &str, style: Style) -> Line<'static> {
+    Line::styled(expand_tabs(text).into_owned(), style)
 }
 
 /// `text` with its tabs turned into spaces, as the terminal drops them.
@@ -291,18 +373,85 @@ fn expand_tabs(text: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
+/// `secs` as the spinner and the tool calls show it, empty for 0.
+pub(super) fn format_elapsed(secs: u64) -> String {
+    if secs == 0 {
+        String::new()
+    } else if secs < 60 {
+        format!("{secs}s")
+    } else {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    }
+}
+
 /// A tool call, with its arguments as JSON text.
-pub(super) struct ToolCall {
+#[derive(Debug, Clone)]
+pub(crate) struct ToolCall {
     pub(super) name: String,
     pub(super) args: String,
 }
 
-/// A finished tool call and its result.
-pub(super) struct ToolRun {
+/// What a tool returned.
+#[derive(Debug, Clone)]
+pub(crate) struct ToolReply {
+    pub(super) content: String,
+    /// The change of an `edit` call.
+    pub(super) diff: Option<Diff>,
+}
+
+impl ToolReply {
+    pub(super) fn new(content: String, details: Option<ToolDetails>) -> Self {
+        // Only the diff shows: an image could be large.
+        let diff = match details {
+            Some(ToolDetails::Edit(diff)) => Some(diff),
+            _ => None,
+        };
+        Self { content, diff }
+    }
+}
+
+/// A tool call and how it ended.
+#[derive(Debug, Clone)]
+pub(crate) struct ToolRun {
     /// Unknown for a restored result whose call is missing.
     pub(super) call: Option<ToolCall>,
-    pub(super) content: String,
-    pub(super) details: Option<ToolDetails>,
+    /// Missing when the call never ended.
+    pub(super) reply: Option<ToolReply>,
+    /// How long it ran, unknown for a restored one.
+    pub(super) elapsed: Option<Duration>,
+}
+
+impl ToolRun {
+    /// Bytes of text it holds.
+    pub(crate) fn size(&self) -> usize {
+        let call = self.call.as_ref().map_or(0, |c| c.args.len());
+        let reply = self.reply.as_ref().map_or(0, |r| {
+            let diff = r.diff.iter().flat_map(|d| &d.hunks).flat_map(|h| &h.lines);
+            r.content.len()
+                + diff
+                    .map(|line| match line {
+                        DiffLine::Context(s) | DiffLine::Removed(s) | DiffLine::Added(s) => s.len(),
+                    })
+                    .sum::<usize>()
+        });
+        call + reply
+    }
+
+    /// A finished call of `name` that returned `content`.
+    #[cfg(test)]
+    pub(crate) fn finished(name: &str, content: String) -> Self {
+        Self {
+            call: Some(ToolCall {
+                name: name.to_owned(),
+                args: "{}".to_owned(),
+            }),
+            reply: Some(ToolReply {
+                content,
+                diff: None,
+            }),
+            elapsed: None,
+        }
+    }
 }
 
 /// Bounded ring buffer of live stdout/stderr lines from a running tool,
@@ -352,11 +501,12 @@ impl ToolPreview {
 
     pub(super) fn render_lines(&self, style: Style) -> Vec<Line<'static>> {
         let mut out = Vec::with_capacity(self.lines.len() + usize::from(!self.current.is_empty()));
+        let indent = |text: &str| Line::styled(format!("  {}", expand_tabs(text)), style);
         for line in &self.lines {
-            out.push(tool_line(line, style));
+            out.push(indent(line));
         }
         if !self.current.is_empty() {
-            out.push(tool_line(&self.current, style));
+            out.push(indent(&self.current));
         }
         out
     }

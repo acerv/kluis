@@ -563,10 +563,11 @@ fn shell_command_ends_on_screen() {
     // Without a sandbox, the command ends as its output comes: the screen
     // must still show the prompt over, without waiting for a key.
     term.type_text("!echo hello\r");
-    term.wait_for("  hello");
+    term.wait_for("  ⎿ hello");
     term.wait_for("(/help for commands)");
     let screen = term.rows().join("\n");
-    assert!(!screen.contains("Running bash"), "{screen}");
+    assert!(screen.contains("✓ bash echo hello"), "{screen}");
+    assert!(!screen.contains("esc to cancel"), "{screen}");
 
     kill(&child, libc::SIGTERM);
     child.wait().unwrap();

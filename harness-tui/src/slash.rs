@@ -104,7 +104,6 @@ async fn ask_undo(app: &mut App, agent: &Agent) -> Option<UndoPlan> {
         "Put these files back as they were, and drop the last prompt from the conversation?"
             .to_owned()
     };
-    app.push_info(&question);
     app.ask(&question, &[UNDO.to_owned(), "Cancel".to_owned()]);
     Some(plan)
 }

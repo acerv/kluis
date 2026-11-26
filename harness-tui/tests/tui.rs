@@ -1038,7 +1038,7 @@ fn live_bash_preview_and_elapsed_spinner_timer() {
     let mut term = inline_terminal_with(80, 14, h);
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
-    assert!(screen.contains("Running bash… 12s"), "{screen}");
+    assert!(screen.contains("bash cargo test… 12s"), "{screen}");
     assert!(screen.contains("building 100%"), "{screen}");
     assert!(
         !screen.contains("compiling"),
@@ -1050,7 +1050,7 @@ fn live_bash_preview_and_elapsed_spinner_timer() {
     // >= 60s formats as minutes + zero-padded seconds.
     app.set_elapsed(Duration::from_secs(65));
     term.draw(|f| app.render(f)).unwrap();
-    assert!(render_text(&term).contains("Running bash… 1m05s"));
+    assert!(render_text(&term).contains("bash cargo test… 1m05s"));
 
     // Completing the tool clears the transient live preview.
     app.apply_update(AgentUpdate::ToolResult {
@@ -1532,7 +1532,7 @@ fn failed_todo_call_shows_its_error() {
         .iter()
         .map(|l| l.to_string())
         .collect();
-    assert_eq!(text[..2], ["todo", "  error: missing field `todos`"]);
+    assert_eq!(text[..2], ["✗ todo {}", "  ⎿ error: missing field `todos`"]);
 }
 
 #[test]
@@ -1587,10 +1587,8 @@ fn replay_restores_an_unfinished_plan() {
         .iter()
         .map(|l| l.to_string())
         .collect();
-    assert_eq!(
-        scrollback[..2],
-        ["todo", "  error: only one todo can be in_progress"]
-    );
+    assert!(scrollback[0].starts_with("✗ todo "), "{scrollback:?}");
+    assert_eq!(scrollback[1], "  ⎿ error: only one todo can be in_progress");
 }
 
 #[test]
@@ -1863,14 +1861,14 @@ fn grep_tool_result_shows_match_count_and_truncation() {
         "foo",
         r#"{"output":"a.rs:1: foo\nb.rs:2: foo\n","matches":2}"#,
     );
-    assert!(lines.iter().any(|l| l == "  2 matches"), "{lines:?}");
+    assert!(lines.iter().any(|l| l == "  ⎿ 2 matches"), "{lines:?}");
 
     let lines = run_grep(
         "bar",
         r#"{"output":"a.rs:1: bar\n","matches":50,"truncated":true}"#,
     );
     assert!(
-        lines.iter().any(|l| l == "  50 matches (truncated)"),
+        lines.iter().any(|l| l == "  ⎿ 50 matches (truncated)"),
         "{lines:?}"
     );
 }
@@ -2048,13 +2046,13 @@ fn edit_diff_shows_line_numbers_of_each_hunk() {
     assert_eq!(
         scrollback_lines(&mut app),
         [
-            "edit a.rs",
-            "    8  keep",
-            "    9 -old",
-            "    9 +new",
-            "    ⋮",
-            "  120  tail",
-            "  121 +more",
+            "✓ edit a.rs",
+            "  ⎿   8  keep",
+            "      9 -old",
+            "      9 +new",
+            "      ⋮",
+            "    120  tail",
+            "    121 +more",
             "",
         ]
     );
@@ -2080,15 +2078,19 @@ fn output_command_shows_the_whole_last_tool_output() {
     );
     let preview = scrollback_lines(&mut app);
     assert!(
-        preview.contains(&"  … +12 more lines".to_owned()),
+        preview.contains(&"    … +12 more lines (Ctrl-O to show)".to_owned()),
         "{preview:#?}"
     );
-    assert!(!preview.contains(&"  line 20".to_owned()), "{preview:#?}");
+    assert!(!preview.contains(&"    line 20".to_owned()), "{preview:#?}");
 
     app.show_tool_output();
     let full = scrollback_lines(&mut app);
-    assert_eq!(full[0], "bash seq");
-    let expected: Vec<String> = output.iter().map(|l| format!("  {l}")).collect();
+    assert_eq!(full[0], "✓ bash seq");
+    let expected: Vec<String> = output
+        .iter()
+        .enumerate()
+        .map(|(i, l)| format!("{}{l}", if i == 0 { "  ⎿ " } else { "    " }))
+        .collect();
     assert_eq!(full[1..21], expected[..]);
 
     // Lists show one item per line; other results show their JSON.
@@ -2101,7 +2103,10 @@ fn output_command_shows_the_whole_last_tool_output() {
     );
     app.take_scrollback();
     app.show_tool_output();
-    assert_eq!(scrollback_lines(&mut app), ["ls .", "  a/", "  b", ""]);
+    assert_eq!(
+        scrollback_lines(&mut app),
+        ["✓ ls .", "  ⎿ a/", "    b", ""]
+    );
 
     run_tool(
         &mut app,
@@ -2112,7 +2117,10 @@ fn output_command_shows_the_whole_last_tool_output() {
     );
     app.take_scrollback();
     app.show_tool_output();
-    assert_eq!(scrollback_lines(&mut app), ["read x", "  no such file", ""]);
+    assert_eq!(
+        scrollback_lines(&mut app),
+        ["✗ read x", "  ⎿ no such file", ""]
+    );
 
     // A long edit diff is shown whole.
     let lines = (0..30).map(|i| DiffLine::Added(format!("l{i}"))).collect();
@@ -2137,13 +2145,13 @@ fn output_command_shows_the_whole_last_tool_output() {
     );
     let preview = scrollback_lines(&mut app);
     assert!(
-        preview.contains(&"  … +6 more diff lines".to_owned()),
+        preview.contains(&"    … +6 more diff lines (Ctrl-O to show)".to_owned()),
         "{preview:#?}"
     );
     app.show_tool_output();
     let full = scrollback_lines(&mut app);
     assert_eq!(full.len(), 32, "{full:#?}");
-    assert_eq!(full[30], "  30 +l29");
+    assert_eq!(full[30], "    30 +l29");
 
     // A new session forgets it.
     app.reset_session();
@@ -2175,7 +2183,7 @@ fn output_command_shows_a_restored_tool_output() {
     app.show_tool_output();
     assert_eq!(
         scrollback_lines(&mut app),
-        ["read src/main.rs", "  fn main() {}", ""]
+        ["✓ read src/main.rs", "  ⎿ fn main() {}", ""]
     );
 
     // Replaying a history without tools forgets the previous output.
@@ -2201,7 +2209,7 @@ fn tool_output_keeps_tab_indentation() {
     );
     assert_eq!(
         scrollback_lines(&mut app),
-        ["bash x", "  a   b", "      c", ""]
+        ["✓ bash x", "  ⎿ a   b", "        c", ""]
     );
 
     let diff = Diff {
@@ -2228,7 +2236,12 @@ fn tool_output_keeps_tab_indentation() {
     );
     assert_eq!(
         scrollback_lines(&mut app),
-        ["edit a.c", "  1 -    return 0;", "  1 +    return 1;", ""]
+        [
+            "✓ edit a.c",
+            "  ⎿ 1 -    return 0;",
+            "    1 +    return 1;",
+            ""
+        ]
     );
 }
 
@@ -2400,10 +2413,10 @@ fn web_search_shows_query_and_result_count() {
     );
     let lines = scrollback_lines(&mut app);
     assert!(
-        lines.contains(&"web_search rust sandbox".to_owned()),
+        lines.contains(&"✓ web_search rust sandbox".to_owned()),
         "{lines:?}"
     );
-    assert!(lines.contains(&"  2 results".to_owned()), "{lines:?}");
+    assert!(lines.contains(&"  ⎿ 2 results".to_owned()), "{lines:?}");
 }
 
 #[test]
@@ -2417,9 +2430,9 @@ fn skill_shows_its_name() {
         None,
     );
     let lines = scrollback_lines(&mut app);
-    assert!(lines.contains(&"skill review".to_owned()), "{lines:?}");
+    assert!(lines.contains(&"✓ skill review".to_owned()), "{lines:?}");
     assert!(
-        lines.contains(&"  instructions loaded".to_owned()),
+        lines.contains(&"  ⎿ instructions loaded".to_owned()),
         "{lines:?}"
     );
 }
@@ -2438,7 +2451,7 @@ fn task_shows_its_prompt_the_work_of_the_subagent_and_the_answer() {
     let mut term = inline_terminal_with(80, 14, app.viewport_height(80));
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
-    assert!(screen.contains("Running task…"), "{screen}");
+    assert!(screen.contains("task find the parser…"), "{screen}");
     assert!(screen.contains(r#"grep {"pattern":"parse"}"#), "{screen}");
 
     app.apply_update(AgentUpdate::ToolResult {
@@ -2447,11 +2460,11 @@ fn task_shows_its_prompt_the_work_of_the_subagent_and_the_answer() {
     });
     let lines = scrollback_lines(&mut app);
     assert!(
-        lines.contains(&"task find the parser".to_owned()),
+        lines.contains(&"✓ task find the parser".to_owned()),
         "{lines:?}"
     );
     assert!(
-        lines.contains(&"  answer: in src/parse.rs".to_owned()),
+        lines.contains(&"  ⎿ answer: in src/parse.rs".to_owned()),
         "{lines:?}"
     );
 }
@@ -2521,4 +2534,37 @@ fn bell_rings_when_a_long_prompt_needs_the_user() {
     // Cancelling does not: the user is there.
     app.cancel_prompt();
     assert!(!app.take_bell());
+}
+
+#[test]
+fn tool_call_shows_how_it_ended_once_it_ends() {
+    use std::time::Duration;
+
+    let mut app = App::new("model", status(), Theme::new(false));
+    app.start_prompt("go");
+    app.take_scrollback();
+    app.apply_update(AgentUpdate::ToolCall {
+        name: "bash".into(),
+        args: r#"{"command":"make"}"#.into(),
+    });
+    // Nothing shows while it runs but the spinner.
+    assert!(app.take_scrollback().is_empty());
+    app.set_elapsed(Duration::from_secs(3));
+    app.apply_update(AgentUpdate::ToolResult {
+        content: r#"{"output":"","exit_code":2}"#.into(),
+        details: None,
+    });
+    assert_eq!(
+        scrollback_lines(&mut app),
+        ["✗ bash make · 3s", "  ⎿ exit 2", ""]
+    );
+
+    // A call that never ends shows when the prompt does.
+    app.apply_update(AgentUpdate::ToolCall {
+        name: "bash".into(),
+        args: r#"{"command":"sleep 9"}"#.into(),
+    });
+    app.cancel_prompt();
+    let lines = scrollback_lines(&mut app);
+    assert_eq!(lines[..2], ["✗ bash sleep 9 · interrupted", ""]);
 }

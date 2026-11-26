@@ -13,13 +13,15 @@ impl App {
                 if w > 0 {
                     self.set_width(w);
                     if self.show_thinking && !self.live_reasoning.is_empty() {
+                        let mut lines = Vec::new();
                         stream_reasoning(
                             &mut self.live_reasoning,
                             "",
                             w as usize,
                             self.theme.reasoning,
-                            &mut self.scrollback,
+                            &mut lines,
                         );
+                        self.push_lines(lines);
                     }
                 }
                 Action::Redraw
