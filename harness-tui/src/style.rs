@@ -1,8 +1,126 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@linux.dev>
 
+use std::fmt;
+use std::str::FromStr;
+
 use harness_core::Thinking;
 use ratatui::style::{Color, Modifier, Style};
+use serde::{Deserialize, Serialize};
+
+/// The colors to use, for the background of the terminal.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeName {
+    #[default]
+    Dark,
+    Light,
+}
+
+impl ThemeName {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Dark => "dark",
+            Self::Light => "light",
+        }
+    }
+}
+
+impl fmt::Display for ThemeName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for ThemeName {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        [Self::Dark, Self::Light]
+            .into_iter()
+            .find(|name| name.as_str().eq_ignore_ascii_case(s.trim()))
+            .ok_or_else(|| format!("invalid theme '{s}' (expected dark or light)"))
+    }
+}
+
+/// The colors a theme is made of.
+struct Palette {
+    accent: Color,
+    user_bg: Color,
+    /// Rules around the editor while idle.
+    faint: Color,
+    muted: Color,
+    tool: Color,
+    tool_arg: Color,
+    add: Color,
+    remove: Color,
+    add_bg: Color,
+    remove_bg: Color,
+    error: Color,
+    warn: Color,
+    plan: Color,
+    shell: Color,
+    /// Of the model in the footer, by thinking effort, as in
+    /// [`Thinking::ALL`].
+    thinking: [Color; 7],
+}
+
+const DARK: Palette = Palette {
+    accent: Color::Cyan,
+    user_bg: Color::Indexed(236),
+    faint: Color::DarkGray,
+    muted: Color::DarkGray,
+    tool: Color::Yellow,
+    tool_arg: Color::Gray,
+    add: Color::Green,
+    remove: Color::Red,
+    // #005f00 and #5f0000.
+    add_bg: Color::Indexed(22),
+    remove_bg: Color::Indexed(52),
+    error: Color::Red,
+    warn: Color::Yellow,
+    plan: Color::Magenta,
+    // #ff5f87.
+    shell: Color::Indexed(204),
+    thinking: [
+        Color::Green,
+        Color::Gray,
+        Color::Cyan,
+        Color::Yellow,
+        Color::Indexed(208),
+        Color::Red,
+        Color::Magenta,
+    ],
+};
+
+/// Darker text and lighter backgrounds than [`DARK`], for a light
+/// terminal: no color there is near white.
+const LIGHT: Palette = Palette {
+    accent: Color::Blue,
+    user_bg: Color::Indexed(254),
+    faint: Color::Indexed(250),
+    muted: Color::Indexed(243),
+    tool: Color::Indexed(130),
+    tool_arg: Color::Reset,
+    add: Color::Indexed(28),
+    remove: Color::Indexed(160),
+    // #d7ffd7 and #ffd7d7.
+    add_bg: Color::Indexed(194),
+    remove_bg: Color::Indexed(224),
+    error: Color::Indexed(160),
+    warn: Color::Indexed(136),
+    plan: Color::Indexed(127),
+    shell: Color::Indexed(161),
+    thinking: [
+        Color::Indexed(28),
+        Color::Indexed(243),
+        Color::Indexed(31),
+        Color::Indexed(136),
+        Color::Indexed(166),
+        Color::Indexed(160),
+        Color::Indexed(127),
+    ],
+};
 
 /// Styles used across the TUI. All styles are plain when `NO_COLOR` is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +141,8 @@ pub struct Theme {
     /// A whole removed line of a diff, tinted.
     pub remove_line: Style,
     pub error: Style,
+    /// What needs attention soon, as a conversation near compaction.
+    pub warn: Style,
     pub muted: Style,
     /// The mark of a tool call that ended well.
     pub success: Style,
@@ -34,13 +154,25 @@ pub struct Theme {
     pub todo_current: Style,
     pub status_bar: Style,
     pub status_accent: Style,
+    /// Plan mode, around the editor.
+    pub plan: Style,
+    /// The badge of plan mode in the footer.
+    pub plan_badge: Style,
+    /// A shell command typed after `!`, around the editor.
+    pub shell: Style,
     /// Startup logo rows, top to bottom.
     pub logo: [Style; 3],
+    thinking: [Color; 7],
 }
 
 impl Theme {
-    /// Build a theme, honoring `NO_COLOR` when `color` is false.
+    /// The dark theme, plain when `color` is false (`NO_COLOR`).
     pub fn new(color: bool) -> Self {
+        Self::named(ThemeName::Dark, color)
+    }
+
+    /// The theme `name`, plain when `color` is false (`NO_COLOR`).
+    pub fn named(name: ThemeName, color: bool) -> Self {
         if !color {
             let plain = Style::default();
             return Self {
@@ -58,6 +190,7 @@ impl Theme {
                 add_line: plain,
                 remove_line: plain,
                 error: plain,
+                warn: plain,
                 muted: plain,
                 success: plain,
                 gutter: plain,
@@ -65,54 +198,60 @@ impl Theme {
                 todo_current: plain,
                 status_bar: plain,
                 status_accent: plain,
+                plan: plain,
+                plan_badge: plain,
+                shell: plain,
                 logo: [plain; 3],
+                thinking: [Color::Reset; 7],
             };
         }
+        let p = match name {
+            ThemeName::Dark => &DARK,
+            ThemeName::Light => &LIGHT,
+        };
+        let fg = |color| Style::default().fg(color);
+        let bold = Modifier::BOLD;
         Self {
             color: true,
-            prompt: Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-            user: Style::default()
-                .bg(Color::Indexed(236))
-                .add_modifier(Modifier::BOLD),
-            border_idle: Style::default().fg(Color::DarkGray),
-            border_busy: Style::default().fg(Color::Cyan),
-            reasoning: Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::ITALIC),
-            tool_name: Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-            tool_arg: Style::default().fg(Color::Gray),
-            diff_hunk: Style::default().fg(Color::Cyan),
-            diff_add: Style::default().fg(Color::Green),
-            diff_remove: Style::default().fg(Color::Red),
-            // 256-color palette #005f00 and #5f0000.
-            add_line: Style::default().bg(Color::Indexed(22)),
-            remove_line: Style::default().bg(Color::Indexed(52)),
-            error: Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            muted: Style::default().fg(Color::DarkGray),
-            success: Style::default().fg(Color::Green),
+            prompt: fg(p.accent).add_modifier(bold),
+            user: Style::default().bg(p.user_bg).add_modifier(bold),
+            border_idle: fg(p.faint),
+            border_busy: fg(p.accent),
+            reasoning: fg(p.muted).add_modifier(Modifier::ITALIC),
+            tool_name: fg(p.tool).add_modifier(bold),
+            tool_arg: fg(p.tool_arg),
+            diff_hunk: fg(p.accent),
+            diff_add: fg(p.add),
+            diff_remove: fg(p.remove),
+            add_line: Style::default().bg(p.add_bg),
+            remove_line: Style::default().bg(p.remove_bg),
+            error: fg(p.error).add_modifier(bold),
+            warn: fg(p.warn),
+            muted: fg(p.muted),
+            success: fg(p.add),
             // Not tinted inside a tinted line.
-            gutter: Style::default().fg(Color::DarkGray).bg(Color::Reset),
-            todo_done: Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::CROSSED_OUT),
-            todo_current: Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-            status_bar: Style::default().fg(Color::DarkGray),
-            status_accent: Style::default().fg(Color::Cyan),
+            gutter: fg(p.muted).bg(Color::Reset),
+            todo_done: fg(p.muted).add_modifier(Modifier::CROSSED_OUT),
+            todo_current: fg(p.tool).add_modifier(bold),
+            status_bar: fg(p.muted),
+            status_accent: fg(p.accent),
+            plan: fg(p.plan),
+            plan_badge: Style::default()
+                .fg(Color::Black)
+                .bg(p.plan)
+                .add_modifier(bold),
+            shell: fg(p.shell).add_modifier(bold),
             // Cyan to blue to violet: 256-color palette #5fd7ff, #5f87ff, #af5fff.
             logo: [81, 69, 135].map(|c| Style::default().fg(Color::Indexed(c))),
+            thinking: p.thinking,
         }
     }
 
-    /// Build a theme from the process environment (`NO_COLOR`).
-    pub fn from_env() -> Self {
+    /// The theme `name`, plain when the process environment says
+    /// `NO_COLOR`.
+    pub fn from_env(name: ThemeName) -> Self {
         let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
-        Self::new(!no_color)
+        Self::named(name, !no_color)
     }
 
     /// Footer model color keyed by thinking effort.
@@ -120,15 +259,7 @@ impl Theme {
         if !self.color {
             return Style::default();
         }
-        let fg = match thinking {
-            Thinking::Default => Color::Green,
-            Thinking::Off => Color::Gray,
-            Thinking::Low => Color::Cyan,
-            Thinking::Medium => Color::Yellow,
-            Thinking::High => Color::Indexed(208),
-            Thinking::XHigh => Color::Red,
-            Thinking::Max => Color::Magenta,
-        };
-        Style::default().fg(fg)
+        let level = Thinking::ALL.iter().position(|&t| t == thinking);
+        Style::default().fg(level.map_or(Color::Reset, |i| self.thinking[i]))
     }
 }

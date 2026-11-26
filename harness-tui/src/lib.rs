@@ -54,8 +54,9 @@ pub use markdown::code_theme;
 pub use session::{PromptSaver, Session};
 pub use signals::Signals;
 pub use stats::PromptStats;
-pub use style::Theme;
+pub use style::{Theme, ThemeName};
 pub use terminal::flush_scrollback;
+use tui_markdown::BuiltinCodeTheme;
 pub use tui_markdown::CodeTheme;
 
 use drive::{handle_event_batch, restore_queued, run_shell, run_turn, Ui};
@@ -110,7 +111,9 @@ pub struct RunOptions {
     pub banner: Vec<BannerLine>,
     /// Checked after every prompt, when sandboxed.
     pub git_guard: Option<GitGuard>,
-    /// Colors of code blocks, instead of the default theme.
+    /// Colors for a dark or light terminal.
+    pub theme: ThemeName,
+    /// Colors of code blocks, instead of the default of `theme`.
     pub code_theme: Option<CodeTheme>,
     /// The custom commands `/<name>` runs.
     pub commands: Vec<Command>,
@@ -179,6 +182,7 @@ pub async fn run(
         adapters,
         banner,
         mut git_guard,
+        theme,
         code_theme,
         commands,
         notify,
@@ -186,12 +190,16 @@ pub async fn run(
     } = opts;
     let mut models = ModelCatalog::new(adapters);
     let term = InlineTerminal::enter(VIEWPORT_HEIGHT)?;
-    let mut app = App::new(agent.model().to_owned(), status, Theme::from_env());
+    let mut app = App::new(agent.model().to_owned(), status, Theme::from_env(theme));
     app.set_width(term.width());
     app.set_thinking(agent.thinking());
     app.set_notify(notify);
-    if let Some(theme) = code_theme {
-        app.set_code_theme(theme);
+    let code_theme = code_theme.or_else(|| {
+        // The default code theme is dark.
+        (theme == ThemeName::Light).then(|| CodeTheme::from(BuiltinCodeTheme::InspiredGitHub))
+    });
+    if let Some(code_theme) = code_theme {
+        app.set_code_theme(code_theme);
     }
     app.set_custom(&commands, agent.skills());
     if let Ok(cwd) = std::env::current_dir() {
