@@ -38,9 +38,6 @@ pub use thinking::Thinking;
 /// Error returned by the agent.
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
-/// Default maximum model turns executed in a single [`Agent::prompt`] call.
-pub const DEFAULT_MAX_TURNS: usize = 50;
-
 /// Default prompt-token threshold at which [`Agent::prompt`] automatically
 /// compacts the conversation while the prompt cache is still warm.
 pub const DEFAULT_AUTO_COMPACT_TOKENS: u64 = 100_000;
@@ -71,7 +68,6 @@ pub struct Agent {
     /// Shared with the subagents, with what the user allowed meanwhile.
     permissions: Permissions,
     retry: RetryPolicy,
-    max_turns: Option<usize>,
     auto_compact_tokens: Option<u64>,
     steering: Steering,
     /// Plan mode: the model may only look, not change anything.
@@ -134,7 +130,6 @@ impl Agent {
             host: HostTools::default(),
             permissions: Permissions::default(),
             retry: RetryPolicy::default(),
-            max_turns: Some(DEFAULT_MAX_TURNS),
             auto_compact_tokens: Some(DEFAULT_AUTO_COMPACT_TOKENS),
             steering: Steering::default(),
             plan: false,
@@ -173,7 +168,6 @@ impl Agent {
             },
             permissions: self.permissions.clone(),
             retry: self.retry,
-            max_turns: self.max_turns,
             auto_compact_tokens: self.auto_compact_tokens,
             steering: Steering::default(),
             plan: self.plan,
@@ -345,18 +339,6 @@ impl Agent {
     pub fn with_retry(mut self, retry: RetryPolicy) -> Self {
         self.retry = retry;
         self
-    }
-
-    /// Limit how many model turns a single [`Agent::prompt`] call may run, or
-    /// pass `None` for no limit. Defaults to `Some(DEFAULT_MAX_TURNS)`.
-    pub fn with_max_turns(mut self, max_turns: Option<usize>) -> Self {
-        self.max_turns = max_turns;
-        self
-    }
-
-    /// Maximum model turns per [`Agent::prompt`] call, or `None` when unlimited.
-    pub fn max_turns(&self) -> Option<usize> {
-        self.max_turns
     }
 
     /// Automatically compact the conversation when a turn's prompt tokens reach
@@ -583,18 +565,10 @@ impl Agent {
         self.req.messages.push(message);
         self.planned = self.plan;
 
-        let mut turns = 0usize;
         let mut repeats = Repeats::default();
         let mut compact_blocked = false;
 
         loop {
-            if let Some(limit) = self.max_turns {
-                if turns >= limit {
-                    return Err(format!("turn limit reached ({limit} turns)").into());
-                }
-            }
-            turns += 1;
-
             for text in self.steering.take() {
                 on_event(Event::Steered(&text));
                 self.req.messages.push(ChatMessage::user(text));
@@ -613,7 +587,6 @@ impl Agent {
                         0 => return Err(format!("{err} (start a new conversation)").into()),
                         pruned => {
                             on_event(Event::Pruned(pruned));
-                            turns -= 1;
                             continue;
                         }
                     }
@@ -672,7 +645,7 @@ impl Agent {
             };
             self.run_calls(assistant_idx, refused, &mut on_event).await;
 
-            if need_compact && self.max_turns.is_none_or(|limit| turns < limit) {
+            if need_compact {
                 if self.run_auto_compact(context, true, &mut on_event).await {
                     saved = self.req.messages.len();
                     repeats = Repeats::default();
