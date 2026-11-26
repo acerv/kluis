@@ -1159,6 +1159,41 @@ fn background_commands_outlive_the_prompt_until_kl_exits() {
 }
 
 #[test]
+fn repository_of_a_finished_background_command_is_disabled() {
+    let home = tempdir();
+    let cwd = tempdir();
+    // The check after the prompt runs before the command makes it.
+    let (port, server) = start_scripted_llm(vec![json!({
+        "command": "sleep 0.5; mkdir -p sub/.git; echo '[core]' > sub/.git/config",
+        "background": true,
+    })]);
+    let mut child = kl(home.path())
+        .args(["--model", "genai_1::test-model", "--background-commands"])
+        .current_dir(cwd.path())
+        .env("GENAI_1_ENDPOINT", format!("http://127.0.0.1:{port}/v1/"))
+        .env("GENAI_1_API_KEY", "secret-genai-key-12345")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(b"start\n").unwrap();
+    server.join().unwrap();
+    let config = cwd.path().join("sub/.git/config");
+    wait_until("the repository", || config.is_file());
+    // Let the command end before kl does.
+    thread::sleep(std::time::Duration::from_millis(200));
+    drop(stdin);
+    let out = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(out.status.success(), "{stderr}");
+    assert!(cwd.path().join("sub/.git.kl-disabled").is_dir(), "{stderr}");
+    assert!(!cwd.path().join("sub/.git").exists(), "{stderr}");
+}
+
+#[test]
 fn signal_stops_the_prompt_and_checks_git() {
     let home = tempdir();
     let cwd = tempdir();

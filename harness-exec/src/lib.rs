@@ -114,8 +114,8 @@ impl Executor {
     /// `keep_jobs`, the commands the `bash` tool started in the background
     /// keep running; they are stopped anywhere otherwise.
     ///
-    /// Returns whether such commands were running, as they may have
-    /// changed files since, or when this is not known.
+    /// Returns whether such commands were running, or ended since the last
+    /// call, as they may have changed files, or when this is not known.
     pub async fn stop_background(&self, keep_jobs: bool) -> bool {
         match self {
             Self::Local(ctx) => ctx.bash.jobs.stop_unless(keep_jobs),

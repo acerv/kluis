@@ -5,6 +5,7 @@
 
 use std::fs::File;
 use std::io::{self, Seek, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use nix::sys::signal::{killpg, Signal};
@@ -26,6 +27,8 @@ pub struct Jobs(Arc<JobList>);
 #[derive(Debug, Default)]
 struct JobList {
     pids: Mutex<Vec<u32>>,
+    /// Whether a command ended by itself since [`Jobs::stop_unless`].
+    ended: AtomicBool,
 }
 
 impl Drop for JobList {
@@ -58,9 +61,11 @@ impl Jobs {
     }
 
     /// Kill every command still running unless `keep`, and return whether
-    /// any was.
+    /// any was, or ended by itself since the last call.
     pub fn stop_unless(&self, keep: bool) -> bool {
+        // A command gone from the list has already marked it ended.
         let running = !self.pids().is_empty();
+        let running = self.0.ended.swap(false, Ordering::AcqRel) || running;
         if !keep {
             self.stop();
         }
@@ -88,7 +93,12 @@ async fn log_job(mut child: Child, mut pipe: Receiver, mut file: File, jobs: Wea
     };
     let _ = tokio::join!(log, child.wait());
     if let Some(jobs) = jobs.upgrade() {
-        lock(&jobs.pids).retain(|&p| Some(p) != pid);
+        let mut pids = lock(&jobs.pids);
+        // Not there when killed.
+        if let Some(i) = pids.iter().position(|&p| Some(p) == pid) {
+            pids.swap_remove(i);
+            jobs.ended.store(true, Ordering::Release);
+        }
     }
 }
 
