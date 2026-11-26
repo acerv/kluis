@@ -315,18 +315,31 @@ pub(crate) fn render_diff(
         let mut old_line = hunk.old_start;
         let mut new_line = hunk.new_start;
         for line in &hunk.lines {
-            let (number, sign, text, style) = match line {
+            // Changed lines are tinted whole, their text in the default
+            // color.
+            let (number, sign, text, style, tint) = match line {
                 DiffLine::Context(s) => {
                     old_line += 1;
-                    (post_increment(&mut new_line), ' ', s, theme.muted)
+                    let number = post_increment(&mut new_line);
+                    (number, ' ', s, theme.muted, Style::default())
                 }
-                DiffLine::Removed(s) => (post_increment(&mut old_line), '-', s, theme.diff_remove),
-                DiffLine::Added(s) => (post_increment(&mut new_line), '+', s, theme.diff_add),
+                DiffLine::Removed(s) => {
+                    let number = post_increment(&mut old_line);
+                    (number, '-', s, theme.diff_remove, theme.remove_line)
+                }
+                DiffLine::Added(s) => {
+                    let number = post_increment(&mut new_line);
+                    (number, '+', s, theme.diff_add, theme.add_line)
+                }
             };
-            push(Line::from(vec![
-                Span::styled(format!("{number:>width$} "), theme.muted),
-                Span::styled(format!("{sign}{}", expand_tabs(text)), style),
-            ]));
+            push(
+                Line::from(vec![
+                    Span::styled(format!("{number:>width$} "), theme.muted),
+                    Span::styled(sign.to_string(), style),
+                    Span::raw(expand_tabs(text).into_owned()),
+                ])
+                .style(tint),
+            );
         }
     }
     if omitted > 0 {

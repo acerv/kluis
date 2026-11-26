@@ -18,6 +18,10 @@ pub struct Theme {
     pub diff_hunk: Style,
     pub diff_add: Style,
     pub diff_remove: Style,
+    /// A whole added line of a diff, tinted.
+    pub add_line: Style,
+    /// A whole removed line of a diff, tinted.
+    pub remove_line: Style,
     pub error: Style,
     pub muted: Style,
     /// The mark of a tool call that ended well.
@@ -51,6 +55,8 @@ impl Theme {
                 diff_hunk: plain,
                 diff_add: plain,
                 diff_remove: plain,
+                add_line: plain,
+                remove_line: plain,
                 error: plain,
                 muted: plain,
                 success: plain,
@@ -82,10 +88,14 @@ impl Theme {
             diff_hunk: Style::default().fg(Color::Cyan),
             diff_add: Style::default().fg(Color::Green),
             diff_remove: Style::default().fg(Color::Red),
+            // 256-color palette #005f00 and #5f0000.
+            add_line: Style::default().bg(Color::Indexed(22)),
+            remove_line: Style::default().bg(Color::Indexed(52)),
             error: Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             muted: Style::default().fg(Color::DarkGray),
             success: Style::default().fg(Color::Green),
-            gutter: Style::default().fg(Color::DarkGray),
+            // Not tinted inside a tinted line.
+            gutter: Style::default().fg(Color::DarkGray).bg(Color::Reset),
             todo_done: Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::CROSSED_OUT),

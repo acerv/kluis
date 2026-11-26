@@ -2534,3 +2534,42 @@ fn tool_call_shows_how_it_ended_once_it_ends() {
     let lines = scrollback_lines(&mut app);
     assert_eq!(lines[..2], ["✗ bash sleep 9 · interrupted", ""]);
 }
+
+#[test]
+fn changed_diff_lines_are_tinted_across_the_terminal() {
+    let mut term = inline_terminal(40, 12);
+    let mut app = App::new("model", status(), Theme::new(true));
+    let diff = Diff {
+        hunks: vec![DiffHunk {
+            old_start: 1,
+            old_lines: 1,
+            new_start: 1,
+            new_lines: 1,
+            lines: vec![
+                DiffLine::Removed("old".into()),
+                DiffLine::Added("new".into()),
+            ],
+        }],
+        first_changed_line: Some(1),
+        truncated: false,
+    };
+    let args = r#"{"path":"a.rs","edits":[]}"#;
+    let details = Some(ToolDetails::Edit(diff));
+    run_tool(&mut app, "edit", args, r#"{"replacements":1}"#, details);
+    flush_scrollback(&mut term, &app.take_scrollback()).unwrap();
+
+    let buf = term.backend().buffer();
+    let row_of = |text: &str| {
+        (0..buf.area.height)
+            .find(|&y| {
+                let row: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+                row.contains(text)
+            })
+            .unwrap()
+    };
+    let (removed, added) = (row_of("-old"), row_of("+new"));
+    // The tint reaches the last column, but not the joint to the call.
+    assert_eq!(buf[(39, removed)].bg, Color::Indexed(52));
+    assert_eq!(buf[(39, added)].bg, Color::Indexed(22));
+    assert_eq!(buf[(0, added)].bg, Color::Reset);
+}
