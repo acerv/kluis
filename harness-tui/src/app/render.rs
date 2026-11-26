@@ -182,9 +182,9 @@ impl App {
                 Paragraph::new(picker.header_line(self.theme, area.width as usize)),
                 header_area,
             );
-            self.render_rule(frame, top_rule);
+            self.render_rule(frame, top_rule, None);
             picker.render(frame, list_area, self.theme);
-            self.render_rule(frame, bottom_rule);
+            self.render_rule(frame, bottom_rule, None);
             self.render_footer(frame, footer_area);
             return;
         }
@@ -223,9 +223,10 @@ impl App {
         self.render_live(frame, live_area, live_lines);
         self.render_spinner(frame, spinner_area);
         frame.render_widget(Paragraph::new(panel_lines), panel_area);
-        self.render_rule(frame, top_rule);
-        self.render_editor(frame, editor_area);
-        self.render_rule(frame, bottom_rule);
+        let mode = self.editor_mode();
+        self.render_rule(frame, top_rule, mode);
+        self.render_editor(frame, editor_area, mode);
+        self.render_rule(frame, bottom_rule, mode.map(|(_, style)| ("", style)));
         self.completion.render(frame, completion_area, self.theme);
         self.render_footer(frame, footer_area);
     }
@@ -280,35 +281,69 @@ impl App {
         frame.render_widget(Paragraph::new(line), area);
     }
 
-    fn render_rule(&self, frame: &mut Frame<'_>, area: Rect) {
+    /// What the editor is in, if anything special, with its color: a
+    /// shell command, a slash command, or plan mode.
+    fn editor_mode(&self) -> Option<(&'static str, Style)> {
+        let text = self.input.text();
+        if text.starts_with('!') {
+            Some(("shell", self.theme.shell))
+        } else if text.starts_with('/') {
+            Some(("command", self.theme.status_accent))
+        } else if self.plan {
+            Some(("plan", self.theme.plan))
+        } else {
+            None
+        }
+    }
+
+    /// A rule across `area`, in the color of `mode` if any, its name in the
+    /// rule, else in the color telling whether the agent works.
+    fn render_rule(&self, frame: &mut Frame<'_>, area: Rect, mode: Option<(&str, Style)>) {
         if area.height == 0 || area.width == 0 {
             return;
         }
-        let style = if self.busy {
-            self.theme.border_busy
-        } else {
-            self.theme.border_idle
+        let (label, style) = match mode {
+            Some((label, style)) => (label, style),
+            None if self.busy => ("", self.theme.border_busy),
+            None => ("", self.theme.border_idle),
         };
-        let rule = "─".repeat(area.width as usize);
-        frame.render_widget(Paragraph::new(Line::styled(rule, style)), area);
+        let width = area.width as usize;
+        let line = if label.is_empty() {
+            Line::styled("─".repeat(width), style)
+        } else {
+            let label = format!(" {label} ");
+            let rest = width.saturating_sub(2 + label.width());
+            Line::from(vec![
+                Span::styled("──", style),
+                Span::styled(label, style),
+                Span::styled("─".repeat(rest), style),
+            ])
+        };
+        frame.render_widget(Paragraph::new(line), area);
     }
 
-    fn render_editor(&self, frame: &mut Frame<'_>, area: Rect) {
+    fn render_editor(&self, frame: &mut Frame<'_>, area: Rect, mode: Option<(&str, Style)>) {
         if area.height == 0 || area.width == 0 {
             return;
         }
         let visible_rows = area.height as usize;
         let prefix_w = 2usize;
+        let prompt = match mode {
+            Some((_, style)) => style,
+            None => self.theme.prompt,
+        };
         let text_w = (area.width as usize).saturating_sub(prefix_w).max(1);
 
         if self.input.is_empty() {
             let hint = if self.busy {
                 "Type a message to send while the agent works…"
+            } else if self.plan {
+                "Describe what to plan… (Shift+Tab to leave plan mode)"
             } else {
                 "Type a message… (/help for commands)"
             };
             let line = Line::from(vec![
-                Span::styled("> ", self.theme.prompt),
+                Span::styled("> ", prompt),
                 Span::styled(hint, self.theme.muted),
             ]);
             frame.render_widget(Paragraph::new(line), area);
@@ -333,9 +368,9 @@ impl App {
             .take(visible_rows)
         {
             let prefix = if idx == 0 {
-                Span::styled("> ", self.theme.prompt)
+                Span::styled("> ", prompt)
             } else {
-                Span::styled("  ", self.theme.prompt)
+                Span::raw("  ")
             };
             rendered.push(Line::from(vec![prefix, Span::raw(row_text.as_str())]));
         }
