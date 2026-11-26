@@ -62,6 +62,10 @@ const SUMMARY_LEN: usize = 120;
 /// Maximum visible rows in the live streaming preview above the spinner.
 const MAX_LIVE_ROWS: u16 = 6;
 
+/// How full the context gets, in percent of the size it is compacted at,
+/// before the footer warns.
+const NEAR_COMPACT_PERCENT: u64 = 80;
+
 /// Maximum `todo` items shown above the editor.
 const MAX_TODO_ROWS: usize = 8;
 
@@ -202,6 +206,10 @@ pub struct App {
     /// Tokens the last request sent, as the provider counted them: the
     /// size of the conversation, or 0 before its first request.
     context: u64,
+    /// The size the conversation is compacted at, if it is.
+    compact_at: Option<u64>,
+    /// Output tokens of the running prompt, its subagents too.
+    prompt_output: u64,
     notice: Option<String>,
     picker: Option<Picker>,
     completion: CommandCompletion,
@@ -242,6 +250,8 @@ impl App {
             emitted_reasoning: false,
             usage: TokenUsage::default(),
             context: 0,
+            compact_at: None,
+            prompt_output: 0,
             notice: None,
             picker: None,
             completion: CommandCompletion::default(),
@@ -487,6 +497,12 @@ impl App {
     /// a restored one.
     pub fn set_context(&mut self, tokens: u64) {
         self.context = tokens;
+    }
+
+    /// Show the size of the conversation against `tokens`, the size it is
+    /// compacted at, if any.
+    pub fn set_compact_at(&mut self, tokens: Option<u64>) {
+        self.compact_at = tokens;
     }
 
     /// Let `/<name>` run each of `commands` and ask for each of `skills`.
@@ -814,6 +830,7 @@ impl App {
 
     fn enter_busy(&mut self) {
         self.busy = true;
+        self.prompt_output = 0;
         self.spinner = 0;
         self.activity_started = Some(Instant::now());
         self.prompt_started = self.activity_started;
@@ -863,9 +880,13 @@ impl App {
             }
             AgentUpdate::TurnEnd(usage) => {
                 self.usage += usage;
+                self.prompt_output += usage.output;
                 self.context = usage.prompt();
             }
-            AgentUpdate::TaskUsage(usage) => self.usage += usage,
+            AgentUpdate::TaskUsage(usage) => {
+                self.usage += usage;
+                self.prompt_output += usage.output;
+            }
             AgentUpdate::Retry {
                 attempt,
                 delay,

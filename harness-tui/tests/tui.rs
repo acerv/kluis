@@ -60,7 +60,7 @@ fn inline_terminal_with(width: u16, height: u16, viewport: u16) -> Terminal<Test
 fn spinner_row(terminal: &Terminal<TestBackend>) -> usize {
     render_text(terminal)
         .lines()
-        .position(|line| line.contains("esc to cancel"))
+        .position(|line| line.contains("Working…") || line.contains("Thinking…"))
         .expect("spinner line")
 }
 
@@ -2346,7 +2346,7 @@ fn shift_tab_switches_plan_mode() {
     assert!(app.plan());
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
-    assert!(screen.contains("model (default) · plan mode"), "{screen}");
+    assert!(screen.contains("model (default) [plan]"), "{screen}");
     assert!(screen.contains("Plan mode: the model plans"), "{screen}");
     assert!(app.status_text(None, 0).contains("mode:    plan"));
 
@@ -2364,7 +2364,7 @@ fn shift_tab_switches_plan_mode() {
         Action::SetPlan(false)
     );
     term.draw(|f| app.render(f)).unwrap();
-    assert!(!render_text(&term).contains("plan mode"));
+    assert!(!render_text(&term).contains("[plan]"));
 }
 
 #[test]
@@ -2594,4 +2594,51 @@ fn light_theme_keeps_text_off_near_white() {
     }
     assert_eq!(Theme::named(ThemeName::Light, false), Theme::new(false));
     assert_eq!("Light".parse::<ThemeName>(), Ok(ThemeName::Light));
+}
+
+#[test]
+fn footer_shows_context_against_the_compaction_size_and_keys_while_busy() {
+    let mut term = inline_terminal(80, 14);
+    let mut app = App::new("model", status(), Theme::new(true));
+    app.set_compact_at(Some(100_000));
+    let turn = |input| {
+        AgentUpdate::TurnEnd(TokenUsage {
+            input,
+            output: 1_500,
+            cached: 0,
+        })
+    };
+    app.apply_update(turn(42_000));
+    term.draw(|f| app.render(f)).unwrap();
+    let screen = render_text(&term);
+    assert!(
+        screen.contains("model (default) · 42K/100K context"),
+        "{screen}"
+    );
+    let context_cell = |term: &Terminal<TestBackend>| {
+        let buf = term.backend().buffer();
+        let y = (0..buf.area.height)
+            .find(|&y| buf[(0, y)].symbol() == "m" && buf[(1, y)].symbol() == "o")
+            .unwrap();
+        buf[(24, y)].fg
+    };
+    assert_eq!(context_cell(&term), Color::DarkGray);
+
+    // Near the size it is compacted at, it warns.
+    app.apply_update(turn(85_000));
+    term.draw(|f| app.render(f)).unwrap();
+    assert_eq!(context_cell(&term), Color::Yellow);
+
+    // While busy: the keys instead of the sandbox, and what the prompt
+    // wrote so far on the spinner line.
+    app.start_prompt("go");
+    app.apply_update(turn(1_000));
+    term.draw(|f| app.render(f)).unwrap();
+    let screen = render_text(&term);
+    assert!(
+        screen.contains("esc to cancel · ctrl+o verbose"),
+        "{screen}"
+    );
+    assert!(!screen.contains("sandboxed"), "{screen}");
+    assert!(screen.contains("Working… · ↓ 1.5K tokens"), "{screen}");
 }
