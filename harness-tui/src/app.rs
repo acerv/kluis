@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use genai::chat::{ChatMessage, ChatRole, ContentPart};
-use harness_core::tools::{is_read_only, Image, Todo, TodoStatus, TodoTool, TODO_TOOL};
+use harness_core::tools::{is_read_only, Diff, Image, Todo, TodoStatus, TodoTool, TODO_TOOL};
 use harness_core::{Command, ModelInfo, SessionSummary, Skill, Thinking, TokenUsage, ToolDetails};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
@@ -621,8 +621,9 @@ impl App {
     }
 
     /// Replay a restored conversation history into scrollback, with its size
-    /// unknown until [`App::set_context`] or its next request.
-    pub fn replay_history(&mut self, messages: &[ChatMessage]) {
+    /// unknown until [`App::set_context`] or its next request, with the
+    /// changes its `edit` calls made, by call id.
+    pub fn replay_history(&mut self, messages: &[ChatMessage], mut diffs: HashMap<String, Diff>) {
         self.usage = TokenUsage::default();
         self.context = 0;
         // The plan of the conversation shown until now is not of this one.
@@ -671,7 +672,9 @@ impl App {
                 }
                 ChatRole::Tool => {
                     for resp in msg.content.tool_responses() {
-                        let reply = ToolReply::new(resp.content.clone(), None);
+                        let diff = diffs.remove(resp.call_id.as_str());
+                        let reply =
+                            ToolReply::new(resp.content.clone(), diff.map(ToolDetails::Edit));
                         let (at, name, args) = match tool_calls.remove(resp.call_id.as_str()) {
                             Some((at, name, args)) => (at, Some(name), Some(args)),
                             None => (None, None, None),

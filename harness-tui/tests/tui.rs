@@ -3,7 +3,9 @@
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use genai::chat::{ChatMessage, ChatRole, ContentPart, MessageContent, ToolCall, ToolResponse};
-use harness_core::tools::{Diff, DiffHunk, DiffLine, Image};
+use std::collections::HashMap;
+
+use harness_core::tools::{diff_lines, Diff, DiffHunk, DiffLine, Image};
 use harness_core::{
     Command, Event as AgentEvent, SessionStore, Skill, Thinking, TokenUsage, ToolDetails,
 };
@@ -154,7 +156,7 @@ fn context_follows_the_conversation() {
 
     // Another conversation: unknown, until its saved size comes along.
     app.apply_update(AgentUpdate::TurnEnd(turn));
-    app.replay_history(&[ChatMessage::user("an older session")]);
+    app.replay_history(&[ChatMessage::user("an older session")], HashMap::new());
     term.draw(|f| app.render(f)).unwrap();
     assert!(!render_text(&term).contains("context"));
     app.set_context(42_000);
@@ -543,7 +545,7 @@ fn replay_history() {
         ChatMessage::from(ToolResponse::new("c1", r#"{"total_lines":42}"#)),
         ChatMessage::assistant("Looks good."),
     ];
-    app.replay_history(&history);
+    app.replay_history(&history, HashMap::new());
     let lines = app.take_scrollback();
     let plain: String = lines
         .iter()
@@ -555,6 +557,28 @@ fn replay_history() {
     assert!(plain.contains("42 lines"), "{plain}");
     assert!(plain.contains("Looks good."), "{plain}");
     assert!(!plain.contains("hidden thought"), "{plain}");
+}
+
+#[test]
+fn replayed_edit_shows_its_saved_diff() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    let history = [
+        ChatMessage::assistant(MessageContent::from_parts(vec![ContentPart::ToolCall(
+            ToolCall {
+                call_id: "c1".into(),
+                fn_name: "edit".into(),
+                fn_arguments: serde_json::json!({ "path": "a.rs", "edits": [] }),
+                thought_signatures: None,
+            },
+        )])),
+        ChatMessage::from(ToolResponse::new("c1", r#"{"replacements":1}"#)),
+    ];
+    let diffs = HashMap::from([("c1".to_owned(), diff_lines("old\n", "new\n"))]);
+    app.replay_history(&history, diffs);
+    assert_eq!(
+        scrollback_lines(&mut app),
+        ["✓ edit a.rs", "  ⎿ 1 -old", "    1 +new", ""]
+    );
 }
 
 #[test]
@@ -1551,7 +1575,7 @@ fn replay_restores_an_unfinished_plan() {
     };
 
     let mut app = App::new("model", status(), Theme::new(false));
-    app.replay_history(&call("c1", PLAN, r#"{"count":3}"#));
+    app.replay_history(&call("c1", PLAN, r#"{"count":3}"#), HashMap::new());
     let scrollback: Vec<String> = app
         .take_scrollback()
         .iter()
@@ -1564,20 +1588,23 @@ fn replay_restores_an_unfinished_plan() {
     assert!(render_text(&draw_app(&app)).contains("▸ build"));
 
     // Another conversation takes its place, as with `/resume`: not its plan.
-    app.replay_history(&[ChatMessage::user("something else")]);
+    app.replay_history(&[ChatMessage::user("something else")], HashMap::new());
     assert!(!render_text(&draw_app(&app)).contains("Plan"));
 
     let mut app = App::new("model", status(), Theme::new(false));
-    app.replay_history(&call("c1", DONE, r#"{"count":1}"#));
+    app.replay_history(&call("c1", DONE, r#"{"count":1}"#), HashMap::new());
     assert!(!render_text(&draw_app(&app)).contains("Plan"));
 
     // Failed todo call during replay shows its error instead of applying invalid args.
     let mut app = App::new("model", status(), Theme::new(false));
-    app.replay_history(&call(
-        "c1",
-        PLAN,
-        r#"{"error":"only one todo can be in_progress"}"#,
-    ));
+    app.replay_history(
+        &call(
+            "c1",
+            PLAN,
+            r#"{"error":"only one todo can be in_progress"}"#,
+        ),
+        HashMap::new(),
+    );
     assert!(!render_text(&draw_app(&app)).contains("Plan"));
     let scrollback: Vec<String> = app
         .take_scrollback()
@@ -1635,6 +1662,38 @@ fn prompt_is_saved_while_it_runs() {
     assert_eq!(data.messages[0].content.first_text(), Some("summary"));
     assert_eq!((data.usage, data.context), (usage, 7));
     assert_eq!((session.usage(), session.context()), (usage, 7));
+}
+
+#[test]
+fn edit_diffs_are_saved_with_the_prompt() {
+    let home = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(home.path(), home.path());
+    let writer = store.create("model");
+    let mut session = Session::new(store.clone(), writer, TokenUsage::default(), 0);
+    let diff = diff_lines("old\n", "new\n");
+    let response = ToolResponse::new("c1", r#"{"replacements":1}"#);
+    let turn = [
+        ChatMessage::user("go"),
+        ChatMessage::assistant(MessageContent::from_parts(vec![ContentPart::ToolCall(
+            ToolCall {
+                call_id: "c1".into(),
+                fn_name: "edit".into(),
+                fn_arguments: serde_json::json!({ "path": "a.rs" }),
+                thought_signatures: None,
+            },
+        )])),
+        ChatMessage::from(response.clone()),
+    ];
+
+    let mut saver = PromptSaver::new(Some(&mut session), &[]);
+    saver.on_event(&AgentEvent::Messages(&turn[..2]));
+    let details = ToolDetails::Edit(diff.clone());
+    saver.on_event(&AgentEvent::ToolResult(&response, Some(&details)));
+    saver.on_event(&AgentEvent::Messages(&turn[2..]));
+    drop(saver);
+
+    let data = store.latest().unwrap().unwrap();
+    assert_eq!(data.diffs, HashMap::from([("c1".to_owned(), diff)]));
 }
 
 #[test]
@@ -1737,7 +1796,10 @@ fn printable_text_sends_no_escape_sequences() {
 
 /// The colors of the code in a ```sh block, as `app` shows it.
 fn code_colors(app: &mut App) -> Vec<Color> {
-    app.replay_history(&[ChatMessage::assistant("```sh\nls -la /tmp\n```")]);
+    app.replay_history(
+        &[ChatMessage::assistant("```sh\nls -la /tmp\n```")],
+        HashMap::new(),
+    );
     let lines = app.take_scrollback();
     let code = lines
         .iter()
@@ -1977,7 +2039,7 @@ fn markdown_tables_scale_to_terminal_width_with_multiline_cells() {
     // Replayed history also respects the configured terminal width.
     let mut replayed = App::new("model", status(), Theme::new(false));
     replayed.set_width(48);
-    replayed.replay_history(&[ChatMessage::assistant(table)]);
+    replayed.replay_history(&[ChatMessage::assistant(table)], HashMap::new());
     let replayed_lines = replayed.take_scrollback();
     assert!(!replayed_lines.is_empty());
     for line in &replayed_lines {
@@ -2192,7 +2254,7 @@ fn verbose_output_shows_a_restored_tool_result() {
         )),
     ];
     app.handle_event(ctrl('o'));
-    app.replay_history(&history);
+    app.replay_history(&history, HashMap::new());
     let lines = scrollback_lines(&mut app);
     assert_eq!(
         lines[lines.len() - 3..],

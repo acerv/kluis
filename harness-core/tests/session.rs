@@ -12,7 +12,7 @@ use genai::chat::{
     ChatMessage, ChatRole, ContentPart, MessageContent, PromptTokensDetails, ToolCall,
     ToolResponse, Usage,
 };
-use harness_core::tools::ToolContext;
+use harness_core::tools::{diff_lines, ToolContext};
 use harness_core::{Agent, SessionStore, TokenUsage};
 use serde_json::json;
 
@@ -642,4 +642,97 @@ fn session_file_removed_after_loading_starts_again_with_its_header() {
     let reloaded = store.latest().unwrap().expect("session made again");
     assert_eq!(reloaded.meta.id, id);
     assert_eq!(reloaded.messages.len(), 1);
+}
+
+/// An `edit` call `id` and its result.
+fn edit_turn(id: &str) -> [ChatMessage; 2] {
+    [
+        ChatMessage::assistant(MessageContent::from_parts(vec![ContentPart::ToolCall(
+            ToolCall {
+                call_id: id.into(),
+                fn_name: "edit".into(),
+                fn_arguments: json!({ "path": "a.txt" }),
+                thought_signatures: None,
+            },
+        )])),
+        ChatMessage::from(ToolResponse::new(id, r#"{"replacements":1}"#)),
+    ]
+}
+
+#[test]
+fn diffs_of_answered_calls_are_loaded() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(root.path(), cwd.path());
+    let mut writer = store.create("deepseek-chat");
+    let diff = diff_lines("old\n", "new\n");
+
+    writer
+        .append_messages(&[ChatMessage::user("change it")])
+        .unwrap();
+    writer.append_diff("c1", &diff).unwrap();
+    writer.append_messages(&edit_turn("c1")).unwrap();
+    // A call whose result was never saved, as when the prompt crashed.
+    writer.append_diff("lost", &diff).unwrap();
+
+    let loaded = store.load(writer.id()).unwrap();
+    assert_eq!(loaded.messages.len(), 3);
+    assert_eq!(loaded.diffs.len(), 1);
+    assert_eq!(loaded.diffs["c1"], diff);
+    assert_eq!(store.list().unwrap()[0].message_count, 3);
+}
+
+#[test]
+fn compaction_keeps_only_the_diffs_of_the_calls_left() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(root.path(), cwd.path());
+    let mut writer = store.create("deepseek-chat");
+    let first = diff_lines("a\n", "b\n");
+    let second = diff_lines("c\n", "d\n");
+
+    writer
+        .append_messages(&[ChatMessage::user("task")])
+        .unwrap();
+    writer.append_diff("c1", &first).unwrap();
+    writer.append_messages(&edit_turn("c1")).unwrap();
+    writer.append_diff("c2", &second).unwrap();
+    let kept = edit_turn("c2");
+    writer.append_messages(&kept).unwrap();
+
+    writer.append_compact(&kept).unwrap();
+
+    let file = std::fs::read_to_string(writer.path()).unwrap();
+    assert!(!file.contains(r#""call_id":"c1""#), "{file}");
+    let loaded = store.load(writer.id()).unwrap();
+    assert_eq!(loaded.diffs.len(), 1);
+    assert_eq!(loaded.diffs["c2"], second);
+}
+
+#[test]
+fn fork_copies_the_diffs_of_the_conversation() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(root.path(), cwd.path());
+    let mut original = store.create("deepseek-chat");
+    let diff = diff_lines("old\n", "new\n");
+    let mut messages = vec![ChatMessage::user("task")];
+    messages.extend(edit_turn("c1"));
+
+    original.append_messages(&messages[..1]).unwrap();
+    original.append_diff("c1", &diff).unwrap();
+    original.append_diff("c2", &diff).unwrap();
+    original.append_messages(&messages[1..]).unwrap();
+    original.append_messages(&edit_turn("c2")).unwrap();
+
+    // Forked before the second edit.
+    let fork = store
+        .fork(original.id(), "gpt-4o", &messages, TokenUsage::default(), 0)
+        .unwrap();
+
+    let file = std::fs::read_to_string(fork.path()).unwrap();
+    assert!(!file.contains(r#""call_id":"c2""#), "{file}");
+    let loaded = store.load(fork.id()).unwrap();
+    assert_eq!(loaded.diffs.len(), 1);
+    assert_eq!(loaded.diffs["c1"], diff);
 }

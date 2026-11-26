@@ -29,12 +29,13 @@ mod terminal;
 mod text;
 mod transcript;
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 
 use genai::adapter::AdapterKind;
 use genai::chat::ChatMessage;
-use harness_core::tools::is_read_only;
+use harness_core::tools::{is_read_only, Diff};
 use harness_core::{expand_command, Agent, Command, Error, SessionSummary};
 use harness_sandbox::GitGuard;
 use tokio::sync::mpsc;
@@ -103,6 +104,8 @@ pub struct RunOptions {
     pub model: Option<String>,
     pub history: Option<History>,
     pub picker_entries: Vec<SessionSummary>,
+    /// The changes the `edit` calls of `history` made, by call id.
+    pub diffs: HashMap<String, Diff>,
     /// Go on in a copy of the session picked at startup.
     pub fork: bool,
     pub adapters: Vec<AdapterKind>,
@@ -177,6 +180,7 @@ pub async fn run(
         model: mut startup_model,
         mut history,
         picker_entries,
+        diffs,
         fork: mut startup_fork,
         adapters,
         banner,
@@ -211,7 +215,7 @@ pub async fn run(
     }
     app.push_banner(&banner);
     if !agent.history().is_empty() {
-        app.replay_history(agent.history());
+        app.replay_history(agent.history(), diffs);
         if let Some(session) = session.as_ref() {
             app.set_usage(session.usage());
             app.set_context(session.context());

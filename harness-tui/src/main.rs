@@ -21,6 +21,7 @@
 mod config;
 mod sandbox;
 
+use std::collections::HashMap;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -32,7 +33,7 @@ use genai::chat::ChatMessage;
 use harness_core::oauth::flow::Login;
 use harness_core::oauth::{OAuthProvider, OAuthStore};
 use harness_core::tools::{
-    run_worker, Engine, Executor, OutputFiles, Searcher, ToolContext, WebClient,
+    run_worker, Diff, Engine, Executor, OutputFiles, Searcher, ToolContext, WebClient,
 };
 use harness_core::{
     provider_name, Agent, AuthConfig, Command, CredentialSource, Error, Event, Installed,
@@ -506,6 +507,7 @@ async fn run(
         history,
         mut session,
         picker_entries,
+        diffs,
     } = open_session(&args, &cwd, default_model)?;
     let credential = AdapterKind::from_model(&model)
         .ok()
@@ -580,6 +582,7 @@ async fn run(
             model: args.model,
             history,
             picker_entries,
+            diffs,
             fork: args.fork,
             agents_file: config::agents_path(),
             adapters,
@@ -674,6 +677,8 @@ fn find_skills(args: &Args, cwd: &Path) -> Skills {
 struct Opened {
     model: String,
     history: Vec<ChatMessage>,
+    /// The changes the `edit` calls of `history` made, by call id.
+    diffs: HashMap<String, Diff>,
     session: Option<Session>,
     /// The sessions to pick one from first, for `--resume` without an id.
     picker_entries: Vec<SessionSummary>,
@@ -694,6 +699,7 @@ fn open_session(args: &Args, cwd: &Path, default_model: &str) -> Result<Opened, 
         }),
         model: model.clone(),
         history: Vec::new(),
+        diffs: HashMap::new(),
         picker_entries,
     };
     if args.continue_session {
@@ -1004,6 +1010,7 @@ fn open_loaded_session(
         model: model.to_owned(),
         session: Some(session),
         history: data.messages,
+        diffs: data.diffs,
         picker_entries: Vec::new(),
     })
 }

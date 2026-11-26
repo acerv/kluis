@@ -110,10 +110,9 @@ impl SessionStore {
     /// message is appended.
     pub fn create(&self, model: impl Into<String>) -> SessionWriter {
         let (id, created_at) = new_session_id();
-        let path = self.dir.join(format!("{id}.jsonl"));
         SessionWriter {
+            path: self.session_path(&id),
             id,
-            path,
             cwd: self.cwd.clone(),
             model: model.into(),
             created_at,
@@ -139,8 +138,14 @@ impl SessionStore {
         let mut writer = self.create(model);
         writer.forked_from = Some(from.to_owned());
         writer.append_messages(messages)?;
+        writer.copy_diffs(&self.session_path(from), messages)?;
         writer.append_usage(usage, context)?;
         Ok(writer)
+    }
+
+    /// The file of session `id`.
+    fn session_path(&self, id: &str) -> PathBuf {
+        self.dir.join(format!("{id}.jsonl"))
     }
 
     /// Open an existing loaded session so further turns append to the same

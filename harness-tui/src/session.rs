@@ -7,7 +7,7 @@ use std::io;
 
 use genai::chat::ChatMessage;
 use harness_core::{
-    Error, Event, SessionData, SessionStore, SessionSummary, SessionWriter, TokenUsage,
+    Error, Event, SessionData, SessionStore, SessionSummary, SessionWriter, TokenUsage, ToolDetails,
 };
 
 /// Active persistence handle for an interactive or single-shot session.
@@ -167,6 +167,9 @@ impl<'a> PromptSaver<'a> {
                 self.saved = messages.len();
                 session.context = 0;
                 session.writer.append_compact(messages)
+            }
+            Event::ToolResult(resp, Some(ToolDetails::Edit(diff))) => {
+                session.writer.append_diff(&resp.call_id, diff)
             }
             _ => return,
         };

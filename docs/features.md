@@ -20,6 +20,7 @@
 - Sessions are persisted as JSONL per workspace, appended to as they go and
   rewritten without the replaced messages on compaction, so long ones stay
   small enough to resume. Continue the latest or resume any session by ID.
+  The diffs of `edit` calls are saved too, and show again on resume.
 - Automatic conversation compaction when prompt tokens reach the configured
   threshold (default 100K), plus manual `/compact [focus]`.
 - When the provider refuses a request as larger than the context window, the

@@ -4,6 +4,7 @@
 //! Writing a session file.
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, ErrorKind, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -12,8 +13,9 @@ use std::path::{Path, PathBuf};
 use genai::chat::{ChatMessage, ContentPart};
 use serde::{Deserialize, Serialize};
 
-use super::{TokenUsage, FORMAT_VERSION};
+use super::{answered_calls, TokenUsage, FORMAT_VERSION};
 use crate::private_file;
+use crate::tools::Diff;
 
 /// Writer for a single `.jsonl` session file, which only grows but on
 /// compaction.
@@ -49,6 +51,27 @@ impl SessionWriter {
             let message = &without_images(message);
             write_entry(writer, &SessionEntryRef::Message { message })?;
         }
+        writer.flush()
+    }
+
+    /// Record the change the `edit` call `call_id` made.
+    pub fn append_diff(&mut self, call_id: &str, diff: &Diff) -> io::Result<()> {
+        let writer = self.writer()?;
+        write_entry(writer, &SessionEntryRef::Diff { call_id, diff })?;
+        writer.flush()
+    }
+
+    /// Copy the changes of the `edit` calls of `messages` from the session
+    /// file at `from`.
+    pub(super) fn copy_diffs(&mut self, from: &Path, messages: &[ChatMessage]) -> io::Result<()> {
+        let calls = answered_calls(messages);
+        if calls.is_empty() {
+            return Ok(());
+        }
+        let writer = self.writer()?;
+        copy_lines(from, writer, |entry| {
+            entry.kind == "diff" && entry.answers(&calls)
+        })?;
         writer.flush()
     }
 
@@ -143,41 +166,58 @@ impl SessionWriter {
     }
 }
 
-/// The `type` of a session file line.
+/// The `type` of a session file line, and the tool call it is about.
 #[derive(Deserialize)]
 struct EntryKind {
     #[serde(rename = "type")]
     kind: String,
+    #[serde(default)]
+    call_id: Option<String>,
+}
+
+impl EntryKind {
+    /// Whether the line is about one of `calls`.
+    fn answers(&self, calls: &HashSet<&str>) -> bool {
+        self.call_id.as_deref().is_some_and(|id| calls.contains(id))
+    }
+}
+
+/// Write to `out` the lines of the session file at `path` that `keep`
+/// picks. Corrupt lines, as one cut by a crash, are left out.
+fn copy_lines(
+    path: &Path,
+    out: &mut impl Write,
+    mut keep: impl FnMut(&EntryKind) -> bool,
+) -> io::Result<()> {
+    let old = BufReader::new(File::open(path)?);
+    for line in old.split(b'\n') {
+        let line = line?;
+        if serde_json::from_slice::<EntryKind>(&line).is_ok_and(|entry| keep(&entry)) {
+            out.write_all(&line)?;
+            out.write_all(b"\n")?;
+        }
+    }
+    Ok(())
 }
 
 /// Rewrite the session file at `path` with what loading it still needs, its
-/// header, first message, model changes and token usage, then `messages`
-/// replacing the conversation. The new file replaces the old one only once
-/// complete.
+/// header, first message, model changes, token usage and the diffs of the
+/// calls of `messages`, then `messages` replacing the conversation. The new
+/// file replaces the old one only once complete.
 fn rewrite_compacted(path: &Path, messages: &[ChatMessage]) -> io::Result<()> {
     private_file::replace(path, |tmp| write_compacted(path, tmp, messages))
 }
 
 fn write_compacted(path: &Path, tmp: &mut File, messages: &[ChatMessage]) -> io::Result<()> {
-    let old = BufReader::new(File::open(path)?);
+    let calls = answered_calls(messages);
     let mut out = BufWriter::new(tmp);
     let mut first_message = true;
-    for line in old.split(b'\n') {
-        let line = line?;
-        // Corrupt lines, as one cut by a crash, are left out.
-        let keep = match serde_json::from_slice::<EntryKind>(&line) {
-            Ok(entry) => match entry.kind.as_str() {
-                "message" => std::mem::take(&mut first_message),
-                "compact" => false,
-                _ => true,
-            },
-            Err(_) => false,
-        };
-        if keep {
-            out.write_all(&line)?;
-            out.write_all(b"\n")?;
-        }
-    }
+    copy_lines(path, &mut out, |entry| match entry.kind.as_str() {
+        "message" => std::mem::take(&mut first_message),
+        "compact" => false,
+        "diff" => entry.answers(&calls),
+        _ => true,
+    })?;
     write_entry(&mut out, &SessionEntryRef::Compact { messages })?;
     out.flush()
 }
@@ -224,6 +264,10 @@ enum SessionEntryRef<'a> {
     },
     Compact {
         messages: &'a [ChatMessage],
+    },
+    Diff {
+        call_id: &'a str,
+        diff: &'a Diff,
     },
     Usage {
         input_tokens: u64,

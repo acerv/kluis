@@ -4,6 +4,7 @@
 //! Reading a session file, whole or only its summary.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::Path;
@@ -14,8 +15,8 @@ use serde::de::IgnoredAny;
 use serde::Deserialize;
 
 use super::{
-    SessionData, SessionEntry, SessionMeta, SessionSummary, TokenUsage, FORMAT_VERSION,
-    MAX_SESSION_BYTES,
+    answered_calls, SessionData, SessionEntry, SessionMeta, SessionSummary, TokenUsage,
+    FORMAT_VERSION, MAX_SESSION_BYTES,
 };
 use crate::Error;
 
@@ -145,6 +146,7 @@ enum SummaryEntryLight {
     Compact {
         messages: Vec<IgnoredAny>,
     },
+    Diff {},
     Usage {},
 }
 
@@ -176,7 +178,11 @@ pub(super) fn summarize_file(path: &Path, modified: SystemTime) -> Option<Sessio
                 Ok(SummaryEntryLight::Message { .. }) => message_count += 1,
                 Ok(SummaryEntryLight::Compact { messages }) => message_count = messages.len(),
                 Ok(SummaryEntryLight::Model { model: next }) => model = next,
-                Ok(SummaryEntryLight::Usage {} | SummaryEntryLight::Header {}) => {}
+                Ok(
+                    SummaryEntryLight::Diff {}
+                    | SummaryEntryLight::Usage {}
+                    | SummaryEntryLight::Header {},
+                ) => {}
                 Err(_) => saw_error = true,
             }
         } else {
@@ -196,7 +202,11 @@ pub(super) fn summarize_file(path: &Path, modified: SystemTime) -> Option<Sessio
                     message_count = messages.len();
                 }
                 Ok(SessionEntry::Model { model: next }) => model = next,
-                Ok(SessionEntry::Usage { .. } | SessionEntry::Header { .. }) => {}
+                Ok(
+                    SessionEntry::Diff { .. }
+                    | SessionEntry::Usage { .. }
+                    | SessionEntry::Header { .. },
+                ) => {}
                 Err(_) => saw_error = true,
             }
         }
@@ -249,6 +259,7 @@ pub(super) fn load_file(path: &Path) -> Result<SessionData, Error> {
     let (mut meta, mut last_valid_end) = lines.header()?;
 
     let mut messages = Vec::new();
+    let mut diffs = HashMap::new();
     let mut usage = TokenUsage::default();
     let mut context = 0;
     let mut corrupt = None;
@@ -268,6 +279,10 @@ pub(super) fn load_file(path: &Path) -> Result<SessionData, Error> {
             }) => {
                 messages = compacted;
                 context = 0;
+                last_valid_end = line_end;
+            }
+            Ok(SessionEntry::Diff { call_id, diff }) => {
+                diffs.insert(call_id, diff);
                 last_valid_end = line_end;
             }
             Ok(SessionEntry::Usage {
@@ -301,10 +316,14 @@ pub(super) fn load_file(path: &Path) -> Result<SessionData, Error> {
     }
 
     let repair_len = (corrupt.is_some() || !lines.newline).then_some(last_valid_end as u64);
+    // Those of calls compacted away, or whose result was never saved.
+    let calls = answered_calls(&messages);
+    diffs.retain(|id: &String, _| calls.contains(id.as_str()));
 
     Ok(SessionData {
         meta,
         messages,
+        diffs,
         usage,
         context,
         repair_len,

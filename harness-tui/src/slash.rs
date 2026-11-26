@@ -531,7 +531,7 @@ pub(crate) fn resume_session(
         "[{what} session {short} · {} messages]",
         agent.history().len()
     ));
-    app.replay_history(agent.history());
+    app.replay_history(agent.history(), data.diffs);
     app.set_usage(session.usage());
     app.set_context(session.context());
 }

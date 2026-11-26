@@ -5,11 +5,14 @@
 //!
 //! Only Linux is supported.
 
+use std::collections::{HashMap, HashSet};
 use std::ops::AddAssign;
 use std::path::PathBuf;
 
 use genai::chat::{ChatMessage, Usage};
 use serde::{Deserialize, Serialize};
+
+use crate::tools::Diff;
 
 mod load;
 mod store;
@@ -46,6 +49,11 @@ pub enum SessionEntry {
     },
     Compact {
         messages: Vec<ChatMessage>,
+    },
+    /// The change an `edit` call made, to show it again.
+    Diff {
+        call_id: String,
+        diff: Diff,
     },
     Usage {
         input_tokens: u64,
@@ -143,10 +151,21 @@ pub struct SessionSummary {
 pub struct SessionData {
     pub meta: SessionMeta,
     pub messages: Vec<ChatMessage>,
+    /// The changes the `edit` calls of `messages` made, by call id.
+    pub diffs: HashMap<String, Diff>,
     pub usage: TokenUsage,
     /// Tokens the last request sent, or 0 when unknown.
     pub context: u64,
     /// If the file had a truncated trailing line or lacked a final newline,
     /// the byte length of the valid prefix to repair before appending.
     pub(super) repair_len: Option<u64>,
+}
+
+/// The ids of the tool calls `messages` hold the results of.
+fn answered_calls(messages: &[ChatMessage]) -> HashSet<&str> {
+    messages
+        .iter()
+        .flat_map(|msg| msg.content.tool_responses())
+        .map(|resp| resp.call_id.as_str())
+        .collect()
 }
