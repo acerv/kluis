@@ -803,13 +803,13 @@ fn thinking_effort_slash_and_footer() {
     // Footer model color changes by thinking effort when color is enabled.
     let mut colored = App::new("deepseek-flash", status(), Theme::new(true));
     for (level, expected_fg) in [
-        (Thinking::Default, Color::Green),
-        (Thinking::Off, Color::Gray),
-        (Thinking::Low, Color::Cyan),
-        (Thinking::Medium, Color::Yellow),
-        (Thinking::High, Color::Indexed(208)),
-        (Thinking::XHigh, Color::Red),
-        (Thinking::Max, Color::Magenta),
+        (Thinking::Default, Color::Rgb(158, 206, 106)),
+        (Thinking::Off, Color::Rgb(169, 177, 214)),
+        (Thinking::Low, Color::Rgb(125, 207, 255)),
+        (Thinking::Medium, Color::Rgb(224, 175, 104)),
+        (Thinking::High, Color::Rgb(255, 158, 100)),
+        (Thinking::XHigh, Color::Rgb(247, 118, 142)),
+        (Thinking::Max, Color::Rgb(187, 154, 247)),
     ] {
         colored.set_thinking(level);
         term.draw(|f| colored.render(f)).unwrap();
@@ -1454,7 +1454,7 @@ fn plan_shows_above_the_editor_instead_of_scrollback() {
 
     let buf = term.backend().buffer();
     let current = &buf[(4, (plan + 2) as u16)];
-    assert_eq!(current.fg, Color::Yellow);
+    assert_eq!(current.fg, Color::Rgb(224, 175, 104));
     assert!(current.modifier.contains(Modifier::BOLD));
     let done = &buf[(4, (plan + 1) as u16)];
     assert!(done.modifier.contains(Modifier::CROSSED_OUT));
@@ -2143,6 +2143,37 @@ fn verbose_output_shows_whole_tool_results() {
 }
 
 #[test]
+fn verbose_output_shows_whole_tool_calls() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    app.start_prompt("run it");
+    app.take_scrollback();
+    let long = "x".repeat(200);
+    let command = format!("echo {long} \\\n\t&& true");
+    let args = serde_json::json!({ "command": command }).to_string();
+    let content = r#"{"exit_code":0,"output":""}"#;
+    run_tool(&mut app, "bash", &args, content, None);
+    let quiet = scrollback_lines(&mut app);
+    assert!(quiet[0].ends_with('…'), "{quiet:#?}");
+    assert!(!quiet.iter().any(|l| l.contains("&& true")), "{quiet:#?}");
+
+    app.handle_event(ctrl('o'));
+    run_tool(&mut app, "bash", &args, content, None);
+    assert_eq!(
+        scrollback_lines(&mut app),
+        [
+            format!("✓ bash echo {long} \\"),
+            "        && true".to_owned(),
+            String::new(),
+        ]
+    );
+
+    // Unknown tools show their arguments whole.
+    let args = format!(r#"{{"text":"{long}"}}"#);
+    run_tool(&mut app, "custom", &args, "{}", None);
+    assert_eq!(scrollback_lines(&mut app)[0], format!("✓ custom {args}"));
+}
+
+#[test]
 fn verbose_output_shows_a_restored_tool_result() {
     let mut app = App::new("model", status(), Theme::new(false));
     let history = vec![
@@ -2579,8 +2610,8 @@ fn changed_diff_lines_are_tinted_across_the_terminal() {
     };
     let (removed, added) = (row_of("-old"), row_of("+new"));
     // The tint reaches the last column, but not the joint to the call.
-    assert_eq!(buf[(39, removed)].bg, Color::Indexed(52));
-    assert_eq!(buf[(39, added)].bg, Color::Indexed(22));
+    assert_eq!(buf[(39, removed)].bg, Color::Rgb(55, 34, 44));
+    assert_eq!(buf[(39, added)].bg, Color::Rgb(32, 48, 59));
     assert_eq!(buf[(0, added)].bg, Color::Reset);
 }
 
@@ -2632,12 +2663,12 @@ fn footer_shows_context_against_the_compaction_size_and_keys_while_busy() {
             .unwrap();
         buf[(24, y)].fg
     };
-    assert_eq!(context_cell(&term), Color::DarkGray);
+    assert_eq!(context_cell(&term), Color::Rgb(86, 95, 137));
 
     // Near the size it is compacted at, it warns.
     app.apply_update(turn(85_000));
     term.draw(|f| app.render(f)).unwrap();
-    assert_eq!(context_cell(&term), Color::Yellow);
+    assert_eq!(context_cell(&term), Color::Rgb(224, 175, 104));
 
     // While busy: the keys instead of the sandbox, and what the prompt
     // wrote so far on the spinner line.
@@ -2687,5 +2718,5 @@ fn editor_rule_names_the_mode() {
     let y = (0..buf.area.height)
         .find(|&y| buf[(0, y)].symbol() == "─")
         .unwrap();
-    assert_eq!(buf[(0, y)].fg, Color::Magenta);
+    assert_eq!(buf[(0, y)].fg, Color::Rgb(187, 154, 247));
 }

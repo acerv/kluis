@@ -38,6 +38,20 @@ const RESULT_INDENT: &str = "    ";
 
 /// The name of a tool and what it works on, in one line.
 pub(super) fn format_tool_call(name: &str, args: &str, theme: Theme) -> Line<'static> {
+    tool_line(name, summary(&call_detail(name, args)), theme)
+}
+
+/// `name` and `detail` as a tool call shows them.
+fn tool_line(name: &str, detail: String, theme: Theme) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(name.to_owned(), theme.tool_name),
+        Span::raw(" "),
+        Span::styled(detail, theme.tool_arg),
+    ])
+}
+
+/// What a call of `name` with the JSON arguments `args` works on, in full.
+fn call_detail(name: &str, args: &str) -> String {
     let parsed: Option<Value> = serde_json::from_str(args).ok();
     let detail = parsed.as_ref().and_then(|v| match name {
         READ_TOOL => {
@@ -47,8 +61,6 @@ pub(super) fn format_tool_call(name: &str, args: &str, theme: Theme) -> Line<'st
                 None => Some(path.to_owned()),
             }
         }
-        WRITE_TOOL | EDIT_TOOL => v["path"].as_str().map(str::to_owned),
-        BASH_TOOL => v["command"].as_str().map(summary),
         GREP_TOOL | FIND_TOOL => {
             let pat = v["pattern"].as_str()?;
             match v["path"].as_str() {
@@ -57,7 +69,6 @@ pub(super) fn format_tool_call(name: &str, args: &str, theme: Theme) -> Line<'st
             }
         }
         LS_TOOL => Some(v["path"].as_str().unwrap_or(".").to_owned()),
-        "ask_user" => v["question"].as_str().map(summary),
         "web_fetch" => {
             let url = v["url"].as_str()?;
             match v["offset"].as_u64() {
@@ -65,17 +76,20 @@ pub(super) fn format_tool_call(name: &str, args: &str, theme: Theme) -> Line<'st
                 None => Some(url.to_owned()),
             }
         }
-        "web_search" => v["query"].as_str().map(summary),
-        "skill" => v["name"].as_str().map(str::to_owned),
-        "task" => v["prompt"].as_str().map(summary),
-        _ => None,
+        _ => {
+            let key = match name {
+                WRITE_TOOL | EDIT_TOOL => "path",
+                BASH_TOOL => "command",
+                "ask_user" => "question",
+                "web_search" => "query",
+                "skill" => "name",
+                "task" => "prompt",
+                _ => return None,
+            };
+            v[key].as_str().map(str::to_owned)
+        }
     });
-    let detail = detail.unwrap_or_else(|| summary(args));
-    Line::from(vec![
-        Span::styled(name.to_owned(), theme.tool_name),
-        Span::raw(" "),
-        Span::styled(detail, theme.tool_arg),
-    ])
+    detail.unwrap_or_else(|| args.to_owned())
 }
 
 /// How a tool call ended.
@@ -104,7 +118,7 @@ pub(super) fn format_tool_run(
         (Some(_), Some(v)) if failed(v) => RunStatus::Failed,
         _ => RunStatus::Done,
     };
-    out.push(run_header(run, status, theme));
+    run_header(run, status, verbose, theme, out);
     let Some(reply) = &run.reply else {
         out.push(Line::default());
         return;
@@ -130,26 +144,47 @@ fn failed(v: &Value) -> bool {
         || v["timed_out"].as_bool() == Some(true)
 }
 
-/// The mark of how `run` ended, its call, and how long it took.
-fn run_header(run: &ToolRun, status: RunStatus, theme: Theme) -> Line<'static> {
+/// The mark of how `run` ended, its call, and how long it took. The call
+/// shows in full when `verbose`, over as many lines as it takes.
+fn run_header(
+    run: &ToolRun,
+    status: RunStatus,
+    verbose: bool,
+    theme: Theme,
+    out: &mut Vec<Line<'static>>,
+) {
     let (mark, style) = match status {
         RunStatus::Done => ("✓", theme.success),
         RunStatus::Failed => ("✗", theme.error),
         RunStatus::Interrupted => ("✗", theme.muted),
     };
-    let mut spans = vec![Span::styled(mark, style), Span::raw(" ")];
+    let start = out.len();
     match &run.call {
-        Some(call) => spans.extend(format_tool_call(&call.name, &call.args, theme).spans),
+        Some(call) if verbose => {
+            let detail = call_detail(&call.name, &call.args);
+            let mut lines = detail.lines();
+            let first = expand_tabs(lines.next().unwrap_or_default()).into_owned();
+            out.push(tool_line(&call.name, first, theme));
+            for line in lines {
+                let mut line = output_line(line, theme.tool_arg);
+                line.spans.insert(0, Span::raw(RESULT_INDENT));
+                out.push(line);
+            }
+        }
+        Some(call) => out.push(format_tool_call(&call.name, &call.args, theme)),
         // A restored result whose call is missing.
-        None => spans.push(Span::styled("tool", theme.tool_name)),
+        None => out.push(Line::from(Span::styled("tool", theme.tool_name))),
     }
+    let header = &mut out[start].spans;
+    header.splice(0..0, [Span::styled(mark, style), Span::raw(" ")]);
+    let last = out.len() - 1;
+    let tail = &mut out[last].spans;
     if status == RunStatus::Interrupted {
-        spans.push(Span::styled(" · interrupted", theme.muted));
+        tail.push(Span::styled(" · interrupted", theme.muted));
     } else if let Some(elapsed) = run.elapsed.filter(|e| *e >= MIN_SHOWN_ELAPSED) {
         let elapsed = format_elapsed(elapsed.as_secs());
-        spans.push(Span::styled(format!(" · {elapsed}"), theme.muted));
+        tail.push(Span::styled(format!(" · {elapsed}"), theme.muted));
     }
-    Line::from(spans)
 }
 
 /// The short form of the result of `tool`.
