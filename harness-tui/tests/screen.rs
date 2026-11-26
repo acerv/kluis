@@ -574,6 +574,34 @@ fn shell_command_ends_on_screen() {
 }
 
 #[test]
+fn ctrl_o_prints_past_output_again_in_full() {
+    let home = tempfile::tempdir().unwrap();
+    let (master, slave) = openpty(40, 100);
+    let mut child = spawn_tui(home.path(), &slave);
+    let mut term = Emulator::new(&master, 40, 100);
+
+    term.wait_for("(/help for commands)");
+    term.type_text("!seq -f n%g 20\r");
+    term.wait_for("… +12 more lines");
+    assert!(term.row_of("n20").is_none());
+
+    // Verbose: the same call, printed again, with all its output.
+    term.type_text("\x0f");
+    term.wait_for("Verbose");
+    assert!(term.row_of("n20").is_some());
+    assert!(term.row_of("more lines").is_none());
+
+    // Quiet again.
+    term.type_text("\x0f");
+    term.wait_for("Quiet");
+    term.wait_for("… +12 more lines");
+    assert!(term.row_of("n20").is_none());
+
+    kill(&child, libc::SIGTERM);
+    child.wait().unwrap();
+}
+
+#[test]
 fn signals_restore_terminal() {
     for (signal, name) in [
         (libc::SIGTERM, "SIGTERM"),

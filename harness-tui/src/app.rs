@@ -59,9 +59,6 @@ const LONG_PROMPT: Duration = Duration::from_secs(10);
 /// Maximum characters shown in a single-line summary.
 const SUMMARY_LEN: usize = 120;
 
-/// Maximum bytes retained in hidden reasoning when thinking is toggled off.
-const MAX_HIDDEN_REASONING_BYTES: usize = 64 * 1024;
-
 /// Maximum visible rows in the live streaming preview above the spinner.
 const MAX_LIVE_ROWS: u16 = 6;
 
@@ -126,7 +123,6 @@ pub enum SlashCommand {
     Compact(Option<String>),
     Retry,
     Status,
-    Output,
     Copy,
     Export(Option<String>),
     Fork,
@@ -178,7 +174,10 @@ pub struct App {
     queued: Vec<String>,
     /// The images pasted into the prompt, with the words naming them there.
     images: Vec<(String, Image)>,
-    show_thinking: bool,
+    /// Verbose output: tool results in full, and the thinking.
+    verbose: bool,
+    /// The transcript must be printed again, as the output mode changed.
+    reprint: bool,
     is_thinking: bool,
     spinner: usize,
     activity_started: Option<Instant>,
@@ -189,8 +188,6 @@ pub struct App {
     /// The bell is due at the next draw.
     bell: bool,
     active_tool: Option<ToolCall>,
-    /// The last finished tool call, shown whole by `/output`.
-    last_tool: Option<ToolRun>,
     /// Bounded live stdout/stderr preview while a streaming tool runs.
     tool_preview: ToolPreview,
     /// Incremental Markdown stream for the current assistant turn.
@@ -198,9 +195,6 @@ pub struct App {
     markdown_style: MarkdownStyle,
     /// Current incomplete streaming reasoning row (fits within `width`).
     live_reasoning: String,
-    /// Reasoning buffered while `show_thinking` is off so `Ctrl-O` can reveal
-    /// the current turn's thinking in real time.
-    hidden_reasoning: String,
     /// Whether any reasoning lines were emitted during the current turn.
     emitted_reasoning: bool,
     /// Cumulative token usage across the active conversation.
@@ -232,7 +226,8 @@ impl App {
             busy: false,
             queued: Vec::new(),
             images: Vec::new(),
-            show_thinking: true,
+            verbose: false,
+            reprint: false,
             is_thinking: false,
             spinner: 0,
             activity_started: None,
@@ -240,12 +235,10 @@ impl App {
             notify: false,
             bell: false,
             active_tool: None,
-            last_tool: None,
             tool_preview: ToolPreview::default(),
             markdown: MarkdownStream::default(),
             markdown_style: MarkdownStyle::new(theme.color, DEFAULT_WIDTH),
             live_reasoning: String::new(),
-            hidden_reasoning: String::new(),
             emitted_reasoning: false,
             usage: TokenUsage::default(),
             context: 0,
@@ -339,8 +332,15 @@ impl App {
         format!("{TITLE}: {activity}")
     }
 
-    pub fn show_thinking(&self) -> bool {
-        self.show_thinking
+    /// Whether the output is verbose: tool results in full, and the
+    /// thinking.
+    pub fn verbose(&self) -> bool {
+        self.verbose
+    }
+
+    /// Whether the transcript must be printed again, clearing it.
+    pub(crate) fn take_reprint(&mut self) -> bool {
+        std::mem::take(&mut self.reprint)
     }
 
     pub fn model(&self) -> &str {
@@ -462,7 +462,6 @@ impl App {
         self.clear_live();
         self.scrollback.clear();
         self.todos.clear();
-        self.last_tool = None;
         self.notice = None;
         if let Err(err) = self.diff.restart() {
             self.push_info(format!("[diff error: {err}]"));
@@ -612,7 +611,6 @@ impl App {
         self.context = 0;
         // The plan of the conversation shown until now is not of this one.
         self.todos.clear();
-        self.last_tool = None;
         self.sync_markdown_width();
         // The calls waiting for their result, by id: where they show, none
         // for a plan, and their name and arguments.
@@ -673,7 +671,6 @@ impl App {
                             reply: Some(reply),
                             elapsed: None,
                         };
-                        self.last_tool = Some(run.clone());
                         match at {
                             Some(at) => self.scrollback[at] = Entry::Tool(Box::new(run)),
                             None => self.scrollback.push(Entry::Tool(Box::new(run))),
@@ -684,17 +681,6 @@ impl App {
             }
         }
         self.drop_finished_plan();
-    }
-
-    /// Show the whole output of the last tool call, as `/output` asks.
-    pub fn show_tool_output(&mut self) {
-        let Some(run) = &self.last_tool else {
-            self.push_info("[no tool output]");
-            return;
-        };
-        let mut lines = Vec::new();
-        format_tool_run(run, true, self.theme, &mut lines);
-        self.push_lines(lines);
     }
 
     /// Show the plan of a `todo` result above the editor. Returns `false`
@@ -786,7 +772,9 @@ impl App {
     fn render_entry(&self, entry: &Entry, out: &mut Vec<Line<'static>>) {
         match entry {
             Entry::Line(line) => out.push(line.clone()),
-            Entry::Tool(run) => format_tool_run(run, false, self.theme, out),
+            Entry::Reasoning(line) if self.verbose => out.push(line.clone()),
+            Entry::Reasoning(_) => {}
+            Entry::Tool(run) => format_tool_run(run, self.verbose, self.theme, out),
             Entry::Frozen(lines) => out.extend(lines.iter().cloned()),
         }
     }
@@ -858,24 +846,8 @@ impl App {
             }
             AgentUpdate::ReasoningDelta(delta) => {
                 self.is_thinking = true;
-                if !self.show_thinking {
-                    append_bounded(
-                        &mut self.hidden_reasoning,
-                        &delta,
-                        MAX_HIDDEN_REASONING_BYTES,
-                    );
-                    return;
-                }
                 self.emitted_reasoning = true;
-                let mut lines = Vec::new();
-                stream_reasoning(
-                    &mut self.live_reasoning,
-                    &delta,
-                    self.width.get() as usize,
-                    self.theme.reasoning,
-                    &mut lines,
-                );
-                self.push_lines(lines);
+                self.push_reasoning(&delta);
             }
             AgentUpdate::TextDelta(delta) => {
                 self.flush_reasoning();
@@ -936,7 +908,6 @@ impl App {
                     reply: Some(ToolReply::new(content, details)),
                     elapsed,
                 };
-                self.last_tool = Some(run.clone());
                 self.scrollback.push(Entry::Tool(Box::new(run)));
             }
             AgentUpdate::Compacting(tokens) => {
@@ -1036,40 +1007,35 @@ impl App {
         self.push_line(Line::raw(String::new()));
     }
 
-    fn toggle_thinking(&mut self) {
-        self.show_thinking = !self.show_thinking;
-        if self.show_thinking {
-            if !self.hidden_reasoning.is_empty() {
-                let hidden = std::mem::take(&mut self.hidden_reasoning);
-                self.emitted_reasoning = true;
-                let mut lines = Vec::new();
-                stream_reasoning(
-                    &mut self.live_reasoning,
-                    &hidden,
-                    self.width.get() as usize,
-                    self.theme.reasoning,
-                    &mut lines,
-                );
-                self.push_lines(lines);
-            }
-            self.notice = Some("Thinking visible (Ctrl-O to hide)".to_owned());
+    /// Switch between quiet and verbose output, printing the transcript
+    /// again in the new mode.
+    fn toggle_verbose(&mut self) {
+        self.verbose = !self.verbose;
+        self.reprint = true;
+        self.notice = Some(if self.verbose {
+            "Verbose: full tool output and thinking (Ctrl-O for quiet)".to_owned()
         } else {
-            if !self.live_reasoning.is_empty() {
-                let live = std::mem::take(&mut self.live_reasoning);
-                append_bounded(
-                    &mut self.hidden_reasoning,
-                    &live,
-                    MAX_HIDDEN_REASONING_BYTES,
-                );
-            }
-            self.notice = Some("Thinking hidden (Ctrl-O to show)".to_owned());
-        }
+            "Quiet: short tool output, no thinking (Ctrl-O for verbose)".to_owned()
+        });
+    }
+
+    /// Stream `delta` of the thinking, committing its finished rows.
+    fn push_reasoning(&mut self, delta: &str) {
+        let mut lines = Vec::new();
+        stream_reasoning(
+            &mut self.live_reasoning,
+            delta,
+            self.width.get() as usize,
+            self.theme.reasoning,
+            &mut lines,
+        );
+        self.scrollback
+            .extend(lines.into_iter().map(Entry::Reasoning));
     }
 
     fn clear_live(&mut self) {
         self.markdown.clear();
         self.live_reasoning.clear();
-        self.hidden_reasoning.clear();
         self.tool_preview.clear();
         self.emitted_reasoning = false;
         self.is_thinking = false;
@@ -1077,13 +1043,13 @@ impl App {
 
     fn flush_reasoning(&mut self) {
         self.is_thinking = false;
-        self.hidden_reasoning.clear();
         if !self.live_reasoning.is_empty() {
             let tail = std::mem::take(&mut self.live_reasoning);
-            self.push_line(Line::styled(tail, self.theme.reasoning));
+            let line = Line::styled(tail, self.theme.reasoning);
+            self.scrollback.push(Entry::Reasoning(line));
         }
         if self.emitted_reasoning {
-            self.push_line(Line::raw(String::new()));
+            self.scrollback.push(Entry::Reasoning(Line::default()));
             self.emitted_reasoning = false;
         }
     }
@@ -1191,15 +1157,6 @@ fn wrap_split(text: &str, width: usize) -> Option<(usize, usize)> {
     None
 }
 
-fn append_bounded(buf: &mut String, delta: &str, max_bytes: usize) {
-    buf.push_str(delta);
-    if buf.len() > max_bytes {
-        let cut = buf.len() - max_bytes;
-        let boundary = buf.ceil_char_boundary(cut);
-        buf.drain(..boundary);
-    }
-}
-
 fn parse_slash(input: &str) -> Option<Result<SlashCommand, String>> {
     if !input.starts_with('/') {
         return None;
@@ -1219,7 +1176,6 @@ fn parse_slash(input: &str) -> Option<Result<SlashCommand, String>> {
         "/retry" => Ok(SlashCommand::Retry),
         "/undo" => Ok(SlashCommand::Undo),
         "/status" => Ok(SlashCommand::Status),
-        "/output" => Ok(SlashCommand::Output),
         "/copy" => Ok(SlashCommand::Copy),
         "/export" => Ok(SlashCommand::Export(arg)),
         "/fork" => Ok(SlashCommand::Fork),

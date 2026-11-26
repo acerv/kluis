@@ -22,6 +22,8 @@ const MAX_TOOL_BYTES: usize = 4 * 1024 * 1024;
 #[derive(Debug, Clone)]
 pub enum Entry {
     Line(Line<'static>),
+    /// A row of thinking, shown in verbose mode only.
+    Reasoning(Line<'static>),
     /// A tool call and its result, short or whole by the output mode.
     Tool(Box<ToolRun>),
     /// A tool call past [`MAX_TOOL_BYTES`], kept in its short form.
