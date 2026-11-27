@@ -613,6 +613,34 @@ fn replay_history() {
 }
 
 #[test]
+fn replayed_read_only_runs_show_as_one() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    let read = |id: &str, path: &str| {
+        ContentPart::ToolCall(ToolCall {
+            call_id: id.into(),
+            fn_name: "read".into(),
+            fn_arguments: serde_json::json!({ "path": path }),
+            thought_signatures: None,
+        })
+    };
+    let history = vec![
+        ChatMessage::user("look"),
+        ChatMessage::assistant(MessageContent::from_parts(vec![
+            read("c1", "a.rs"),
+            read("c2", "b.rs"),
+        ])),
+        ChatMessage::from(ToolResponse::new("c1", r#"{"total_lines":1}"#)),
+        ChatMessage::from(ToolResponse::new("c2", r#"{"total_lines":2}"#)),
+    ];
+    app.replay_history(&history, HashMap::new());
+    let lines = scrollback_lines(&mut app);
+    assert_eq!(
+        lines[lines.len() - 3..],
+        ["✓ Read 2 files", "  ⎿ a.rs · b.rs", ""]
+    );
+}
+
+#[test]
 fn replayed_edit_shows_its_saved_diff() {
     let mut app = App::new("model", status(), Theme::new(false));
     let history = [
@@ -2239,6 +2267,77 @@ fn run_tool(app: &mut App, name: &str, args: &str, content: &str, details: Optio
 }
 
 #[test]
+fn quiet_read_only_runs_show_as_one() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    let explore = |app: &mut App| {
+        run_tool(
+            app,
+            "read",
+            r#"{"path":"a.rs"}"#,
+            r#"{"total_lines":1}"#,
+            None,
+        );
+        run_tool(
+            app,
+            "read",
+            r#"{"path":"b.rs"}"#,
+            r#"{"total_lines":1}"#,
+            None,
+        );
+        run_tool(app, "grep", r#"{"pattern":"fn"}"#, r#"{"matches":3}"#, None);
+    };
+    app.start_prompt("go");
+    app.take_scrollback();
+
+    // Held back while more may join, shown live meanwhile.
+    explore(&mut app);
+    assert!(app.take_scrollback().is_empty());
+    let mut term = inline_terminal_with(60, 20, app.viewport_height(60));
+    term.draw(|f| app.render(f)).unwrap();
+    let screen = render_text(&term);
+    assert!(
+        screen.contains("✓ Read 2 files, searched 1 pattern"),
+        "{screen}"
+    );
+
+    // A failed run shows on its own, and ends the group.
+    run_tool(
+        &mut app,
+        "ls",
+        r#"{"path":"x"}"#,
+        r#"{"error":"gone"}"#,
+        None,
+    );
+    assert_eq!(
+        scrollback_lines(&mut app),
+        [
+            "✓ Read 2 files, searched 1 pattern",
+            "  ⎿ a.rs · b.rs · fn",
+            "",
+            "✗ ls x",
+            "  ⎿ error: gone",
+            "",
+        ]
+    );
+
+    // A group of one shows as the run, and the end of the prompt ends it.
+    run_tool(&mut app, "ls", "{}", r#"{"entries":[]}"#, None);
+    app.finish_prompt(Ok(()));
+    assert_eq!(
+        scrollback_lines(&mut app)[..3],
+        ["✓ ls .", "  ⎿ 0 entries", ""]
+    );
+
+    // Verbose: each run, as it ends.
+    app.handle_event(ctrl('o'));
+    app.start_prompt("go");
+    app.take_scrollback();
+    explore(&mut app);
+    let lines = scrollback_lines(&mut app);
+    assert_eq!(lines.iter().filter(|l| l.starts_with('✓')).count(), 3);
+}
+
+#[test]
 fn edit_diff_shows_line_numbers_of_each_hunk() {
     let mut app = App::new("model", status(), Theme::new(false));
     app.start_prompt("fix it");
@@ -2813,11 +2912,11 @@ fn finished_prompt_tells_how_long_it_worked() {
     let mut app = App::new("model", status(), Theme::new(false));
     let tool = |app: &mut App| {
         app.apply_update(AgentUpdate::ToolCall {
-            name: "ls".into(),
-            args: "{}".into(),
+            name: "bash".into(),
+            args: r#"{"command":"true"}"#.into(),
         });
         app.apply_update(AgentUpdate::ToolResult {
-            content: r#"{"entries":[]}"#.into(),
+            content: r#"{"output":"","exit_code":0}"#.into(),
             details: None,
         });
     };

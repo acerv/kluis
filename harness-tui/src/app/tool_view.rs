@@ -194,10 +194,63 @@ fn run_header(
     let tail = &mut out[last].spans;
     if status == RunStatus::Interrupted {
         tail.push(Span::styled(" · interrupted", theme.muted));
-    } else if let Some(elapsed) = elapsed.filter(|e| *e >= MIN_SHOWN_ELAPSED) {
-        let elapsed = format_elapsed(elapsed.as_secs());
-        tail.push(Span::styled(format!(" · {elapsed}"), theme.muted));
+    } else {
+        tail.extend(elapsed_span(elapsed, theme));
     }
+}
+
+/// How long a run took, when it took long enough to tell.
+fn elapsed_span(elapsed: Option<Duration>, theme: Theme) -> Option<Span<'static>> {
+    let elapsed = elapsed.filter(|e| *e >= MIN_SHOWN_ELAPSED)?;
+    let text = format!(" · {}", format_elapsed(elapsed.as_secs()));
+    Some(Span::styled(text, theme.muted))
+}
+
+/// The tools whose runs that end well make one group in quiet mode, with
+/// how a group tells their count: a verb, then what one and more runs
+/// worked on.
+const GROUPED_TOOLS: [(&[&str], &str, &str, &str); 3] = [
+    (&[READ_TOOL], "read", "file", "files"),
+    (&[GREP_TOOL, FIND_TOOL], "searched", "pattern", "patterns"),
+    (&[LS_TOOL], "listed", "directory", "directories"),
+];
+
+/// `runs` as one: how many of each tool, then what they worked on.
+pub(super) fn format_tool_group(runs: &[ToolRun], theme: Theme, out: &mut Vec<Line<'static>>) {
+    let calls: Vec<&ToolCall> = runs.iter().filter_map(|run| run.call.as_ref()).collect();
+    let mut parts = Vec::with_capacity(GROUPED_TOOLS.len());
+    for (tools, verb, one, many) in GROUPED_TOOLS {
+        let n = calls
+            .iter()
+            .filter(|call| tools.contains(&call.name.as_str()))
+            .count();
+        if n > 0 {
+            let what = if n == 1 { one } else { many };
+            parts.push(format!("{verb} {n} {what}"));
+        }
+    }
+    let mut text = parts.join(", ");
+    if let Some(first) = text.get_mut(..1) {
+        first.make_ascii_uppercase();
+    }
+    let elapsed = runs.iter().filter_map(|run| run.elapsed).sum::<Duration>();
+    let mut header = vec![
+        Span::styled("✓", theme.success),
+        Span::raw(" "),
+        Span::styled(text, theme.tool_name),
+    ];
+    header.extend(elapsed_span(Some(elapsed), theme));
+    out.push(Line::from(header));
+
+    let details: Vec<String> = calls
+        .iter()
+        .map(|call| call_detail(&call.name, &call.args))
+        .collect();
+    out.push(Line::from(vec![
+        Span::styled(RESULT_JOINT, theme.gutter),
+        Span::styled(summary(&details.join(" · ")), theme.muted),
+    ]));
+    out.push(Line::default());
 }
 
 /// The short form of the result of `tool`.
@@ -483,6 +536,20 @@ pub(crate) struct ToolRun {
 }
 
 impl ToolRun {
+    /// Whether it makes one group with the runs next to it in quiet mode:
+    /// a run of one of [`GROUPED_TOOLS`] that ended well.
+    pub(crate) fn groups(&self) -> bool {
+        let grouped = |call: &ToolCall| {
+            GROUPED_TOOLS
+                .iter()
+                .any(|(tools, ..)| tools.contains(&call.name.as_str()))
+        };
+        let ended_well = |reply: &ToolReply| {
+            serde_json::from_str::<Value>(&reply.content).is_ok_and(|v| !failed(&v))
+        };
+        self.call.as_ref().is_some_and(grouped) && self.reply.as_ref().is_some_and(ended_well)
+    }
+
     /// Bytes of text it holds.
     pub(crate) fn size(&self) -> usize {
         let call = self.call.as_ref().map_or(0, |c| c.args.len());

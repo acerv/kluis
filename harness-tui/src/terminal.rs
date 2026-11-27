@@ -295,7 +295,7 @@ impl InlineTerminal {
 
     /// Keep `entries` to print them again.
     fn push_transcript(&mut self, app: &App, entries: Vec<Entry>) {
-        self.transcript.push(entries, |run| app.freeze(run));
+        self.transcript.push(entries, |entry| app.freeze(entry));
     }
 
     fn enter_split(&mut self) -> io::Result<()> {

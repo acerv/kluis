@@ -41,7 +41,8 @@ mod update;
 pub(crate) use tool_view::render_diff;
 pub(crate) use tool_view::ToolRun;
 use tool_view::{
-    format_elapsed, format_running_tool, format_tool_run, ToolCall, ToolPreview, ToolReply,
+    format_elapsed, format_running_tool, format_tool_group, format_tool_run, ToolCall, ToolPreview,
+    ToolReply,
 };
 pub use update::AgentUpdate;
 
@@ -632,6 +633,7 @@ impl App {
         // The plan of the conversation shown until now is not of this one.
         self.todos.clear();
         self.sync_markdown_width();
+        let start = self.scrollback.len();
         // The calls waiting for their result, by id: where they show, none
         // for a plan, and their name and arguments.
         let mut tool_calls: HashMap<&str, (Option<usize>, &str, &Value)> = HashMap::new();
@@ -702,6 +704,13 @@ impl App {
                 ChatRole::System => {}
             }
         }
+        // The runs took the place of their calls: group them now.
+        for entry in self.scrollback.split_off(start) {
+            match entry {
+                Entry::Tool(run) => self.push_run(*run),
+                entry => self.scrollback.push(entry),
+            }
+        }
         self.drop_finished_plan();
     }
 
@@ -747,9 +756,11 @@ impl App {
         self.scrollback.extend(lines.into_iter().map(Entry::Line));
     }
 
-    /// Take the entries queued for the native terminal scrollback.
+    /// Take the entries queued for the native terminal scrollback, but an
+    /// open group of runs.
     pub(crate) fn take_entries(&mut self) -> Vec<Entry> {
-        std::mem::take(&mut self.scrollback)
+        let end = self.scrollback.len() - usize::from(self.open_group().is_some());
+        self.scrollback.drain(..end).collect()
     }
 
     /// Take the lines queued for the native terminal scrollback, as they
@@ -792,29 +803,34 @@ impl App {
     }
 
     fn render_entry(&self, entry: &Entry, out: &mut Vec<Line<'static>>) {
-        match entry {
-            Entry::Line(line) => out.push(line.clone()),
-            Entry::Reasoning(line) if self.verbose => out.push(line.clone()),
-            Entry::Reasoning(_) => {}
-            Entry::Thought(_) if self.verbose => {}
-            Entry::Thought(elapsed) => {
-                let text = match format_elapsed(elapsed.as_secs()) {
-                    secs if secs.is_empty() => "∴ Thought".to_owned(),
-                    secs => format!("∴ Thought for {secs}"),
-                };
-                out.push(Line::styled(text, self.theme.reasoning));
-                out.push(Line::default());
-            }
-            Entry::Tool(run) => format_tool_run(run, self.verbose, self.theme, out),
-            Entry::Frozen(lines) => out.extend(lines.iter().cloned()),
+        render_entry(entry, self.verbose, self.theme, out);
+    }
+
+    /// The short form of `entry`, for an entry that keeps only that.
+    pub(crate) fn freeze(&self, entry: &Entry) -> Vec<Line<'static>> {
+        let mut out = Vec::new();
+        render_entry(entry, false, self.theme, &mut out);
+        out
+    }
+
+    /// Queue `run` for the scrollback, joining the group before it if both
+    /// group.
+    fn push_run(&mut self, run: ToolRun) {
+        if !run.groups() {
+            self.scrollback.push(Entry::Tool(Box::new(run)));
+        } else if let Some(Entry::Group(runs)) = self.scrollback.last_mut() {
+            runs.push(run);
+        } else {
+            self.scrollback.push(Entry::Group(vec![run]));
         }
     }
 
-    /// The short form of `run`, for an entry that keeps only that.
-    pub(crate) fn freeze(&self, run: &ToolRun) -> Vec<Line<'static>> {
-        let mut out = Vec::new();
-        format_tool_run(run, false, self.theme, &mut out);
-        out
+    /// The group of runs at the end of the scrollback, held back in quiet
+    /// mode while the next runs of the prompt may join it.
+    fn open_group(&self) -> Option<&Entry> {
+        let entry = self.scrollback.last()?;
+        let open = self.busy && !self.verbose && matches!(entry, Entry::Group(_));
+        open.then_some(entry)
     }
 
     /// Advance the activity spinner while busy.
@@ -946,7 +962,7 @@ impl App {
                     reply: Some(ToolReply::new(content, details)),
                     elapsed,
                 };
-                self.scrollback.push(Entry::Tool(Box::new(run)));
+                self.push_run(run);
             }
             AgentUpdate::Compacting(tokens) => {
                 self.push_notice(
@@ -988,11 +1004,11 @@ impl App {
     /// Show the running tool call, if any, as one that never ended.
     fn interrupt_tool(&mut self) {
         if let Some(call) = self.active_tool.take() {
-            self.scrollback.push(Entry::Tool(Box::new(ToolRun {
+            self.push_run(ToolRun {
                 call: Some(call),
                 reply: None,
                 elapsed: None,
-            })));
+            });
         }
     }
 
@@ -1136,6 +1152,32 @@ impl App {
             lines.push(Line::default());
         }
         self.push_lines(lines);
+    }
+}
+
+/// `entry` as it prints, in `verbose` mode or not.
+fn render_entry(entry: &Entry, verbose: bool, theme: Theme, out: &mut Vec<Line<'static>>) {
+    match entry {
+        Entry::Line(line) => out.push(line.clone()),
+        Entry::Reasoning(line) if verbose => out.push(line.clone()),
+        Entry::Reasoning(_) => {}
+        Entry::Thought(_) if verbose => {}
+        Entry::Thought(elapsed) => {
+            let text = match format_elapsed(elapsed.as_secs()) {
+                secs if secs.is_empty() => "∴ Thought".to_owned(),
+                secs => format!("∴ Thought for {secs}"),
+            };
+            out.push(Line::styled(text, theme.reasoning));
+            out.push(Line::default());
+        }
+        Entry::Tool(run) => format_tool_run(run, verbose, theme, out),
+        Entry::Group(runs) if verbose || runs.len() == 1 => {
+            for run in runs {
+                format_tool_run(run, verbose, theme, out);
+            }
+        }
+        Entry::Group(runs) => format_tool_group(runs, theme, out),
+        Entry::Frozen(lines) => out.extend(lines.iter().cloned()),
     }
 }
 

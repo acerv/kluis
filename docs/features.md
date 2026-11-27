@@ -109,6 +109,10 @@ away from the rest of the system.
   done, `✗` failed or interrupted), how long it ran when it took a second
   or more, and its result below it. While it runs, the spinner line shows
   it with its elapsed time, over a live preview of its output.
+- In quiet mode, `read`, `grep`, `find` and `ls` calls that end well one
+  after the other show as one, with what they worked on (`✓ Read 3 files,
+  searched 1 pattern`). The group shows above the spinner until something
+  else comes.
 - `Ctrl-O` switches between quiet output, the default, and verbose output.
   Quiet shows the short form of tool results (the first 8 lines of a
   command, 24 lines of a diff, a count for the others) and only a line

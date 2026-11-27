@@ -30,7 +30,10 @@ pub enum Entry {
     Thought(Duration),
     /// A tool call and its result, short or whole by the output mode.
     Tool(Box<ToolRun>),
-    /// A tool call past [`MAX_TOOL_BYTES`], kept in its short form.
+    /// Runs one after the other that [`ToolRun::groups`], shown as one
+    /// in quiet mode.
+    Group(Vec<ToolRun>),
+    /// Tool calls past [`MAX_TOOL_BYTES`], kept in their short form.
     Frozen(Vec<Line<'static>>),
 }
 
@@ -59,7 +62,7 @@ impl Transcript {
     pub fn push(
         &mut self,
         entries: impl IntoIterator<Item = Entry>,
-        freeze: impl Fn(&ToolRun) -> Vec<Line<'static>>,
+        freeze: impl Fn(&Entry) -> Vec<Line<'static>>,
     ) {
         for entry in entries {
             self.tool_bytes += tool_bytes(&entry);
@@ -71,9 +74,10 @@ impl Transcript {
         }
         let mut i = 0;
         while self.tool_bytes > MAX_TOOL_BYTES && i < self.entries.len() {
-            if let Entry::Tool(run) = &self.entries[i] {
-                self.tool_bytes -= run.size();
-                self.entries[i] = Entry::Frozen(freeze(run));
+            let bytes = tool_bytes(&self.entries[i]);
+            if bytes > 0 {
+                self.tool_bytes -= bytes;
+                self.entries[i] = Entry::Frozen(freeze(&self.entries[i]));
             }
             i += 1;
         }
@@ -83,6 +87,7 @@ impl Transcript {
 fn tool_bytes(entry: &Entry) -> usize {
     match entry {
         Entry::Tool(run) => run.size(),
+        Entry::Group(runs) => runs.iter().map(ToolRun::size).sum(),
         _ => 0,
     }
 }

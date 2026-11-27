@@ -122,22 +122,26 @@ impl App {
     }
 
     /// What shows above the spinner, wrapped to `width`: the lines that
-    /// stay, the running tool call, then those whose tail shows.
+    /// stay, the open group of runs and the running tool call, then those
+    /// whose tail shows.
     fn wrapped_live_lines(&self, width: usize) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
         let width = width.max(1);
-        if !self.markdown.live_lines().is_empty() {
-            (Vec::new(), wrap_lines(self.markdown.live_lines(), width))
+        let mut head = Vec::new();
+        if let Some(group) = self.open_group() {
+            self.render_entry(group, &mut head);
+        }
+        let body = if !self.markdown.live_lines().is_empty() {
+            wrap_lines(self.markdown.live_lines(), width)
         } else if let Some(tool) = &self.active_tool {
-            let mut call = Vec::new();
-            format_running_tool(tool, self.verbose, self.theme, &mut call);
-            let output = self.tool_preview.render_lines(self.theme.muted);
-            (wrap_lines(&call, width), wrap_lines(&output, width))
+            format_running_tool(tool, self.verbose, self.theme, &mut head);
+            wrap_lines(&self.tool_preview.render_lines(self.theme.muted), width)
         } else if self.verbose && !self.live_reasoning.is_empty() {
             let line = Line::styled(self.live_reasoning.clone(), self.theme.reasoning);
-            (Vec::new(), wrap_lines(&[line], width))
+            wrap_lines(&[line], width)
         } else {
-            (Vec::new(), Vec::new())
-        }
+            Vec::new()
+        };
+        (wrap_lines(&head, width), body)
     }
 
     /// Draw the pi-style inline viewport: multi-line live preview,
