@@ -120,7 +120,9 @@ away from the rest of the system.
   from `off` to `max` (`▰▰▰▱▱ high`), plan mode, the size
   of the conversation against the size it is compacted at (in the warning
   color from 80% on), and the sandbox and folder, or the keys while the
-  agent works. The spinner line adds the tokens the prompt wrote so far.
+  agent works. On a narrow terminal, what does not fit on the right goes
+  first: the folder, then the sandbox. The spinner line adds the tokens
+  the prompt wrote so far.
 - The rules around the editor take the color of what is typed and name
   it: `shell` for `!`, `command` for `/`, `plan` in plan mode.
 - `--theme light`, or `theme = "light"` in the config file, picks colors

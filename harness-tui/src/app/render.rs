@@ -404,21 +404,36 @@ impl App {
         };
         let style = if near { theme.warn } else { theme.status_bar };
         left.push(Span::styled(text, style));
-        let right = if self.busy {
-            let mode = if self.verbose { "quiet" } else { "verbose" };
-            format!("esc to cancel · ctrl+o {mode} · {}", self.status.sandbox)
+        let mode = if self.verbose {
+            "ctrl+o quiet"
         } else {
-            format!("{} · {}", self.status.sandbox, self.status.folder)
+            "ctrl+o verbose"
         };
+        let (sandbox, folder) = (self.status.sandbox.as_str(), self.status.folder.as_str());
+        let mut right = if self.busy {
+            vec!["esc to cancel", mode, sandbox]
+        } else {
+            vec![sandbox, folder]
+        };
+        // What does not fit goes, from the end: the left side stays.
         let left_w: usize = left.iter().map(Span::width).sum();
-        let gap = (area.width as usize)
-            .saturating_sub(left_w + right.width())
-            .max(2);
-        left.push(Span::raw(" ".repeat(gap)));
-        left.push(Span::styled(right, theme.status_bar));
+        let width = area.width as usize;
+        let mut text = right.join(" · ");
+        while !right.is_empty() && left_w + FOOTER_GAP + text.width() > width {
+            right.pop();
+            text = right.join(" · ");
+        }
+        if !text.is_empty() {
+            let gap = width - left_w - text.width();
+            left.push(Span::raw(" ".repeat(gap)));
+            left.push(Span::styled(text, theme.status_bar));
+        }
         frame.render_widget(Paragraph::new(Line::from(left)), area);
     }
 }
+
+/// Least columns between the two sides of the footer.
+const FOOTER_GAP: usize = 2;
 
 /// Cells of the thinking effort gauge: one per level above off.
 const EFFORT_CELLS: usize = Thinking::ALL.len() - 2;

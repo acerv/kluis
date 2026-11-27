@@ -148,6 +148,37 @@ fn footer_shows_model_context_sandbox_and_folder() {
 }
 
 #[test]
+fn narrow_footer_drops_what_does_not_fit_from_the_right() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    let footer = |app: &App, width| {
+        let mut term = inline_terminal(width, 14);
+        term.draw(|f| app.render(f)).unwrap();
+        let screen = render_text(&term);
+        screen
+            .lines()
+            .nth(VIEWPORT_HEIGHT as usize - 1)
+            .unwrap()
+            .to_owned()
+    };
+
+    // "model default · 0 context" takes 25 columns.
+    assert!(footer(&app, 50).ends_with("  sandboxed · ~/project"));
+    assert_eq!(footer(&app, 40), "model default · 0 context      sandboxed");
+    assert_eq!(footer(&app, 30), "model default · 0 context");
+
+    // While busy, the sandbox goes first, the key to cancel last.
+    app.start_prompt("go");
+    assert_eq!(
+        footer(&app, 57),
+        "model default · 0 context  esc to cancel · ctrl+o verbose"
+    );
+    assert_eq!(
+        footer(&app, 45),
+        "model default · 0 context       esc to cancel"
+    );
+}
+
+#[test]
 fn context_follows_the_conversation() {
     let mut app = App::new("model", status(), Theme::new(false));
     let mut term = inline_terminal(80, 14);
