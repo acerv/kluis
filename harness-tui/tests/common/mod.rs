@@ -6,7 +6,7 @@
 #![allow(dead_code)]
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpListener, TcpStream};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -15,6 +15,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use tempfile::TempDir;
+
+/// How long to wait for anything before failing the test.
+const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A folder below the target folder: outside `/tmp`, which is private in
 /// the container, and outside the current folder, which it shows.
@@ -35,6 +38,21 @@ pub fn stdout(out: &Output) -> String {
 
 pub fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+/// The next connection to `listener`, failing instead of hanging when none
+/// comes, as when `kl` could not start; reads from it time out too.
+pub fn accept(listener: &TcpListener) -> TcpStream {
+    listener.set_nonblocking(true).unwrap();
+    let mut stream = None;
+    wait_until("a connection", || {
+        stream = listener.accept().ok().map(|(stream, _)| stream);
+        stream.is_some()
+    });
+    let stream = stream.unwrap();
+    stream.set_nonblocking(false).unwrap();
+    stream.set_read_timeout(Some(TIMEOUT)).unwrap();
+    stream
 }
 
 /// The headers and the JSON body of the request a mock server got.
@@ -126,7 +144,7 @@ pub fn resize(master: &OwnedFd, rows: u16, cols: u16) {
 
 /// Wait until `done`, which tells `what` happened.
 pub fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + TIMEOUT;
     while !done() {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
         std::thread::sleep(Duration::from_millis(20));

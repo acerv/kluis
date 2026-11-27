@@ -14,8 +14,8 @@ use std::process::{Command, Stdio};
 use std::thread::{self, JoinHandle};
 
 use common::{
-    delta, kill, kl, line_count, read_request, read_request_with_headers, tempdir, wait_until,
-    write_sse,
+    accept, delta, kill, kl, line_count, read_request, read_request_with_headers, tempdir,
+    wait_until, write_sse,
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -38,7 +38,7 @@ fn start_mock_llm(make_cmd: impl FnOnce(u16) -> String) -> (u16, JoinHandle<RunR
     let bash_cmd = make_cmd(port);
 
     let handle = thread::spawn(move || {
-        let (stream, _) = listener.accept().unwrap();
+        let stream = accept(&listener);
         let req1 = read_request(&stream);
         let messages = req1["messages"].as_array().cloned().unwrap_or_default();
         let system = messages
@@ -64,7 +64,7 @@ fn start_mock_llm(make_cmd: impl FnOnce(u16) -> String) -> (u16, JoinHandle<RunR
             ],
         );
 
-        let (stream, _) = listener.accept().unwrap();
+        let stream = accept(&listener);
         let req2 = read_request(&stream);
         let content = req2["messages"]
             .as_array()
@@ -182,7 +182,7 @@ fn commands_reach_allowed_hosts_through_the_proxy_only() {
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = server.local_addr().unwrap().port();
     let server = thread::spawn(move || {
-        let (mut stream, _) = server.accept().unwrap();
+        let mut stream = accept(&server);
         let mut ping = [0; 4];
         stream.read_exact(&mut ping).unwrap();
         stream.write_all(b"pong").unwrap();
@@ -709,7 +709,7 @@ fn auth_toml_authenticates_host_while_hidden_in_sandbox() {
     let port = listener.local_addr().unwrap().port();
     let auth_path_str = auth_path.display().to_string();
     let server = thread::spawn(move || {
-        let (stream, _) = listener.accept().unwrap();
+        let stream = accept(&listener);
         let (headers, _body) = read_request_with_headers(&stream);
         let call = json!({
             "index": 0,
@@ -733,7 +733,7 @@ fn auth_toml_authenticates_host_while_hidden_in_sandbox() {
             ],
         );
 
-        let (stream, _) = listener.accept().unwrap();
+        let stream = accept(&listener);
         let req2 = read_request(&stream);
         let content = req2["messages"]
             .as_array()
@@ -1076,7 +1076,7 @@ fn start_scripted_llm(calls: Vec<Value>) -> (u16, JoinHandle<Vec<String>>) {
     let handle = thread::spawn(move || {
         let mut results = Vec::new();
         for (i, args) in calls.into_iter().enumerate() {
-            let (stream, _) = listener.accept().unwrap();
+            let stream = accept(&listener);
             read_request(&stream);
             let call = json!({
                 "index": 0,
@@ -1091,7 +1091,7 @@ fn start_scripted_llm(calls: Vec<Value>) -> (u16, JoinHandle<Vec<String>>) {
                     delta(json!({}), Some("tool_calls")),
                 ],
             );
-            let (stream, _) = listener.accept().unwrap();
+            let stream = accept(&listener);
             let req = read_request(&stream);
             let result = req["messages"]
                 .as_array()

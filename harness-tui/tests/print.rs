@@ -10,7 +10,7 @@ use std::net::{TcpListener, TcpStream};
 use std::process::{Output, Stdio};
 use std::thread::{self, JoinHandle};
 
-use common::{delta, kill, kl, read_request, stderr, tempdir, write_sse};
+use common::{accept, delta, kill, kl, read_request, stderr, tempdir, write_sse};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 
@@ -45,7 +45,7 @@ fn start_mock_llm(status: u16) -> (u16, JoinHandle<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let handle = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
+        let mut stream = accept(&listener);
         let user = last_user(&read_request(&stream));
         if status == 200 {
             write_answer(stream, "done");
@@ -73,7 +73,7 @@ fn start_mock_answers(answers: &[&str]) -> (u16, JoinHandle<Vec<Value>>) {
     let handle = thread::spawn(move || {
         let mut requests = Vec::new();
         for answer in &answers {
-            let (stream, _) = listener.accept().unwrap();
+            let stream = accept(&listener);
             requests.push(read_request(&stream));
             write_answer(stream, answer);
         }
