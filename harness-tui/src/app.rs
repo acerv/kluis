@@ -190,8 +190,8 @@ pub struct App {
     prompt_started: Option<Instant>,
     /// Ring the bell when a long prompt ends or asks a question.
     notify: bool,
-    /// The bell is due at the next draw.
-    bell: bool,
+    /// The bell is due at the next draw, with why.
+    bell: Option<&'static str>,
     active_tool: Option<ToolCall>,
     /// Bounded live stdout/stderr preview while a streaming tool runs.
     tool_preview: ToolPreview,
@@ -244,7 +244,7 @@ impl App {
             activity_started: None,
             prompt_started: None,
             notify: false,
-            bell: false,
+            bell: None,
             active_tool: None,
             tool_preview: ToolPreview::default(),
             markdown: MarkdownStream::default(),
@@ -293,7 +293,7 @@ impl App {
             ]));
         }
         self.picker = Some(Picker::answers(options));
-        self.ring_if_long();
+        self.ring_if_long("Question waiting");
     }
 
     /// Ring the bell when a long prompt ends or asks a question.
@@ -301,18 +301,20 @@ impl App {
         self.notify = notify;
     }
 
-    /// Whether the bell is due, clearing it.
-    pub fn take_bell(&mut self) -> bool {
-        std::mem::take(&mut self.bell)
+    /// Why the bell is due, if it is, clearing it.
+    pub fn take_bell(&mut self) -> Option<&'static str> {
+        self.bell.take()
     }
 
-    /// Make the bell due if the user may have stopped watching a prompt
-    /// that has run for long.
-    fn ring_if_long(&mut self) {
-        self.bell |= self.notify
-            && self
-                .prompt_started
-                .is_some_and(|t| t.elapsed() >= LONG_PROMPT);
+    /// Make the bell due for `reason` if the user may have stopped
+    /// watching a prompt that has run for long.
+    fn ring_if_long(&mut self, reason: &'static str) {
+        let long = self
+            .prompt_started
+            .is_some_and(|t| t.elapsed() >= LONG_PROMPT);
+        if self.notify && long {
+            self.bell = Some(reason);
+        }
     }
 
     pub fn is_picker_open(&self) -> bool {
@@ -1017,7 +1019,11 @@ impl App {
         self.flush_reasoning();
         self.flush_text();
         self.interrupt_tool();
-        self.ring_if_long();
+        self.ring_if_long(if outcome.is_ok() {
+            "Prompt done"
+        } else {
+            "Prompt failed"
+        });
         if outcome.is_ok() {
             self.push_summary();
         }

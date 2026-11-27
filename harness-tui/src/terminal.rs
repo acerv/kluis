@@ -431,9 +431,12 @@ pub fn flush_scrollback<B: Backend>(
     })
 }
 
+/// Ring the bell when due, and show why in a desktop notification on the
+/// terminals that take OSC 777; the others ignore it.
 fn ring_bell(app: &mut App) -> io::Result<()> {
-    if app.take_bell() {
-        execute!(io::stdout(), Print('\x07'))?;
+    if let Some(reason) = app.take_bell() {
+        let notify = format!("\x1b]777;notify;kl;{reason}\x07");
+        execute!(io::stdout(), Print('\x07'), Print(notify))?;
     }
     Ok(())
 }

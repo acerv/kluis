@@ -2875,30 +2875,34 @@ fn bell_rings_when_a_long_prompt_needs_the_user() {
     app.start_prompt("go");
     app.set_elapsed(long);
     app.finish_prompt(Ok(()));
-    assert!(!app.take_bell());
+    assert_eq!(app.take_bell(), None);
 
     app.set_notify(true);
     // A short prompt does not ring.
     app.start_prompt("go");
     app.finish_prompt(Ok(()));
-    assert!(!app.take_bell());
+    assert_eq!(app.take_bell(), None);
 
-    // A long one does, once, also when it fails.
+    // A long one does, once, telling how it ended.
+    app.start_prompt("go");
+    app.set_elapsed(long);
+    app.finish_prompt(Ok(()));
+    assert_eq!(app.take_bell(), Some("Prompt done"));
+    assert_eq!(app.take_bell(), None);
     app.start_prompt("go");
     app.set_elapsed(long);
     app.finish_prompt(Err("boom".into()));
-    assert!(app.take_bell());
-    assert!(!app.take_bell());
+    assert_eq!(app.take_bell(), Some("Prompt failed"));
 
     // So does a question in a long prompt.
     app.start_prompt("go");
     app.set_elapsed(long);
     app.ask("Proceed?", &[]);
-    assert!(app.take_bell());
+    assert_eq!(app.take_bell(), Some("Question waiting"));
 
     // Cancelling does not: the user is there.
     app.cancel_prompt();
-    assert!(!app.take_bell());
+    assert_eq!(app.take_bell(), None);
 }
 
 #[test]

@@ -138,7 +138,9 @@ away from the rest of the system.
   Thinking`, `kl: Question`), and goes back to the old one on exit.
 - With `notify = true` in the config file, or `--notify`, kl rings the
   terminal bell when a prompt that ran for 10 seconds or more ends or asks
-  a question.
+  a question. Terminals that take OSC 777 (foot, Ghostty, WezTerm, …) also
+  show a desktop notification telling why (`Prompt done`, `Prompt failed`,
+  `Question waiting`).
 - Persistent input history, model and session pickers, and `/copy` of the last
   reply.
 - Messages typed while the agent works join the conversation after the
