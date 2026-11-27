@@ -129,7 +129,7 @@ away from the rest of the system.
   color from 80% on), and the sandbox and folder, or the keys while the
   agent works. On a narrow terminal, what does not fit on the right goes
   first: the folder, then the sandbox. The spinner line adds the tokens
-  the prompt wrote so far.
+  the prompt wrote so far, a band of color moving across what kl does.
 - The rules around the editor take the color of what is typed and name
   it: `shell` for `!`, `command` for `/`, `plan` in plan mode.
 - `--theme light`, or `theme = "light"` in the config file, picks colors

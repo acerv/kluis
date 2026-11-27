@@ -243,13 +243,14 @@ impl App {
                 format!("{} ", SPINNER[self.spinner]),
                 self.theme.status_accent,
             )];
-            spans.push(Span::raw(if self.active_tool.is_some() {
+            let label = if self.active_tool.is_some() {
                 "Running"
             } else if self.is_thinking {
                 "Thinking"
             } else {
                 "Working"
-            }));
+            };
+            spans.extend(shimmer(label, self.spinner, self.theme.prompt));
             let elapsed = self
                 .activity_started
                 .map(|t| format_elapsed(t.elapsed().as_secs()))
@@ -434,6 +435,21 @@ impl App {
         }
         frame.render_widget(Paragraph::new(Line::from(left)), area);
     }
+}
+
+/// Characters of the band moving across the activity on the spinner line.
+const SHIMMER_WIDTH: usize = 2;
+
+/// `label`, ASCII, with the band at `frame` of the spinner in `style`: it
+/// moves across it a character at a time.
+fn shimmer(label: &'static str, frame: usize, style: Style) -> [Span<'static>; 3] {
+    let end = frame.min(label.len());
+    let start = frame.saturating_sub(SHIMMER_WIDTH).min(end);
+    [
+        Span::raw(&label[..start]),
+        Span::styled(&label[start..end], style),
+        Span::raw(&label[end..]),
+    ]
 }
 
 /// Least columns between the two sides of the footer.

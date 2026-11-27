@@ -374,6 +374,35 @@ fn realtime_multiline_thinking_and_ctrl_o_toggle() {
 }
 
 #[test]
+fn spinner_activity_shimmers() {
+    let mut app = App::new("model", status(), Theme::new(true));
+    let mut term = inline_terminal(40, 10);
+    app.start_prompt("go");
+    let accent = Color::Rgb(125, 207, 255);
+    let colors = |app: &App, term: &mut Terminal<TestBackend>| {
+        term.draw(|f| app.render(f)).unwrap();
+        let y = spinner_row(term) as u16;
+        let buf = term.backend().buffer();
+        // "⠋ Working…": the activity starts at the third column.
+        (2..9).map(|x| buf[(x, y)].fg == accent).collect::<Vec<_>>()
+    };
+
+    assert_eq!(colors(&app, &mut term), [false; 7]);
+    for _ in 0..3 {
+        app.tick();
+    }
+    assert_eq!(
+        colors(&app, &mut term),
+        [false, true, true, false, false, false, false]
+    );
+    app.tick();
+    assert_eq!(
+        colors(&app, &mut term),
+        [false, false, true, true, false, false, false]
+    );
+}
+
+#[test]
 fn quiet_thinking_shows_as_one_line() {
     let mut app = App::new("model", status(), Theme::new(false));
     let think = |app: &mut App| {
