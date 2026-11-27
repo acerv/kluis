@@ -116,7 +116,8 @@ away from the rest of the system.
   output so far is printed again in the new mode, past calls included.
   Results past 4 MiB in all keep only their short form.
 - Added and removed lines of a diff are tinted green and red.
-- The footer shows the model and its thinking effort, plan mode, the size
+- The footer shows the model and its thinking effort, as a gauge filled
+  from `off` to `max` (`▰▰▰▱▱ high`), plan mode, the size
   of the conversation against the size it is compacted at (in the warning
   color from 80% on), and the sandbox and folder, or the keys while the
   agent works. The spinner line adds the tokens the prompt wrote so far.

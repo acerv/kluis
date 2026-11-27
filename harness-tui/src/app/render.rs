@@ -381,10 +381,8 @@ impl App {
             return;
         }
         let theme = self.theme;
-        let mut left = vec![Span::styled(
-            format!("{} ({})", self.model, self.thinking),
-            theme.thinking_model(self.thinking),
-        )];
+        let mut left = vec![Span::raw(format!("{} ", self.model))];
+        left.extend(effort_spans(self.thinking, theme));
         if self.plan {
             let badge = if theme.color { " plan " } else { "[plan]" };
             left.push(Span::raw(" "));
@@ -420,6 +418,25 @@ impl App {
         left.push(Span::styled(right, theme.status_bar));
         frame.render_widget(Paragraph::new(Line::from(left)), area);
     }
+}
+
+/// Cells of the thinking effort gauge: one per level above off.
+const EFFORT_CELLS: usize = Thinking::ALL.len() - 2;
+
+/// `thinking` as a gauge filled by effort, then its name; only the name
+/// for the default of the provider, whose effort is unknown.
+fn effort_spans(thinking: Thinking, theme: Theme) -> Vec<Span<'static>> {
+    let name = Span::styled(thinking.as_str(), theme.status_bar);
+    let level = Thinking::ALL.iter().position(|&t| t == thinking);
+    let Some(filled) = level.and_then(|level| level.checked_sub(1)) else {
+        return vec![name];
+    };
+    vec![
+        Span::styled("▰".repeat(filled), theme.status_accent),
+        Span::styled("▱".repeat(EFFORT_CELLS - filled), theme.border_idle),
+        Span::raw(" "),
+        name,
+    ]
 }
 
 /// Rows the live lines take: all of `head`, and up to [`MAX_LIVE_ROWS`]

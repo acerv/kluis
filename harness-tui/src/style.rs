@@ -4,7 +4,6 @@
 use std::fmt;
 use std::str::FromStr;
 
-use harness_core::Thinking;
 use ratatui::style::{Color, Modifier, Style};
 use serde::{Deserialize, Serialize};
 
@@ -61,9 +60,6 @@ struct Palette {
     warn: Color,
     plan: Color,
     shell: Color,
-    /// Of the model in the footer, by thinking effort, as in
-    /// [`Thinking::ALL`].
-    thinking: [Color; 7],
 }
 
 /// The Tokyo Night colors [`DARK`] is made of.
@@ -112,7 +108,6 @@ const DARK: Palette = {
         warn: YELLOW,
         plan: MAGENTA,
         shell: ORANGE,
-        thinking: [GREEN, FG_DARK, CYAN, YELLOW, ORANGE, RED, MAGENTA],
     }
 };
 
@@ -134,15 +129,6 @@ const LIGHT: Palette = Palette {
     warn: Color::Indexed(136),
     plan: Color::Indexed(127),
     shell: Color::Indexed(161),
-    thinking: [
-        Color::Indexed(28),
-        Color::Indexed(243),
-        Color::Indexed(31),
-        Color::Indexed(136),
-        Color::Indexed(166),
-        Color::Indexed(160),
-        Color::Indexed(127),
-    ],
 };
 
 /// Styles used across the TUI. All styles are plain when `NO_COLOR` is active.
@@ -185,7 +171,6 @@ pub struct Theme {
     pub shell: Style,
     /// Startup logo rows, top to bottom.
     pub logo: [Style; 3],
-    thinking: [Color; 7],
 }
 
 impl Theme {
@@ -225,7 +210,6 @@ impl Theme {
                 plan_badge: plain,
                 shell: plain,
                 logo: [plain; 3],
-                thinking: [Color::Reset; 7],
             };
         }
         let p = match name {
@@ -266,7 +250,6 @@ impl Theme {
             shell: fg(p.shell).add_modifier(bold),
             // Cyan to blue to violet: 256-color palette #5fd7ff, #5f87ff, #af5fff.
             logo: [81, 69, 135].map(|c| Style::default().fg(Color::Indexed(c))),
-            thinking: p.thinking,
         }
     }
 
@@ -275,14 +258,5 @@ impl Theme {
     pub fn from_env(name: ThemeName) -> Self {
         let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
         Self::named(name, !no_color)
-    }
-
-    /// Footer model color keyed by thinking effort.
-    pub fn thinking_model(&self, thinking: Thinking) -> Style {
-        if !self.color {
-            return Style::default();
-        }
-        let level = Thinking::ALL.iter().position(|&t| t == thinking);
-        Style::default().fg(level.map_or(Color::Reset, |i| self.thinking[i]))
     }
 }

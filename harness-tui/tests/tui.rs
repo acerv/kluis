@@ -98,7 +98,7 @@ fn footer_shows_model_context_sandbox_and_folder() {
     let screen = render_text(&term);
     let footer = footer_line(&screen);
     assert!(
-        footer.starts_with("deepseek-chat (default) · 0 context  "),
+        footer.starts_with("deepseek-chat default · 0 context  "),
         "{screen}"
     );
     assert!(footer.ends_with("sandboxed · ~/project"), "{screen}");
@@ -115,7 +115,7 @@ fn footer_shows_model_context_sandbox_and_folder() {
     let screen = render_text(&term);
     let footer = footer_line(&screen);
     assert!(
-        footer.starts_with("gpt-4o (default) · 2K context  "),
+        footer.starts_with("gpt-4o default · 2K context  "),
         "{screen}"
     );
     assert!(footer.ends_with("sandboxed · ~/project"), "{screen}");
@@ -129,7 +129,7 @@ fn footer_shows_model_context_sandbox_and_folder() {
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
     assert!(
-        screen.contains("gpt-4o (default) · 3.5M context  "),
+        screen.contains("gpt-4o default · 3.5M context  "),
         "{screen}"
     );
 
@@ -142,7 +142,7 @@ fn footer_shows_model_context_sandbox_and_folder() {
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
     assert!(
-        screen.contains("gpt-4o (default) · 3.5M context  "),
+        screen.contains("gpt-4o default · 3.5M context  "),
         "{screen}"
     );
 }
@@ -161,15 +161,15 @@ fn context_follows_the_conversation() {
     app.apply_update(AgentUpdate::TurnEnd(turn));
     app.replay_history(&[ChatMessage::user("an older session")], HashMap::new());
     term.draw(|f| app.render(f)).unwrap();
-    assert!(render_text(&term).contains("model (default) · 0 context"));
+    assert!(render_text(&term).contains("model default · 0 context"));
     app.set_context(42_000);
     term.draw(|f| app.render(f)).unwrap();
-    assert!(render_text(&term).contains("model (default) · 42K context"));
+    assert!(render_text(&term).contains("model default · 42K context"));
 
     app.apply_update(AgentUpdate::TurnEnd(turn));
     app.reset_session();
     term.draw(|f| app.render(f)).unwrap();
-    assert!(render_text(&term).contains("model (default) · 0 context"));
+    assert!(render_text(&term).contains("model default · 0 context"));
 }
 
 #[test]
@@ -826,28 +826,33 @@ fn thinking_effort_slash_and_footer() {
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
     assert!(
-        screen.contains("claude-sonnet-4-5 (default) · 0 context  "),
+        screen.contains("claude-sonnet-4-5 default · 0 context  "),
         "{screen}"
     );
 
-    // Footer model color changes by thinking effort when color is enabled.
-    let mut colored = App::new("deepseek-flash", status(), Theme::new(true));
-    for (level, expected_fg) in [
-        (Thinking::Default, Color::Rgb(158, 206, 106)),
-        (Thinking::Off, Color::Rgb(169, 177, 214)),
-        (Thinking::Low, Color::Rgb(125, 207, 255)),
-        (Thinking::Medium, Color::Rgb(224, 175, 104)),
-        (Thinking::High, Color::Rgb(255, 158, 100)),
-        (Thinking::XHigh, Color::Rgb(247, 118, 142)),
-        (Thinking::Max, Color::Rgb(187, 154, 247)),
+    // A gauge filled by effort, then its name.
+    for (level, footer) in [
+        (Thinking::Off, "claude-sonnet-4-5 ▱▱▱▱▱ off · "),
+        (Thinking::Low, "claude-sonnet-4-5 ▰▱▱▱▱ low · "),
+        (Thinking::High, "claude-sonnet-4-5 ▰▰▰▱▱ high · "),
+        (Thinking::Max, "claude-sonnet-4-5 ▰▰▰▰▰ max · "),
     ] {
-        colored.set_thinking(level);
-        term.draw(|f| colored.render(f)).unwrap();
-        let buf = term.backend().buffer();
-        let footer_y = VIEWPORT_HEIGHT - 1;
-        assert_eq!(buf[(0, footer_y)].symbol(), "d");
-        assert_eq!(buf[(0, footer_y)].fg, expected_fg, "level: {level}");
+        app.set_thinking(level);
+        term.draw(|f| app.render(f)).unwrap();
+        let screen = render_text(&term);
+        assert!(footer_line(&screen).starts_with(footer), "{screen}");
     }
+
+    // The filled cells in the accent color, the empty ones faint.
+    let mut colored = App::new("m", status(), Theme::new(true));
+    colored.set_thinking(Thinking::Low);
+    term.draw(|f| colored.render(f)).unwrap();
+    let buf = term.backend().buffer();
+    let footer_y = VIEWPORT_HEIGHT - 1;
+    assert_eq!(buf[(2, footer_y)].symbol(), "▰");
+    assert_eq!(buf[(2, footer_y)].fg, Color::Rgb(125, 207, 255));
+    assert_eq!(buf[(3, footer_y)].symbol(), "▱");
+    assert_eq!(buf[(3, footer_y)].fg, Color::Rgb(41, 46, 66));
 }
 
 #[test]
@@ -2562,7 +2567,7 @@ fn shift_tab_switches_plan_mode() {
     assert!(app.plan());
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
-    assert!(screen.contains("model (default) [plan]"), "{screen}");
+    assert!(screen.contains("model default [plan]"), "{screen}");
     assert!(screen.contains("Plan mode: the model plans"), "{screen}");
     assert!(app.status_text(None, 0).contains("mode:    plan"));
 
@@ -2828,7 +2833,7 @@ fn footer_shows_context_against_the_compaction_size_and_keys_while_busy() {
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
     assert!(
-        screen.contains("model (default) · 42K/100K context"),
+        screen.contains("model default · 42K/100K context"),
         "{screen}"
     );
     let context_cell = |term: &Terminal<TestBackend>| {
