@@ -210,6 +210,8 @@ pub struct App {
     compact_at: Option<u64>,
     /// Output tokens of the running prompt, its subagents too.
     prompt_output: u64,
+    /// Tools the running prompt called.
+    prompt_tools: usize,
     notice: Option<String>,
     picker: Option<Picker>,
     completion: CommandCompletion,
@@ -252,6 +254,7 @@ impl App {
             context: 0,
             compact_at: None,
             prompt_output: 0,
+            prompt_tools: 0,
             notice: None,
             picker: None,
             completion: CommandCompletion::default(),
@@ -834,6 +837,7 @@ impl App {
     fn enter_busy(&mut self) {
         self.busy = true;
         self.prompt_output = 0;
+        self.prompt_tools = 0;
         self.spinner = 0;
         self.activity_started = Some(Instant::now());
         self.prompt_started = self.activity_started;
@@ -908,6 +912,7 @@ impl App {
                 self.flush_text();
                 self.tool_preview.clear();
                 self.activity_started = Some(Instant::now());
+                self.prompt_tools += 1;
                 // It shows once it ends, with how it ended.
                 self.active_tool = Some(ToolCall { name, args });
             }
@@ -988,6 +993,9 @@ impl App {
         self.flush_text();
         self.interrupt_tool();
         self.ring_if_long();
+        if outcome.is_ok() {
+            self.push_summary();
+        }
         self.busy = false;
         self.queued.clear();
         self.activity_started = None;
@@ -999,6 +1007,31 @@ impl App {
             self.push_line(Line::styled(format!("error: {err}"), self.theme.error));
             self.push_line(Line::raw(String::new()));
         }
+    }
+
+    /// Tell how long the prompt ran, the tools it called and the tokens
+    /// it wrote, when it ran a second or more.
+    fn push_summary(&mut self) {
+        use std::fmt::Write;
+
+        let secs = self.prompt_started.map_or(0, |t| t.elapsed().as_secs());
+        let elapsed = format_elapsed(secs);
+        if elapsed.is_empty() {
+            return;
+        }
+        let mut text = format!("Worked for {elapsed}");
+        match self.prompt_tools {
+            0 => {}
+            1 => text.push_str(" · 1 tool"),
+            n => {
+                let _ = write!(text, " · {n} tools");
+            }
+        }
+        if self.prompt_output > 0 {
+            let _ = write!(text, " · ↓ {} tokens", ScaledTokens(self.prompt_output));
+        }
+        self.push_line(Line::styled(text, self.theme.muted));
+        self.push_line(Line::raw(String::new()));
     }
 
     /// Put messages queued for a cancelled prompt back in the editor, before

@@ -115,6 +115,9 @@ away from the rest of the system.
   thinking. Verbose shows every result in full and the thinking. The
   output so far is printed again in the new mode, past calls included.
   Results past 4 MiB in all keep only their short form.
+- A prompt that ran a second or more ends with how long it worked, the
+  tools it called and the tokens it wrote (`Worked for 1m20s · 4 tools ·
+  ↓ 3.2K tokens`).
 - Added and removed lines of a diff are tinted green and red.
 - The footer shows the model and its thinking effort, as a gauge filled
   from `off` to `max` (`▰▰▰▱▱ high`), plan mode, the size

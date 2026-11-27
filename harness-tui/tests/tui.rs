@@ -2788,6 +2788,59 @@ fn tool_call_shows_how_it_ended_once_it_ends() {
 }
 
 #[test]
+fn finished_prompt_tells_how_long_it_worked() {
+    use std::time::Duration;
+
+    let mut app = App::new("model", status(), Theme::new(false));
+    let tool = |app: &mut App| {
+        app.apply_update(AgentUpdate::ToolCall {
+            name: "ls".into(),
+            args: "{}".into(),
+        });
+        app.apply_update(AgentUpdate::ToolResult {
+            content: r#"{"entries":[]}"#.into(),
+            details: None,
+        });
+    };
+
+    // How long, the tools called and the tokens written.
+    app.start_prompt("go");
+    tool(&mut app);
+    tool(&mut app);
+    app.apply_update(AgentUpdate::TurnEnd(TokenUsage {
+        input: 10,
+        output: 1_500,
+        cached: 0,
+    }));
+    app.set_elapsed(Duration::from_secs(80));
+    app.take_scrollback();
+    app.finish_prompt(Ok(()));
+    assert_eq!(
+        scrollback_lines(&mut app),
+        ["Worked for 1m20s · 2 tools · ↓ 1.5K tokens", ""]
+    );
+
+    // Counted again for each prompt, the parts that are none left out.
+    app.start_prompt("go");
+    tool(&mut app);
+    app.set_elapsed(Duration::from_secs(3));
+    app.take_scrollback();
+    app.finish_prompt(Ok(()));
+    assert_eq!(scrollback_lines(&mut app), ["Worked for 3s · 1 tool", ""]);
+
+    // Not for a quick prompt, nor for a failed one.
+    app.start_prompt("go");
+    app.take_scrollback();
+    app.finish_prompt(Ok(()));
+    assert!(app.take_scrollback().is_empty());
+    app.start_prompt("go");
+    app.set_elapsed(Duration::from_secs(3));
+    app.take_scrollback();
+    app.finish_prompt(Err("boom".into()));
+    assert_eq!(scrollback_lines(&mut app), ["error: boom", ""]);
+}
+
+#[test]
 fn changed_diff_lines_are_tinted_across_the_terminal() {
     let mut term = inline_terminal(40, 12);
     let mut app = App::new("model", status(), Theme::new(true));
