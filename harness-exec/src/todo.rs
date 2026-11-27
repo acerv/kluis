@@ -76,7 +76,8 @@ impl TodoTool {
         Tool::new(TODO_TOOL)
             .with_description(
                 "Track the plan of a multi-step task. Send the whole list each \
-                 time; keep one item in_progress at a time.",
+                 time; keep one item in_progress at a time. Update it after \
+                 each step.",
             )
             .with_schema(Self::schema())
     }
