@@ -19,7 +19,7 @@ impl App {
         if let Some(picker) = &self.picker {
             return FIXED_CHROME_ROWS + picker.visible_rows();
         }
-        FIXED_CHROME_ROWS
+        self.chrome_rows()
             + self.live_rows(width)
             + self.panel_lines().len() as u16
             + self.editor_rows(width)
@@ -191,29 +191,28 @@ impl App {
             self.render_footer(frame, footer_area);
             return;
         }
+        let chrome = self.chrome_rows();
         let (live_head, live_body) = self.wrapped_live_lines(area.width as usize);
         let panel_lines = self.panel_lines();
         let completion_h = self
             .completion
             .visible_rows()
-            .min(area.height.saturating_sub(FIXED_CHROME_ROWS + 2));
-        let panel_h = (panel_lines.len() as u16).min(
-            area.height
-                .saturating_sub(FIXED_CHROME_ROWS + 2 + completion_h),
-        );
+            .min(area.height.saturating_sub(chrome + 2));
+        let panel_h =
+            (panel_lines.len() as u16).min(area.height.saturating_sub(chrome + 2 + completion_h));
         let max_live = area
             .height
-            .saturating_sub(FIXED_CHROME_ROWS + completion_h + panel_h + 1)
+            .saturating_sub(chrome + completion_h + panel_h + 1)
             .max(1);
         let live_h = live_height(&live_head, &live_body).min(max_live);
         let editor_h = area
             .height
-            .saturating_sub(FIXED_CHROME_ROWS + live_h + panel_h + completion_h)
+            .saturating_sub(chrome + live_h + panel_h + completion_h)
             .max(1);
         let [live_area, spinner_area, panel_area, top_rule, editor_area, bottom_rule, completion_area, footer_area] =
             Layout::vertical([
                 Constraint::Length(live_h),
-                Constraint::Length(1),
+                Constraint::Length(chrome - FIXED_CHROME_ROWS + 1),
                 Constraint::Length(panel_h),
                 Constraint::Length(1),
                 Constraint::Length(editor_h),
@@ -234,10 +233,25 @@ impl App {
         self.render_footer(frame, footer_area);
     }
 
+    /// The rows around the viewport content: the fixed chrome, and while
+    /// busy a blank row on each side of the spinner.
+    fn chrome_rows(&self) -> u16 {
+        FIXED_CHROME_ROWS + if self.busy { 2 } else { 0 }
+    }
+
     fn render_spinner(&self, frame: &mut Frame<'_>, area: Rect) {
         if area.height == 0 {
             return;
         }
+        let area = if self.busy && area.height >= 3 {
+            Rect {
+                y: area.y + 1,
+                height: 1,
+                ..area
+            }
+        } else {
+            area
+        };
         let line = if self.busy {
             let mut spans = vec![Span::styled(
                 format!("{} ", SPINNER[self.spinner]),

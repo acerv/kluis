@@ -43,6 +43,9 @@ fn type_str(app: &mut App, text: &str) {
     }
 }
 
+/// Blank rows around the spinner while the agent works.
+const BUSY_GAP: u16 = 2;
+
 fn inline_terminal(width: u16, height: u16) -> Terminal<TestBackend> {
     inline_terminal_with(width, height, VIEWPORT_HEIGHT)
 }
@@ -168,6 +171,15 @@ fn narrow_footer_drops_what_does_not_fit_from_the_right() {
 
     // While busy, the sandbox goes first, the key to cancel last.
     app.start_prompt("go");
+    let footer = |app: &App, width| {
+        let mut term = inline_terminal_with(width, 14, VIEWPORT_HEIGHT + BUSY_GAP);
+        term.draw(|f| app.render(f)).unwrap();
+        render_text(&term)
+            .lines()
+            .nth((VIEWPORT_HEIGHT + BUSY_GAP) as usize - 1)
+            .unwrap()
+            .to_owned()
+    };
     assert_eq!(
         footer(&app, 57),
         "model default · 0 context  esc to cancel · ctrl+o verbose"
@@ -222,7 +234,7 @@ fn viewport_height_grows_with_newlines_and_wrapping() {
     app.handle_event(key(KeyCode::Enter));
     assert_eq!(app.viewport_height(20), VIEWPORT_HEIGHT);
     app.start_prompt("line 1\nline 2");
-    assert_eq!(app.viewport_height(20), VIEWPORT_HEIGHT);
+    assert_eq!(app.viewport_height(20), VIEWPORT_HEIGHT + BUSY_GAP);
 }
 
 #[test]
@@ -345,7 +357,7 @@ fn realtime_multiline_thinking_and_ctrl_o_toggle() {
         "Thinking about how to solve this cleanly".into(),
     ));
     assert!(app.take_scrollback().is_empty());
-    assert_eq!(app.viewport_height(20), VIEWPORT_HEIGHT);
+    assert_eq!(app.viewport_height(20), VIEWPORT_HEIGHT + BUSY_GAP);
 
     // Verbose: a long paragraph without '\n' soft-wraps in real time at
     // word boundaries into scrollback as soon as it exceeds terminal width
@@ -440,7 +452,8 @@ fn streaming_preview_aligns_directly_below_scrollback() {
     let spinner = spinner_row(&term);
 
     // Live preview rows start at row 0 of the viewport (directly below
-    // scrollback) and fill every row down to the spinner without blank gaps.
+    // scrollback) and fill every row down to the blank row above the
+    // spinner without gaps.
     let rows: Vec<String> = render_text(&term).lines().map(str::to_owned).collect();
     let preview: Vec<usize> = rows[..spinner]
         .iter()
@@ -449,8 +462,8 @@ fn streaming_preview_aligns_directly_below_scrollback() {
         .map(|(index, _)| index)
         .collect();
     assert_eq!(preview.first().copied(), Some(0), "{rows:#?}");
-    assert_eq!(preview.last().copied(), Some(spinner - 1), "{rows:#?}");
-    assert_eq!(preview.len(), spinner, "{rows:#?}");
+    assert_eq!(preview.last().copied(), Some(spinner - 2), "{rows:#?}");
+    assert_eq!(preview.len(), spinner - 1, "{rows:#?}");
 }
 
 #[test]
@@ -1220,7 +1233,7 @@ fn live_bash_preview_and_elapsed_spinner_timer() {
         content: r#"{"output":"done\n","exit_code":0}"#.into(),
         details: None,
     });
-    assert_eq!(app.viewport_height(80), VIEWPORT_HEIGHT);
+    assert_eq!(app.viewport_height(80), VIEWPORT_HEIGHT + BUSY_GAP);
 }
 
 #[test]
@@ -1244,7 +1257,7 @@ fn running_tool_call_stays_above_the_spinner_and_expands() {
         .iter()
         .position(|l| *l == "● bash sleep 9")
         .expect(&screen);
-    assert!(lines[call + 1].contains("Running…"), "{screen}");
+    assert!(lines[call + 2].contains("Running…"), "{screen}");
     assert!(!screen.contains("echo done"), "{screen}");
 
     // Verbose shows the whole of it.
@@ -1256,7 +1269,7 @@ fn running_tool_call_stays_above_the_spinner_and_expands() {
         .position(|l| *l == "● bash sleep 9")
         .expect(&screen);
     assert_eq!(lines[call + 1], "    echo done", "{screen}");
-    assert!(lines[call + 2].contains("Running…"), "{screen}");
+    assert!(lines[call + 3].contains("Running…"), "{screen}");
 
     // The output scrolls below the call, which stays.
     let output: String = (1..=20).map(|i| format!("line {i}\n")).collect();
@@ -1270,7 +1283,7 @@ fn running_tool_call_stays_above_the_spinner_and_expands() {
     assert_eq!(lines[call + 1], "    echo done", "{screen}");
     assert_eq!(lines[call + 2], "    line 15", "{screen}");
     assert_eq!(lines[call + 7], "    line 20", "{screen}");
-    assert!(lines[call + 8].contains("Running…"), "{screen}");
+    assert!(lines[call + 9].contains("Running…"), "{screen}");
 }
 
 #[test]
@@ -3089,6 +3102,7 @@ fn footer_shows_context_against_the_compaction_size_and_keys_while_busy() {
     // so far on the spinner line.
     app.start_prompt("go");
     app.apply_update(turn(1_000));
+    let mut term = inline_terminal_with(80, 14, app.viewport_height(80));
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
     assert!(
