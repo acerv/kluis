@@ -374,6 +374,25 @@ fn realtime_multiline_thinking_and_ctrl_o_toggle() {
 }
 
 #[test]
+fn quiet_thinking_shows_as_one_line() {
+    let mut app = App::new("model", status(), Theme::new(false));
+    let think = |app: &mut App| {
+        app.apply_update(AgentUpdate::ReasoningDelta("let me see\nhmm".into()));
+        app.apply_update(AgentUpdate::TextDelta("Done.\n\n".into()));
+        scrollback_lines(app)
+    };
+    app.start_prompt("go");
+    app.take_scrollback();
+
+    // Quiet: one line in place of the thinking, once it ends.
+    assert_eq!(think(&mut app)[..2], ["∴ Thought", ""]);
+
+    // Verbose: the thinking itself.
+    app.handle_event(ctrl('o'));
+    assert_eq!(think(&mut app)[..3], ["let me see", "hmm", ""]);
+}
+
+#[test]
 fn streaming_preview_aligns_directly_below_scrollback() {
     let width = 50;
     let mut app = App::new("model", status(), Theme::new(true));

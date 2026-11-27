@@ -111,8 +111,8 @@ away from the rest of the system.
   it with its elapsed time, over a live preview of its output.
 - `Ctrl-O` switches between quiet output, the default, and verbose output.
   Quiet shows the short form of tool results (the first 8 lines of a
-  command, 24 lines of a diff, a count for the others) and hides the
-  thinking. Verbose shows every result in full and the thinking. The
+  command, 24 lines of a diff, a count for the others) and only a line
+  in place of the thinking, with how long it took (`∴ Thought for 12s`). Verbose shows every result in full and the thinking. The
   output so far is printed again in the new mode, past calls included.
   Results past 4 MiB in all keep only their short form.
 - A prompt that ran a second or more ends with how long it worked, the

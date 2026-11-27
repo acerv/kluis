@@ -4,6 +4,7 @@
 //! What was printed above the viewport, kept to print it again.
 
 use std::collections::VecDeque;
+use std::time::Duration;
 
 use ratatui::text::Line;
 
@@ -24,6 +25,9 @@ pub enum Entry {
     Line(Line<'static>),
     /// A row of thinking, shown in verbose mode only.
     Reasoning(Line<'static>),
+    /// The end of the thinking, with how long it took, shown in quiet
+    /// mode only, in place of it.
+    Thought(Duration),
     /// A tool call and its result, short or whole by the output mode.
     Tool(Box<ToolRun>),
     /// A tool call past [`MAX_TOOL_BYTES`], kept in its short form.

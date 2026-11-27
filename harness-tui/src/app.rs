@@ -199,8 +199,8 @@ pub struct App {
     markdown_style: MarkdownStyle,
     /// Current incomplete streaming reasoning row (fits within `width`).
     live_reasoning: String,
-    /// Whether any reasoning lines were emitted during the current turn.
-    emitted_reasoning: bool,
+    /// When the thinking not flushed yet started, if there is any.
+    reasoning_started: Option<Instant>,
     /// Cumulative token usage across the active conversation.
     usage: TokenUsage,
     /// Tokens the last request sent, as the provider counted them: the
@@ -249,7 +249,7 @@ impl App {
             markdown: MarkdownStream::default(),
             markdown_style: MarkdownStyle::new(theme.color, DEFAULT_WIDTH),
             live_reasoning: String::new(),
-            emitted_reasoning: false,
+            reasoning_started: None,
             usage: TokenUsage::default(),
             context: 0,
             compact_at: None,
@@ -796,6 +796,15 @@ impl App {
             Entry::Line(line) => out.push(line.clone()),
             Entry::Reasoning(line) if self.verbose => out.push(line.clone()),
             Entry::Reasoning(_) => {}
+            Entry::Thought(_) if self.verbose => {}
+            Entry::Thought(elapsed) => {
+                let text = match format_elapsed(elapsed.as_secs()) {
+                    secs if secs.is_empty() => "∴ Thought".to_owned(),
+                    secs => format!("∴ Thought for {secs}"),
+                };
+                out.push(Line::styled(text, self.theme.reasoning));
+                out.push(Line::default());
+            }
             Entry::Tool(run) => format_tool_run(run, self.verbose, self.theme, out),
             Entry::Frozen(lines) => out.extend(lines.iter().cloned()),
         }
@@ -870,7 +879,7 @@ impl App {
             }
             AgentUpdate::ReasoningDelta(delta) => {
                 self.is_thinking = true;
-                self.emitted_reasoning = true;
+                self.reasoning_started.get_or_insert_with(Instant::now);
                 self.push_reasoning(&delta);
             }
             AgentUpdate::TextDelta(delta) => {
@@ -1094,7 +1103,7 @@ impl App {
         self.markdown.clear();
         self.live_reasoning.clear();
         self.tool_preview.clear();
-        self.emitted_reasoning = false;
+        self.reasoning_started = None;
         self.is_thinking = false;
     }
 
@@ -1105,9 +1114,9 @@ impl App {
             let line = Line::styled(tail, self.theme.reasoning);
             self.scrollback.push(Entry::Reasoning(line));
         }
-        if self.emitted_reasoning {
+        if let Some(started) = self.reasoning_started.take() {
             self.scrollback.push(Entry::Reasoning(Line::default()));
-            self.emitted_reasoning = false;
+            self.scrollback.push(Entry::Thought(started.elapsed()));
         }
     }
 
