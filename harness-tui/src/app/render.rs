@@ -393,25 +393,22 @@ impl App {
         if self.verbose {
             left.push(Span::styled(" · verbose", theme.status_bar));
         }
-        // Unknown before the first request of the conversation.
-        if self.context > 0 {
-            let (text, near) = match self.compact_at {
-                Some(limit) => (
-                    format!(
-                        " · {}/{} context",
-                        ScaledTokens(self.context),
-                        ScaledTokens(limit)
-                    ),
-                    self.context.saturating_mul(100) >= limit.saturating_mul(NEAR_COMPACT_PERCENT),
+        let (text, near) = match self.compact_at {
+            Some(limit) => (
+                format!(
+                    " · {}/{} context",
+                    ScaledTokens(self.context),
+                    ScaledTokens(limit)
                 ),
-                None => (format!(" · {} context", ScaledTokens(self.context)), false),
-            };
-            let style = if near { theme.warn } else { theme.status_bar };
-            left.push(Span::styled(text, style));
-        }
+                self.context.saturating_mul(100) >= limit.saturating_mul(NEAR_COMPACT_PERCENT),
+            ),
+            None => (format!(" · {} context", ScaledTokens(self.context)), false),
+        };
+        let style = if near { theme.warn } else { theme.status_bar };
+        left.push(Span::styled(text, style));
         let right = if self.busy {
             let mode = if self.verbose { "quiet" } else { "verbose" };
-            format!("esc to cancel · ctrl+o {mode}")
+            format!("esc to cancel · ctrl+o {mode} · {}", self.status.sandbox)
         } else {
             format!("{} · {}", self.status.sandbox, self.status.folder)
         };

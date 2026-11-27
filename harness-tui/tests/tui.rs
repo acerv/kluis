@@ -93,11 +93,14 @@ fn footer_shows_model_context_sandbox_and_folder() {
     let mut term = inline_terminal(80, 14);
     let mut app = App::new("deepseek-chat", status(), Theme::new(true));
 
-    // No size before the first request of the conversation.
+    // Empty before the first request of the conversation.
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
     let footer = footer_line(&screen);
-    assert!(footer.starts_with("deepseek-chat (default)  "), "{screen}");
+    assert!(
+        footer.starts_with("deepseek-chat (default) · 0 context  "),
+        "{screen}"
+    );
     assert!(footer.ends_with("sandboxed · ~/project"), "{screen}");
     assert!(screen.contains("────────"), "{screen}");
 
@@ -154,11 +157,11 @@ fn context_follows_the_conversation() {
         cached: 0,
     };
 
-    // Another conversation: unknown, until its saved size comes along.
+    // Another conversation: empty, until its saved size comes along.
     app.apply_update(AgentUpdate::TurnEnd(turn));
     app.replay_history(&[ChatMessage::user("an older session")], HashMap::new());
     term.draw(|f| app.render(f)).unwrap();
-    assert!(!render_text(&term).contains("context"));
+    assert!(render_text(&term).contains("model (default) · 0 context"));
     app.set_context(42_000);
     term.draw(|f| app.render(f)).unwrap();
     assert!(render_text(&term).contains("model (default) · 42K context"));
@@ -166,7 +169,7 @@ fn context_follows_the_conversation() {
     app.apply_update(AgentUpdate::TurnEnd(turn));
     app.reset_session();
     term.draw(|f| app.render(f)).unwrap();
-    assert!(!render_text(&term).contains("context"));
+    assert!(render_text(&term).contains("model (default) · 0 context"));
 }
 
 #[test]
@@ -822,7 +825,10 @@ fn thinking_effort_slash_and_footer() {
 
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
-    assert!(screen.contains("claude-sonnet-4-5 (default)  "), "{screen}");
+    assert!(
+        screen.contains("claude-sonnet-4-5 (default) · 0 context  "),
+        "{screen}"
+    );
 
     // Footer model color changes by thinking effort when color is enabled.
     let mut colored = App::new("deepseek-flash", status(), Theme::new(true));
@@ -2839,17 +2845,16 @@ fn footer_shows_context_against_the_compaction_size_and_keys_while_busy() {
     term.draw(|f| app.render(f)).unwrap();
     assert_eq!(context_cell(&term), Color::Rgb(224, 175, 104));
 
-    // While busy: the keys instead of the sandbox, and what the prompt
-    // wrote so far on the spinner line.
+    // While busy: the keys before the sandbox, and what the prompt wrote
+    // so far on the spinner line.
     app.start_prompt("go");
     app.apply_update(turn(1_000));
     term.draw(|f| app.render(f)).unwrap();
     let screen = render_text(&term);
     assert!(
-        screen.contains("esc to cancel · ctrl+o verbose"),
+        screen.contains("esc to cancel · ctrl+o verbose · sandboxed"),
         "{screen}"
     );
-    assert!(!screen.contains("sandboxed"), "{screen}");
     assert!(screen.contains("Working… · ↓ 1.5K tokens"), "{screen}");
 }
 
